@@ -1,6 +1,8 @@
 export const EDITOR_VERSION = "1.0.0";
 export const SCHEMA_VERSION = 1;
 export const STORAGE_KEY = "game-dev-kit-editor-project";
+export const BACKUP_STORAGE_KEY = "game-dev-kit-editor-backups";
+export const COPIED_LEVEL_STORAGE_KEY = "game-dev-kit-copied-level";
 
 export const DEFAULT_TILE_SIZE = 32;
 export const DEFAULT_GRID_SIZE = 30;

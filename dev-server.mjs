@@ -27,6 +27,7 @@ createServer((request, response) => {
 
   response.writeHead(200, {
     "Content-Type": `${mimeTypes[extname(filePath)] || "application/octet-stream"}; charset=utf-8`,
+    "Cache-Control": "no-store",
   });
   createReadStream(filePath).pipe(response);
 }).listen(port, () => {

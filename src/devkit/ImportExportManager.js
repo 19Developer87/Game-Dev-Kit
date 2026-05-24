@@ -81,6 +81,50 @@ export async function copyJsonToClipboard(data) {
   }
 }
 
+export async function chooseProjectFolder() {
+  if (typeof window.showDirectoryPicker !== "function") {
+    return null;
+  }
+
+  return window.showDirectoryPicker({
+    id: "game-dev-kit-root",
+    mode: "readwrite",
+  });
+}
+
+export async function saveProjectFilesToFolder({
+  folderHandle,
+  projectIndex,
+  levels,
+  deletedLevelFilenames = [],
+}) {
+  const projectFolder = await folderHandle.getDirectoryHandle("project", { create: true });
+  const levelsFolder = await folderHandle.getDirectoryHandle("levels", { create: true });
+  await folderHandle.getDirectoryHandle("assets", { create: true });
+
+  await writeJsonFile(projectFolder, "game-dev-kit-project.json", projectIndex);
+
+  for (const level of levels) {
+    await writeJsonFile(levelsFolder, level.filename, level.data);
+  }
+
+  for (const filename of deletedLevelFilenames) {
+    try {
+      await levelsFolder.removeEntry(filename);
+    } catch (error) {
+      console.warn(`Could not remove deleted level file: ${filename}`, error);
+    }
+  }
+}
+
+export function downloadProjectFiles({ projectIndex, levels }) {
+  tryDownloadJson("game-dev-kit-project.json", JSON.stringify(projectIndex, null, 2));
+
+  levels.forEach((level) => {
+    tryDownloadJson(level.filename, JSON.stringify(level.data, null, 2));
+  });
+}
+
 export function createLevelExportName(level) {
   return `${slugify(level.name || level.id)}.json`;
 }
@@ -107,6 +151,13 @@ function tryDownloadJson(filename, json) {
   } catch (error) {
     console.warn("Browser download fallback could not be completed.", error);
   }
+}
+
+async function writeJsonFile(directoryHandle, filename, data) {
+  const fileHandle = await directoryHandle.getFileHandle(filename, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(JSON.stringify(data, null, 2));
+  await writable.close();
 }
 
 function slugify(value) {

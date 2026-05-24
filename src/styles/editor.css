@@ -61,6 +61,70 @@ select {
   background: #151b20;
 }
 
+.level-picker {
+  position: relative;
+  display: inline-flex;
+  vertical-align: middle;
+}
+
+.level-picker-button {
+  min-width: 180px;
+  justify-content: space-between;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.level-picker-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 230px;
+  max-height: 280px;
+  overflow: auto;
+  display: none;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid #38424a;
+  border-radius: 6px;
+  background: #151b20;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.38);
+  z-index: 20;
+}
+
+.level-picker.is-open .level-picker-panel {
+  display: grid;
+}
+
+.level-option {
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 1px solid transparent;
+  background: transparent;
+  text-align: left;
+}
+
+.level-option:hover,
+.level-option:focus-visible,
+.level-option.is-drag-over {
+  border-color: #78b5d6;
+  background: #26323a;
+}
+
+.level-option.is-active {
+  border-color: #83d18f;
+  background: #1f3d2d;
+}
+
+.drag-handle {
+  color: #9eadb7;
+  cursor: grab;
+}
+
 .editor-shell {
   min-height: 100vh;
   display: grid;
@@ -70,9 +134,9 @@ select {
 .topbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 16px;
-  padding: 14px 18px;
+  padding: 10px 16px;
   border-bottom: 1px solid #29333a;
   background: rgba(16, 19, 22, 0.92);
   position: sticky;
@@ -82,7 +146,7 @@ select {
 
 .title-block h1 {
   margin: 0;
-  font-size: 20px;
+  font-size: 18px;
   line-height: 1.2;
 }
 
@@ -97,7 +161,7 @@ select {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  justify-content: flex-end;
+  justify-content: flex-start;
 }
 
 .toolbar-group {
@@ -155,7 +219,73 @@ select {
 .main-panel {
   min-width: 0;
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto auto 1fr;
+}
+
+.editor-menu-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #29333a;
+  background: #12171b;
+}
+
+.menu-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.menu {
+  position: relative;
+}
+
+.menu summary {
+  list-style: none;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #38424a;
+  border-radius: 6px;
+  padding: 0 12px;
+  background: #1d252b;
+  cursor: pointer;
+}
+
+.menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.menu[open] summary,
+.menu summary:hover,
+.menu summary:focus-visible {
+  border-color: #78b5d6;
+  background: #26323a;
+}
+
+.menu-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 190px;
+  display: grid;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid #38424a;
+  border-radius: 6px;
+  background: #151b20;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.38);
+  z-index: 10;
+}
+
+.menu-panel button {
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
+  border-color: transparent;
+  background: transparent;
 }
 
 .status-bar {
@@ -230,7 +360,8 @@ select {
   background-size: 10px 10px;
 }
 
-.grid-controls {
+.grid-controls,
+.level-controls {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -267,7 +398,8 @@ select {
 
   .toolbar,
   .toolbar-group,
-  .grid-controls {
+  .grid-controls,
+  .level-controls {
     justify-content: flex-start;
   }
 
