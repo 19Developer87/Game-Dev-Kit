@@ -46,6 +46,7 @@ export function createEditorLayout(root) {
           <div class="toolbar-group">
             <button type="button" data-tool="paint" class="is-active">Paint</button>
             <button type="button" data-tool="delete">Delete</button>
+            <button type="button" data-action="place-selected-asset">Place Selected Asset</button>
           </div>
         </div>
       </header>
@@ -77,6 +78,7 @@ export function createEditorLayout(root) {
           </div>
           <div class="status-bar">
             <div class="status-message" data-role="status-message"></div>
+            <div class="coordinate-status" data-role="coordinate-status">Hover: - · Selected: -</div>
             <div class="level-summary" data-role="level-summary"></div>
           </div>
           <div class="grid-stage" data-role="grid-stage"></div>
@@ -90,12 +92,14 @@ export function createEditorLayout(root) {
     customHeight: root.querySelector('[data-role="custom-height"]'),
     customSize: root.querySelector('[data-role="custom-size"]'),
     customWidth: root.querySelector('[data-role="custom-width"]'),
+    coordinateStatus: root.querySelector('[data-role="coordinate-status"]'),
     gridSize: root.querySelector('[data-role="grid-size"]'),
     gridStage: root.querySelector('[data-role="grid-stage"]'),
     levelPicker: root.querySelector('[data-role="level-picker"]'),
     levelPickerButton: root.querySelector('[data-role="level-picker-button"]'),
     levelPickerPanel: root.querySelector('[data-role="level-picker-panel"]'),
     levelSummary: root.querySelector('[data-role="level-summary"]'),
+    placeSelectedAssetButton: root.querySelector('[data-action="place-selected-asset"]'),
     selectedLevelName: root.querySelector('[data-role="selected-level-name"]'),
     startupStatus: root.querySelector('[data-role="startup-status"]'),
     statusMessage: root.querySelector('[data-role="status-message"]'),

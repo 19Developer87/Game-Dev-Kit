@@ -1,10 +1,11 @@
 import {
   DEFAULT_GRID_SIZE,
   DEFAULT_TILE_SIZE,
+  DEFAULT_CATEGORY_ID,
+  DEFAULT_CATEGORY_NAME,
   EDITOR_VERSION,
   LAYERS,
   SCHEMA_VERSION,
-  STARTER_ASSETS,
   STARTER_LEVEL_ID,
 } from "./EditorTypes.js";
 
@@ -79,13 +80,16 @@ export function createLevelFilename(id, existingLevels = [], currentLevelId = nu
 }
 
 export function createStarterProject() {
+  const assetRegistry = createEmptyAssetRegistry();
+
   return {
     projectName: "Reusable Game Dev Kit",
     editorVersion: EDITOR_VERSION,
     schemaVersion: SCHEMA_VERSION,
     lastOpenedLevelId: STARTER_LEVEL_ID,
     levels: [createStarterLevel()],
-    assets: STARTER_ASSETS,
+    assetRegistry,
+    assets: assetRegistry.assets,
   };
 }
 
@@ -118,9 +122,9 @@ export function normalizeProject(project) {
     levels.push(normalizedLevel);
   });
 
-  const assets = Array.isArray(project.assets) && project.assets.length > 0
-    ? project.assets
-    : STARTER_ASSETS;
+  levels.forEach((level) => migrateLegacyPlacedObjects(level));
+
+  const assetRegistry = normalizeAssetRegistry(project.assetRegistry, project.assets);
 
   const lastOpenedLevelId = levels.some((level) => level.id === project.lastOpenedLevelId)
     ? project.lastOpenedLevelId
@@ -133,7 +137,8 @@ export function normalizeProject(project) {
     schemaVersion: project.schemaVersion || SCHEMA_VERSION,
     lastOpenedLevelId,
     levels,
-    assets,
+    assetRegistry,
+    assets: assetRegistry.assets,
   };
 }
 
@@ -229,20 +234,54 @@ export function getPlacedObjects(level) {
 }
 
 export function findObjectsAtCell(level, x, y) {
-  return getPlacedObjects(level).filter((placedObject) => placedObject.x === x && placedObject.y === y);
+  return getPlacedObjects(level).filter((placedObject) => objectCoversCell(placedObject, x, y));
 }
 
 export function removeObjectsAtCell(level, x, y) {
   LAYERS.forEach((layerName) => {
     level.layers[layerName] = (level.layers[layerName] || []).filter(
-      (placedObject) => placedObject.x !== x || placedObject.y !== y,
+      (placedObject) => !objectCoversCell(placedObject, x, y),
     );
   });
 }
 
-export function placeAsset(level, asset, x, y) {
-  removeObjectsAtCell(level, x, y);
+export function findObjectsInRange(level, x, y, width = 1, height = 1) {
+  return getPlacedObjects(level).filter((placedObject) =>
+    rangesOverlap(
+      x,
+      y,
+      width,
+      height,
+      Number(placedObject.x) || 1,
+      Number(placedObject.y) || 1,
+      Number(placedObject.width) || 1,
+      Number(placedObject.height) || 1,
+    ),
+  );
+}
+
+export function removeObjectsInRange(level, x, y, width = 1, height = 1) {
+  LAYERS.forEach((layerName) => {
+    level.layers[layerName] = (level.layers[layerName] || []).filter(
+      (placedObject) =>
+        !rangesOverlap(
+          x,
+          y,
+          width,
+          height,
+          Number(placedObject.x) || 1,
+          Number(placedObject.y) || 1,
+          Number(placedObject.width) || 1,
+          Number(placedObject.height) || 1,
+        ),
+    );
+  });
+}
+
+export function placeAsset(level, asset, x, y, width = 1, height = 1) {
+  removeObjectsInRange(level, x, y, width, height);
   const layerName = asset.defaultLayer || "objects";
+  level.layers[layerName] = Array.isArray(level.layers[layerName]) ? level.layers[layerName] : [];
   const placedObject = {
     id: `placed-${asset.id}-${Date.now()}-${x}-${y}`,
     assetId: asset.id,
@@ -250,9 +289,16 @@ export function placeAsset(level, asset, x, y) {
     name: asset.name,
     x,
     y,
+    gridRef: toGridRef(x, y),
+    rangeRef: toRangeRef(x, y, width, height),
     layer: layerName,
-    width: 1,
-    height: 1,
+    width,
+    height,
+    visible: asset.visible !== false,
+    transparent: asset.transparent !== false,
+    solid: Boolean(asset.solid),
+    blocksMovement: Boolean(asset.blocksMovement),
+    collisionEnabled: Boolean(asset.collisionEnabled),
   };
 
   level.layers[layerName].push(placedObject);
@@ -266,14 +312,18 @@ export function resizeCurrentLevel(project, width, height) {
 
   LAYERS.forEach((layerName) => {
     level.layers[layerName] = (level.layers[layerName] || []).filter(
-      (placedObject) => placedObject.x < width && placedObject.y < height,
+      (placedObject) => placedObject.x <= width && placedObject.y <= height,
     );
   });
 }
 
 export function countObjectsOutsideBounds(level, width, height) {
   return getPlacedObjects(level).filter(
-    (placedObject) => placedObject.x >= width || placedObject.y >= height,
+    (placedObject) =>
+      placedObject.x > width ||
+      placedObject.y > height ||
+      placedObject.x + (placedObject.width || 1) - 1 > width ||
+      placedObject.y + (placedObject.height || 1) - 1 > height,
   ).length;
 }
 
@@ -310,6 +360,7 @@ export function pasteLevelContent(project, copiedLevelData) {
 
 export function createProjectIndex(project) {
   const {
+    assetRegistry,
     assets,
     levels,
     ...projectMetadata
@@ -340,6 +391,16 @@ export function createProjectIndex(project) {
   };
 }
 
+export function createAssetRegistryData(project) {
+  const registry = normalizeAssetRegistry(project.assetRegistry, project.assets);
+
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    categories: registry.categories,
+    assets: registry.assets.map((asset) => ({ ...asset })),
+  };
+}
+
 export function createLevelFileData(level) {
   const {
     filename,
@@ -365,10 +426,391 @@ function structuredCloneFallback(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+export function createEmptyAssetRegistry() {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    categories: [],
+    assets: [],
+  };
+}
+
+export function normalizeAssetRegistry(assetRegistry, legacyAssets = []) {
+  const registry = assetRegistry && typeof assetRegistry === "object"
+    ? assetRegistry
+    : {};
+  const categories = Array.isArray(registry.categories) ? [...registry.categories] : [];
+  const sourceAssets = Array.isArray(registry.assets)
+    ? registry.assets
+    : Array.isArray(legacyAssets)
+      ? legacyAssets.filter((asset) => asset?.isImported)
+      : [];
+  const normalizedCategories = [];
+  const categoriesByName = new Map();
+  const categoryAliases = new Map();
+  const categoryIds = new Set();
+  const legacyDefaultKey = normalizeCategoryName(DEFAULT_CATEGORY_NAME);
+
+  const categoryContainsAssets = (category) =>
+    sourceAssets.some(
+      (asset) =>
+        asset.categoryId === category?.id ||
+        normalizeCategoryName(asset.category) === normalizeCategoryName(category?.name),
+    );
+
+  const addCategory = (category, { retainForAssets = false } = {}) => {
+    const name = cleanCategoryName(category?.name);
+
+    if (!name) {
+      return null;
+    }
+
+    const nameKey = normalizeCategoryName(name);
+    const wasAutomaticDefault =
+      nameKey === legacyDefaultKey &&
+      category?.isUserCreated !== true;
+
+    if (wasAutomaticDefault && !retainForAssets && !categoryContainsAssets(category)) {
+      return null;
+    }
+
+    const existing = categoriesByName.get(nameKey);
+
+    if (existing) {
+      if (category?.id) {
+        categoryAliases.set(category.id, existing);
+      }
+      return existing;
+    }
+
+    const preferredId = String(category?.id || slugify(name) || "category").trim();
+    const id = createAvailableCategoryId(preferredId, name, categoryIds);
+    const normalizedCategory = {
+      id,
+      name,
+      isUserCreated:
+        category?.isUserCreated === true ||
+        (nameKey !== legacyDefaultKey && category?.isUserCreated !== false),
+    };
+
+    normalizedCategories.push(normalizedCategory);
+    categoriesByName.set(nameKey, normalizedCategory);
+    categoryIds.add(id);
+    categoryAliases.set(id, normalizedCategory);
+    if (category?.id) {
+      categoryAliases.set(category.id, normalizedCategory);
+    }
+    return normalizedCategory;
+  };
+
+  categories.forEach((category) => addCategory(category));
+
+  const normalizedAssets = sourceAssets
+    .filter((asset) => asset?.id && asset?.name)
+    .map((asset) => {
+      const categoryName = cleanCategoryName(asset.category);
+      let category =
+        categoriesByName.get(normalizeCategoryName(categoryName)) ||
+        categoryAliases.get(asset.categoryId);
+
+      if (!category && categoryName) {
+        category = addCategory(
+          {
+            id: asset.categoryId || slugify(categoryName),
+            name: categoryName,
+            isUserCreated: false,
+          },
+          { retainForAssets: true },
+        );
+      }
+
+      return {
+        defaultLayer: "objects",
+        solid: false,
+        transparent: true,
+        visible: true,
+        blocksMovement: false,
+        collisionEnabled: false,
+        defaultWidth: 1,
+        defaultHeight: 1,
+        isImported: true,
+        ...asset,
+        category: category?.name || "",
+        categoryId: category?.id || null,
+      };
+    });
+
+  return {
+    schemaVersion: registry.schemaVersion || SCHEMA_VERSION,
+    categories: normalizedCategories,
+    assets: normalizedAssets,
+  };
+}
+
+export function addAssetCategory(project, name) {
+  const registry = normalizeAssetRegistry(project.assetRegistry, project.assets);
+  const trimmedName = cleanCategoryName(name);
+
+  if (!trimmedName) {
+    project.assetRegistry = registry;
+    project.assets = registry.assets;
+    return null;
+  }
+  const existingCategory = registry.categories.find(
+    (category) => normalizeCategoryName(category.name) === normalizeCategoryName(trimmedName),
+  );
+
+  if (existingCategory) {
+    project.assetRegistry = registry;
+    project.assets = registry.assets;
+    return existingCategory;
+  }
+
+  const id = createUniqueCategoryId(trimmedName, registry.categories);
+  const category = { id, name: trimmedName, isUserCreated: true };
+
+  registry.categories.push(category);
+  project.assetRegistry = registry;
+  project.assets = registry.assets;
+  return category;
+}
+
+export function findAssetCategoryByName(project, name) {
+  const registry = normalizeAssetRegistry(project.assetRegistry, project.assets);
+  const category = registry.categories.find(
+    (candidate) => normalizeCategoryName(candidate.name) === normalizeCategoryName(name),
+  ) || null;
+
+  project.assetRegistry = registry;
+  project.assets = registry.assets;
+  return category;
+}
+
+export function removeEmptyAssetCategories(project) {
+  const registry = normalizeAssetRegistry(project.assetRegistry, project.assets);
+  const occupiedCategoryIds = new Set(registry.assets.map((asset) => asset.categoryId));
+  const keptCategories = registry.categories.filter(
+    (category) => occupiedCategoryIds.has(category.id),
+  );
+  const removedCount = registry.categories.length - keptCategories.length;
+
+  project.assetRegistry = {
+    ...registry,
+    categories: keptCategories,
+  };
+  project.assets = project.assetRegistry.assets;
+  return removedCount;
+}
+
+export function deleteAssetCategory(project, categoryId) {
+  const registry = normalizeAssetRegistry(project.assetRegistry, project.assets);
+  const category = registry.categories.find((candidate) => candidate.id === categoryId);
+
+  if (!category) {
+    project.assetRegistry = registry;
+    project.assets = registry.assets;
+    return { deleted: false, reason: "protected" };
+  }
+
+  const categoryAssets = registry.assets.filter((asset) => asset.categoryId === category.id);
+  if (categoryAssets.length > 0) {
+    project.assetRegistry = registry;
+    project.assets = registry.assets;
+    return { deleted: false, reason: "contains-assets", category, assetCount: categoryAssets.length };
+  }
+
+  project.assetRegistry = {
+    ...registry,
+    categories: registry.categories.filter((candidate) => candidate.id !== category.id),
+  };
+  project.assets = project.assetRegistry.assets;
+  return { deleted: true, category };
+}
+
+export function isAssetUsedOnAnyLevel(project, assetId) {
+  return project.levels.some((level) =>
+    getPlacedObjects(level).some((placedObject) => placedObject.assetId === assetId),
+  );
+}
+
+export function deleteImportedAsset(project, assetId) {
+  const registry = normalizeAssetRegistry(project.assetRegistry, project.assets);
+  const asset = registry.assets.find((candidate) => candidate.id === assetId);
+
+  if (!asset) {
+    project.assetRegistry = registry;
+    project.assets = registry.assets;
+    return null;
+  }
+
+  project.assetRegistry = {
+    ...registry,
+    assets: registry.assets.filter((candidate) => candidate.id !== assetId),
+  };
+  project.assets = project.assetRegistry.assets;
+  return asset;
+}
+
+export function addImportedAsset(project, asset) {
+  const registry = normalizeAssetRegistry(project.assetRegistry, project.assets);
+  const category = registry.categories.find((candidate) => candidate.id === asset.categoryId) ||
+    registry.categories.find((candidate) => candidate.name === asset.category);
+
+  if (!category) {
+    project.assetRegistry = registry;
+    project.assets = registry.assets;
+    throw new Error("Imported assets must be assigned to a category.");
+  }
+  const id = createUniqueAssetId(asset.name, registry.assets);
+  const normalizedAsset = {
+    id,
+    name: asset.name,
+    category: category.name,
+    categoryId: category.id,
+    src: asset.src,
+    fileName: asset.fileName,
+    defaultLayer: asset.defaultLayer || "objects",
+    solid: Boolean(asset.solid),
+    transparent: asset.transparent !== false,
+    visible: asset.visible !== false,
+    blocksMovement: Boolean(asset.blocksMovement),
+    collisionEnabled: Boolean(asset.collisionEnabled),
+    defaultWidth: Math.max(1, Number(asset.defaultWidth) || 1),
+    defaultHeight: Math.max(1, Number(asset.defaultHeight) || 1),
+    isImported: true,
+  };
+
+  registry.assets.push(normalizedAsset);
+  project.assetRegistry = registry;
+  project.assets = registry.assets;
+  return normalizedAsset;
+}
+
+export function toGridRef(x, y) {
+  return `${x}.${numberToLetters(y)}`;
+}
+
+export function toRangeRef(x, y, width = 1, height = 1) {
+  return `${toGridRef(x, y)}:${toGridRef(x + width - 1, y + height - 1)}`;
+}
+
+export function numberToLetters(value) {
+  let number = Math.max(1, Number(value) || 1);
+  let letters = "";
+
+  while (number > 0) {
+    number -= 1;
+    letters = String.fromCharCode(65 + (number % 26)) + letters;
+    number = Math.floor(number / 26);
+  }
+
+  return letters;
+}
+
+function migrateLegacyPlacedObjects(level) {
+  const objects = getPlacedObjects(level);
+  const hasZeroBasedObjects = objects.some((object) => !object.gridRef && (object.x === 0 || object.y === 0));
+
+  LAYERS.forEach((layerName) => {
+    level.layers[layerName] = (level.layers[layerName] || []).map((placedObject) => {
+      const width = Math.max(1, Number(placedObject.width) || 1);
+      const height = Math.max(1, Number(placedObject.height) || 1);
+      const x = hasZeroBasedObjects && !placedObject.gridRef
+        ? Number(placedObject.x) + 1
+        : Math.max(1, Number(placedObject.x) || 1);
+      const y = hasZeroBasedObjects && !placedObject.gridRef
+        ? Number(placedObject.y) + 1
+        : Math.max(1, Number(placedObject.y) || 1);
+
+      return {
+        ...placedObject,
+        x,
+        y,
+        width,
+        height,
+        gridRef: placedObject.gridRef || toGridRef(x, y),
+        rangeRef: placedObject.rangeRef || toRangeRef(x, y, width, height),
+      };
+    });
+  });
+}
+
+function objectCoversCell(placedObject, x, y) {
+  const startX = Number(placedObject.x) || 1;
+  const startY = Number(placedObject.y) || 1;
+  const width = Number(placedObject.width) || 1;
+  const height = Number(placedObject.height) || 1;
+
+  return x >= startX && x < startX + width && y >= startY && y < startY + height;
+}
+
+function rangesOverlap(aX, aY, aWidth, aHeight, bX, bY, bWidth, bHeight) {
+  return (
+    aX < bX + bWidth &&
+    aX + aWidth > bX &&
+    aY < bY + bHeight &&
+    aY + aHeight > bY
+  );
+}
+
+function createUniqueCategoryId(name, categories) {
+  const baseId = slugify(name) || "category";
+  const existingIds = new Set(categories.map((category) => category.id));
+
+  if (!existingIds.has(baseId)) {
+    return baseId;
+  }
+
+  let suffix = 2;
+  while (existingIds.has(`${baseId}-${suffix}`)) {
+    suffix += 1;
+  }
+
+  return `${baseId}-${suffix}`;
+}
+
+function createAvailableCategoryId(preferredId, name, existingIds) {
+  const baseId = slugify(preferredId) || slugify(name) || "category";
+
+  if (!existingIds.has(baseId)) {
+    return baseId;
+  }
+
+  let suffix = 2;
+  while (existingIds.has(`${baseId}-${suffix}`)) {
+    suffix += 1;
+  }
+
+  return `${baseId}-${suffix}`;
+}
+
+function createUniqueAssetId(name, assets) {
+  const baseId = `custom-imported-${slugify(name) || "asset"}`;
+  const existingIds = new Set(assets.map((asset) => asset.id));
+
+  if (!existingIds.has(baseId)) {
+    return baseId;
+  }
+
+  let suffix = 2;
+  while (existingIds.has(`${baseId}-${suffix}`)) {
+    suffix += 1;
+  }
+
+  return `${baseId}-${suffix}`;
+}
+
 function slugify(value) {
   return String(value)
     .toLowerCase()
     .trim()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
+}
+
+function cleanCategoryName(value) {
+  return typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
+}
+
+function normalizeCategoryName(value) {
+  return cleanCategoryName(value).toLowerCase();
 }

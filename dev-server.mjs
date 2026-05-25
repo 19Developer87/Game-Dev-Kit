@@ -8,10 +8,14 @@ const port = Number(process.env.PORT || 4173);
 const mimeTypes = {
   ".css": "text/css",
   ".html": "text/html",
+  ".jpeg": "image/jpeg",
+  ".jpg": "image/jpeg",
   ".js": "text/javascript",
   ".json": "application/json",
   ".mjs": "text/javascript",
+  ".png": "image/png",
   ".svg": "image/svg+xml",
+  ".webp": "image/webp",
 };
 
 createServer((request, response) => {
