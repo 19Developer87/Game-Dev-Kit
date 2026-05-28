@@ -44,14 +44,22 @@ export function createEditorLayout(root) {
             </span>
           </div>
           <div class="toolbar-group">
-            <button type="button" data-tool="paint" class="is-active">Paint</button>
-            <button type="button" data-tool="delete">Delete</button>
+            <button type="button" data-tool="move" title="Select/Move (Q)">Select/Move</button>
+            <button type="button" data-tool="paint" class="is-active" title="Paint (W)">Paint</button>
+            <button type="button" data-tool="delete" title="Delete (E)">Delete</button>
             <button type="button" data-action="place-selected-asset">Place Selected Asset</button>
           </div>
         </div>
       </header>
       <main class="workspace">
         <aside class="sidebar" data-role="asset-palette"></aside>
+        <div
+          class="sidebar-resizer"
+          data-role="sidebar-resizer"
+          role="separator"
+          aria-label="Resize asset panel"
+          aria-orientation="vertical"
+        ></div>
         <section class="main-panel">
           <div class="editor-menu-row">
             <div class="title-block">
@@ -61,9 +69,9 @@ export function createEditorLayout(root) {
             <nav class="menu-bar" aria-label="Editor menus">
               <details class="menu" data-menu>
                 <summary>File</summary>
-                <div class="menu-panel">
-                  <button type="button" data-action="save">Save</button>
+                <div class="menu-panel file-menu-panel">
                   <button type="button" data-action="choose-project-folder">Choose Project Folder</button>
+                  <button type="button" data-action="save">Save</button>
                   <button type="button" data-action="save-as-folder">Save As</button>
                 </div>
               </details>
@@ -72,6 +80,12 @@ export function createEditorLayout(root) {
                 <div class="menu-panel">
                   <button type="button" data-action="copy-level">Copy Level</button>
                   <button type="button" data-action="paste-level">Paste Level</button>
+                </div>
+              </details>
+              <details class="menu is-disabled" data-menu data-role="asset-menu">
+                <summary aria-disabled="true">Asset</summary>
+                <div class="menu-panel">
+                  <button type="button" data-action="placed-asset-properties">Properties</button>
                 </div>
               </details>
             </nav>
@@ -89,6 +103,7 @@ export function createEditorLayout(root) {
 
   return {
     assetPalette: root.querySelector('[data-role="asset-palette"]'),
+    assetMenu: root.querySelector('[data-role="asset-menu"]'),
     customHeight: root.querySelector('[data-role="custom-height"]'),
     customSize: root.querySelector('[data-role="custom-size"]'),
     customWidth: root.querySelector('[data-role="custom-width"]'),
@@ -101,7 +116,9 @@ export function createEditorLayout(root) {
     levelSummary: root.querySelector('[data-role="level-summary"]'),
     placeSelectedAssetButton: root.querySelector('[data-action="place-selected-asset"]'),
     selectedLevelName: root.querySelector('[data-role="selected-level-name"]'),
+    sidebarResizer: root.querySelector('[data-role="sidebar-resizer"]'),
     startupStatus: root.querySelector('[data-role="startup-status"]'),
     statusMessage: root.querySelector('[data-role="status-message"]'),
+    workspace: root.querySelector(".workspace"),
   };
 }

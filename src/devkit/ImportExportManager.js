@@ -97,7 +97,6 @@ export async function saveProjectFilesToFolder({
   projectIndex,
   levels,
   assetRegistry,
-  deletedLevelFilenames = [],
 }) {
   const projectFolder = await folderHandle.getDirectoryHandle("project", { create: true });
   const levelsFolder = await folderHandle.getDirectoryHandle("levels", { create: true });
@@ -109,14 +108,6 @@ export async function saveProjectFilesToFolder({
 
   for (const level of levels) {
     await writeJsonFile(levelsFolder, level.filename, level.data);
-  }
-
-  for (const filename of deletedLevelFilenames) {
-    try {
-      await levelsFolder.removeEntry(filename);
-    } catch (error) {
-      console.warn(`Could not remove deleted level file: ${filename}`, error);
-    }
   }
 }
 

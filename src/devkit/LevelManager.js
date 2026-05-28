@@ -211,15 +211,15 @@ export function duplicateCurrentLevel(project) {
   return copiedLevel;
 }
 
-export function deleteCurrentLevel(project) {
+export function deleteCurrentLevel(project, levelId = project.lastOpenedLevelId) {
   if (project.levels.length <= 1) {
     return null;
   }
 
-  const deletedLevel = getCurrentLevel(project);
+  const deletedLevel = project.levels.find((level) => level.id === levelId) || getCurrentLevel(project);
   const deletedIndex = project.levels.findIndex((level) => level.id === deletedLevel.id);
   project.levels = project.levels.filter((level) => level.id !== deletedLevel.id);
-  const nextLevel = project.levels[Math.max(0, deletedIndex - 1)] || project.levels[0];
+  const nextLevel = project.levels[deletedIndex] || project.levels[deletedIndex - 1];
   project.lastOpenedLevelId = nextLevel.id;
   return deletedLevel;
 }
@@ -243,6 +243,23 @@ export function removeObjectsAtCell(level, x, y) {
       (placedObject) => !objectCoversCell(placedObject, x, y),
     );
   });
+}
+
+export function removePlacedObjectById(level, placedObjectId) {
+  let removed = null;
+
+  LAYERS.forEach((layerName) => {
+    level.layers[layerName] = (level.layers[layerName] || []).filter((placedObject) => {
+      if (placedObject.id !== placedObjectId) {
+        return true;
+      }
+
+      removed = placedObject;
+      return false;
+    });
+  });
+
+  return removed;
 }
 
 export function findObjectsInRange(level, x, y, width = 1, height = 1) {
@@ -278,6 +295,25 @@ export function removeObjectsInRange(level, x, y, width = 1, height = 1) {
   });
 }
 
+function removeObjectsInRangeExcept(level, x, y, width, height, preservedObjectId) {
+  LAYERS.forEach((layerName) => {
+    level.layers[layerName] = (level.layers[layerName] || []).filter(
+      (placedObject) =>
+        placedObject.id === preservedObjectId ||
+        !rangesOverlap(
+          x,
+          y,
+          width,
+          height,
+          Number(placedObject.x) || 1,
+          Number(placedObject.y) || 1,
+          Number(placedObject.width) || 1,
+          Number(placedObject.height) || 1,
+        ),
+    );
+  });
+}
+
 export function placeAsset(level, asset, x, y, width = 1, height = 1) {
   removeObjectsInRange(level, x, y, width, height);
   const layerName = asset.defaultLayer || "objects";
@@ -299,10 +335,112 @@ export function placeAsset(level, asset, x, y, width = 1, height = 1) {
     solid: Boolean(asset.solid),
     blocksMovement: Boolean(asset.blocksMovement),
     collisionEnabled: Boolean(asset.collisionEnabled),
+    opacity: 100,
+    notes: "",
   };
 
   level.layers[layerName].push(placedObject);
   return placedObject;
+}
+
+export function duplicatePlacedAsset(level, sourceObject, x, y, width, height) {
+  removeObjectsInRange(level, x, y, width, height);
+  const storedLayer = sourceObject.layer || "objects";
+  const layerName = getLayerArrayName(storedLayer);
+  level.layers[layerName] = Array.isArray(level.layers[layerName]) ? level.layers[layerName] : [];
+  const placedObject = {
+    ...sourceObject,
+    id: `placed-${sourceObject.assetId}-copy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    x,
+    y,
+    gridRef: toGridRef(x, y),
+    rangeRef: toRangeRef(x, y, width, height),
+    layer: storedLayer,
+    width,
+    height,
+  };
+
+  level.layers[layerName].push(placedObject);
+  return placedObject;
+}
+
+export function updatePlacedAssetBounds(level, placedObjectId, x, y, width, height) {
+  let selectedObject = null;
+
+  LAYERS.forEach((layerName) => {
+    const foundObject = (level.layers[layerName] || []).find(
+      (placedObject) => placedObject.id === placedObjectId,
+    );
+
+    if (foundObject) {
+      selectedObject = foundObject;
+    }
+  });
+
+  if (!selectedObject) {
+    return null;
+  }
+
+  removeObjectsInRangeExcept(level, x, y, width, height, placedObjectId);
+  selectedObject.x = x;
+  selectedObject.y = y;
+  selectedObject.width = width;
+  selectedObject.height = height;
+  selectedObject.gridRef = toGridRef(x, y);
+  selectedObject.rangeRef = toRangeRef(x, y, width, height);
+  return selectedObject;
+}
+
+export function updatePlacedAssetProperties(level, placedObjectId, properties) {
+  let selectedObject = null;
+  let currentLayerName = null;
+
+  LAYERS.forEach((layerName) => {
+    const foundObject = (level.layers[layerName] || []).find(
+      (placedObject) => placedObject.id === placedObjectId,
+    );
+
+    if (foundObject) {
+      selectedObject = foundObject;
+      currentLayerName = layerName;
+    }
+  });
+
+  if (!selectedObject) {
+    return null;
+  }
+
+  const storedLayer = properties.layer || selectedObject.layer || currentLayerName || "objects";
+  const targetLayerName = getLayerArrayName(storedLayer);
+  removeObjectsInRangeExcept(
+    level,
+    properties.x,
+    properties.y,
+    properties.width,
+    properties.height,
+    placedObjectId,
+  );
+  Object.assign(selectedObject, properties, {
+    gridRef: toGridRef(properties.x, properties.y),
+    rangeRef: toRangeRef(properties.x, properties.y, properties.width, properties.height),
+    layer: storedLayer,
+  });
+
+  if (targetLayerName !== currentLayerName) {
+    level.layers[currentLayerName] = level.layers[currentLayerName].filter(
+      (placedObject) => placedObject.id !== placedObjectId,
+    );
+    level.layers[targetLayerName] = Array.isArray(level.layers[targetLayerName])
+      ? level.layers[targetLayerName]
+      : [];
+    level.layers[targetLayerName].push(selectedObject);
+  }
+
+  return selectedObject;
+}
+
+function getLayerArrayName(layer) {
+  return layer === "Trigger" ? "triggers" : layer;
 }
 
 export function resizeCurrentLevel(project, width, height) {
@@ -729,6 +867,10 @@ function migrateLegacyPlacedObjects(level) {
         height,
         gridRef: placedObject.gridRef || toGridRef(x, y),
         rangeRef: placedObject.rangeRef || toRangeRef(x, y, width, height),
+        opacity: Number.isFinite(Number(placedObject.opacity))
+          ? Math.max(0, Math.min(100, Math.round(Number(placedObject.opacity))))
+          : 100,
+        notes: typeof placedObject.notes === "string" ? placedObject.notes : "",
       };
     });
   });

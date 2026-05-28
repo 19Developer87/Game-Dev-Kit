@@ -8,6 +8,10 @@ export class GridEditor {
     onSelectionChange,
     onAssetDrop,
     onAssetRenderError,
+    onPlacedObjectSelect,
+    onPlacedObjectProperties,
+    onPlacedObjectTransform,
+    onCopyPreviewMove,
   }) {
     this.root = root;
     this.onCellClick = onCellClick;
@@ -15,20 +19,41 @@ export class GridEditor {
     this.onSelectionChange = onSelectionChange;
     this.onAssetDrop = onAssetDrop;
     this.onAssetRenderError = onAssetRenderError;
+    this.onPlacedObjectSelect = onPlacedObjectSelect;
+    this.onPlacedObjectProperties = onPlacedObjectProperties;
+    this.onPlacedObjectTransform = onPlacedObjectTransform;
+    this.onCopyPreviewMove = onCopyPreviewMove;
     this.interactionMode = "paint";
+    this.copyModeActive = false;
     this.gesture = null;
     this.level = null;
     this.surface = null;
     this.selectionBox = null;
     this.dropPreviewBox = null;
+    this.copyPreviewBox = null;
+    this.selectedPlacedObjectId = null;
+    this.lastPlacedObjectPointerDown = null;
   }
 
   setInteractionMode(mode) {
     this.interactionMode = mode;
   }
 
-  render(level, assets, selection = null, dropPreview = null) {
+  setCopyModeActive(isActive) {
+    this.copyModeActive = Boolean(isActive);
+    this.surface?.classList.toggle("is-copy-mode", this.copyModeActive);
+  }
+
+  render(
+    level,
+    assets,
+    selection = null,
+    dropPreview = null,
+    selectedPlacedObjectId = null,
+    copyPreview = null,
+  ) {
     this.level = level;
+    this.selectedPlacedObjectId = selectedPlacedObjectId;
     this.root.innerHTML = "";
 
     const wrap = document.createElement("div");
@@ -65,6 +90,8 @@ export class GridEditor {
 
     this.surface = document.createElement("div");
     this.surface.className = "grid-surface";
+    this.surface.classList.toggle("is-move-mode", this.interactionMode === "move");
+    this.surface.classList.toggle("is-copy-mode", this.copyModeActive);
     this.surface.style.width = `${level.gridWidth * level.tileSize}px`;
     this.surface.style.height = `${level.gridHeight * level.tileSize}px`;
 
@@ -80,7 +107,7 @@ export class GridEditor {
 
     const assetsLayer = document.createElement("div");
     assetsLayer.className = "asset-overlay-layer";
-    this.renderPlacedObjects(assetsLayer, level, assets);
+    this.renderPlacedObjects(assetsLayer, level, assets, selectedPlacedObjectId);
 
     const selectionLayer = document.createElement("div");
     selectionLayer.className = "selection-overlay-layer";
@@ -88,7 +115,9 @@ export class GridEditor {
     this.selectionBox.className = "selection-box";
     this.dropPreviewBox = document.createElement("div");
     this.dropPreviewBox.className = "drop-preview-box";
-    selectionLayer.append(this.selectionBox, this.dropPreviewBox);
+    this.copyPreviewBox = document.createElement("div");
+    this.copyPreviewBox.className = "copy-preview-box";
+    selectionLayer.append(this.selectionBox, this.dropPreviewBox, this.copyPreviewBox);
 
     this.surface.append(cells, assetsLayer, selectionLayer);
     this.bindSurfacePointerEvents();
@@ -99,6 +128,7 @@ export class GridEditor {
 
     this.updateSelection(selection);
     this.updateDropPreview(dropPreview);
+    this.updateCopyPreview(copyPreview);
   }
 
   renderCell(level, x, y) {
@@ -136,6 +166,13 @@ export class GridEditor {
 
   bindSurfacePointerEvents() {
     this.surface.addEventListener("pointermove", (event) => {
+      if (this.copyModeActive) {
+        const target = this.getCellFromClientPoint(event.clientX, event.clientY);
+        if (target) {
+          this.onCopyPreviewMove?.(target);
+        }
+      }
+
       if (!this.gesture || event.pointerId !== this.gesture.pointerId) {
         return;
       }
@@ -149,7 +186,7 @@ export class GridEditor {
       this.gesture.current = current;
       const moved = current.x !== this.gesture.start.x || current.y !== this.gesture.start.y;
 
-      if (moved && this.interactionMode !== "delete") {
+      if (moved && this.interactionMode === "paint") {
         this.gesture.moved = true;
         const range = createRange(
           this.gesture.start.x,
@@ -230,7 +267,7 @@ export class GridEditor {
       this.surface.releasePointerCapture(gesture.pointerId);
     }
 
-    if (gesture.moved && this.interactionMode !== "delete") {
+    if (gesture.moved && this.interactionMode === "paint") {
       const range = createRange(
         gesture.start.x,
         gesture.start.y,
@@ -260,6 +297,34 @@ export class GridEditor {
     this.positionFeedbackBox(this.dropPreviewBox, range);
   }
 
+  updateCopyPreview(preview) {
+    if (!this.copyPreviewBox) {
+      return;
+    }
+
+    if (!preview) {
+      this.copyPreviewBox.hidden = true;
+      return;
+    }
+
+    const assetKey = preview.asset?.id || "missing";
+    if (this.copyPreviewBox.dataset.assetKey !== assetKey) {
+      this.copyPreviewBox.replaceChildren();
+      if (preview.asset?.src) {
+        const image = document.createElement("img");
+        image.src = preview.asset.src;
+        image.alt = "";
+        image.draggable = false;
+        this.copyPreviewBox.append(image);
+      } else {
+        this.copyPreviewBox.textContent = "?";
+      }
+      this.copyPreviewBox.dataset.assetKey = assetKey;
+    }
+
+    this.positionFeedbackBox(this.copyPreviewBox, preview.range);
+  }
+
   positionFeedbackBox(box, range) {
     if (!box) {
       return;
@@ -277,7 +342,7 @@ export class GridEditor {
     box.style.height = `${range.height * this.level.tileSize}px`;
   }
 
-  renderPlacedObjects(layer, level, assets) {
+  renderPlacedObjects(layer, level, assets, selectedPlacedObjectId) {
     const assetLookup = new Map(assets.map((asset) => [asset.id, asset]));
 
     getPlacedObjects(level).forEach((placedObject) => {
@@ -289,12 +354,21 @@ export class GridEditor {
       marker.style.top = `${(Number(placedObject.y) - 1) * level.tileSize}px`;
       marker.style.width = `${(Number(placedObject.width) || 1) * level.tileSize}px`;
       marker.style.height = `${(Number(placedObject.height) || 1) * level.tileSize}px`;
+      marker.style.zIndex = String(getPlacedAssetLayerOrder(placedObject.layer));
+      const isSelected =
+        this.interactionMode === "move" && placedObject.id === selectedPlacedObjectId;
+      const isVisible = placedObject.visible !== false;
+      const opacity = normalizeOpacity(placedObject.opacity);
+      marker.classList.toggle("is-selected", isSelected);
+      marker.classList.toggle("is-hidden", !isVisible);
+      marker.classList.toggle("is-zero-opacity", isVisible && opacity === 0);
 
       if (asset?.src) {
         const image = document.createElement("img");
         image.src = asset.src;
         image.alt = "";
         image.draggable = false;
+        image.style.opacity = isVisible ? String(opacity / 100) : "0";
         image.addEventListener("error", () => {
           marker.classList.add("is-missing");
           marker.textContent = "Missing image";
@@ -307,8 +381,169 @@ export class GridEditor {
         marker.style.background = asset?.color || "#69737a";
       }
 
+      if (this.interactionMode === "move") {
+        marker.addEventListener("pointerdown", (event) => {
+          if (event.button !== 0 || event.target.closest(".resize-handle")) {
+            return;
+          }
+
+          event.preventDefault();
+          event.stopPropagation();
+          const now = event.timeStamp;
+          const isDoubleClick =
+            this.lastPlacedObjectPointerDown?.id === placedObject.id &&
+            now - this.lastPlacedObjectPointerDown.time < 450;
+          this.lastPlacedObjectPointerDown = { id: placedObject.id, time: now };
+          if (isDoubleClick) {
+            this.onPlacedObjectProperties?.(placedObject.id);
+            return;
+          }
+          if (this.copyModeActive) {
+            const target = this.getCellFromClientPoint(event.clientX, event.clientY);
+            if (target) {
+              this.onCellClick({
+                ...target,
+                existing: findObjectsAtCell(this.level, target.x, target.y),
+              });
+            }
+            return;
+          }
+
+          if (!isSelected) {
+            this.onPlacedObjectSelect?.(placedObject.id);
+            return;
+          }
+
+          this.startPlacedObjectTransform(event, marker, placedObject, "move");
+        });
+      }
+
+      if (isSelected) {
+        this.appendResizeHandles(marker, placedObject);
+      }
+
       layer.append(marker);
     });
+  }
+
+  appendResizeHandles(marker, placedObject) {
+    ["nw", "n", "ne", "e", "se", "s", "sw", "w"].forEach((direction) => {
+      const handle = document.createElement("span");
+      handle.className = `resize-handle resize-handle-${direction}`;
+      handle.dataset.direction = direction;
+      handle.setAttribute("aria-hidden", "true");
+      handle.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0) {
+          return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        this.startPlacedObjectTransform(event, marker, placedObject, "resize", direction);
+      });
+      marker.append(handle);
+    });
+  }
+
+  startPlacedObjectTransform(event, marker, placedObject, action, direction = null) {
+    const startBounds = {
+      x: Number(placedObject.x) || 1,
+      y: Number(placedObject.y) || 1,
+      width: Number(placedObject.width) || 1,
+      height: Number(placedObject.height) || 1,
+    };
+    const startClientX = event.clientX;
+    const startClientY = event.clientY;
+    let preview = startBounds;
+
+    marker.setPointerCapture(event.pointerId);
+
+    const movePreview = (pointerEvent) => {
+      preview = this.calculateTransformBounds(
+        startBounds,
+        pointerEvent.clientX - startClientX,
+        pointerEvent.clientY - startClientY,
+        action,
+        direction,
+      );
+      this.positionMarker(marker, preview);
+    };
+
+    const finishTransform = (pointerEvent) => {
+      marker.removeEventListener("pointermove", movePreview);
+      marker.removeEventListener("pointerup", finishTransform);
+      marker.removeEventListener("pointercancel", cancelTransform);
+      if (marker.hasPointerCapture?.(pointerEvent.pointerId)) {
+        marker.releasePointerCapture(pointerEvent.pointerId);
+      }
+
+      if (!sameBounds(preview, startBounds)) {
+        this.onPlacedObjectTransform?.({
+          placedObjectId: placedObject.id,
+          ...preview,
+          action,
+        });
+      }
+    };
+
+    const cancelTransform = (pointerEvent) => {
+      marker.removeEventListener("pointermove", movePreview);
+      marker.removeEventListener("pointerup", finishTransform);
+      marker.removeEventListener("pointercancel", cancelTransform);
+      if (marker.hasPointerCapture?.(pointerEvent.pointerId)) {
+        marker.releasePointerCapture(pointerEvent.pointerId);
+      }
+      this.positionMarker(marker, startBounds);
+    };
+
+    marker.addEventListener("pointermove", movePreview);
+    marker.addEventListener("pointerup", finishTransform);
+    marker.addEventListener("pointercancel", cancelTransform);
+  }
+
+  calculateTransformBounds(start, deltaX, deltaY, action, direction) {
+    const cellsX = Math.round(deltaX / this.level.tileSize);
+    const cellsY = Math.round(deltaY / this.level.tileSize);
+
+    if (action === "move") {
+      return {
+        ...start,
+        x: clamp(start.x + cellsX, 1, this.level.gridWidth - start.width + 1),
+        y: clamp(start.y + cellsY, 1, this.level.gridHeight - start.height + 1),
+      };
+    }
+
+    let left = start.x;
+    let top = start.y;
+    let right = start.x + start.width - 1;
+    let bottom = start.y + start.height - 1;
+
+    if (direction.includes("w")) {
+      left = clamp(start.x + cellsX, 1, right);
+    }
+    if (direction.includes("e")) {
+      right = clamp(right + cellsX, left, this.level.gridWidth);
+    }
+    if (direction.includes("n")) {
+      top = clamp(start.y + cellsY, 1, bottom);
+    }
+    if (direction.includes("s")) {
+      bottom = clamp(bottom + cellsY, top, this.level.gridHeight);
+    }
+
+    return {
+      x: left,
+      y: top,
+      width: right - left + 1,
+      height: bottom - top + 1,
+    };
+  }
+
+  positionMarker(marker, bounds) {
+    marker.style.left = `${(bounds.x - 1) * this.level.tileSize}px`;
+    marker.style.top = `${(bounds.y - 1) * this.level.tileSize}px`;
+    marker.style.width = `${bounds.width * this.level.tileSize}px`;
+    marker.style.height = `${bounds.height * this.level.tileSize}px`;
   }
 
   findCellAtPoint(clientX, clientY) {
@@ -342,4 +577,32 @@ function createRange(startX, startY, endX, endY) {
   const height = Math.abs(endY - startY) + 1;
 
   return { x, y, width, height };
+}
+
+function clamp(value, minimum, maximum) {
+  return Math.max(minimum, Math.min(maximum, value));
+}
+
+function sameBounds(first, second) {
+  return (
+    first.x === second.x &&
+    first.y === second.y &&
+    first.width === second.width &&
+    first.height === second.height
+  );
+}
+
+function normalizeOpacity(opacity) {
+  const number = Number(opacity);
+  return Number.isFinite(number) ? clamp(Math.round(number), 0, 100) : 100;
+}
+
+function getPlacedAssetLayerOrder(layer) {
+  return {
+    terrain: 0,
+    objects: 10,
+    overlay: 20,
+    triggers: 30,
+    Trigger: 30,
+  }[layer] ?? 10;
 }
