@@ -1,5 +1,10 @@
 import { AssetPalette } from "./AssetPalette.js";
-import { COPIED_LEVEL_STORAGE_KEY } from "./EditorTypes.js";
+import {
+  COPIED_LEVEL_STORAGE_KEY,
+  PLACED_PROPERTIES_DIALOG_STORAGE_KEY,
+  SIDEBAR_COLLAPSED_STORAGE_KEY,
+  SIDEBAR_WIDTH_STORAGE_KEY,
+} from "./EditorTypes.js";
 import { createEditorLayout } from "./DevEditorUI.js";
 import { GridEditor } from "./GridEditor.js";
 import {
@@ -9,7 +14,10 @@ import {
 } from "./ImportExportManager.js";
 import {
   clearCurrentLevel,
+  addAssetCategory,
+  addImportedAsset,
   countObjectsOutsideBounds,
+  createAssetRegistryData,
   createCopiedLevelData,
   createLevelFileData,
   createProjectIndex,
@@ -19,44 +27,89 @@ import {
   hasLevelContent,
   pasteLevelContent,
   placeAsset,
+  findObjectsInRange,
+  findAssetCategoryByName,
+  deleteAssetCategory,
+  deleteImportedAsset,
+  duplicatePlacedAsset,
+  getPlacedObjects,
+  isAssetUsedOnAnyLevel,
   reorderLevel,
+  removeEmptyAssetCategories,
   renameCurrentLevel,
+  removeObjectsInRange,
   removeObjectsAtCell,
+  removePlacedObjectById,
   resizeCurrentLevel,
   switchLevel,
+  toGridRef,
+  updatePlacedAssetBounds,
+  updatePlacedAssetGroupBounds,
+  updatePlacedAssetProperties,
 } from "./LevelManager.js";
 import { createProjectBackup, loadProject, saveProject } from "./SaveManager.js";
 
 class DevEditor {
-  constructor(root) {
-    const loaded = loadProject();
-
+  constructor(root, loaded) {
     this.root = root;
     this.project = loaded.project;
     this.startupMessage = loaded.message;
-    this.selectedAsset = this.project.assets[0];
-    this.activeTool = "paint";
+    this.selectedAsset = this.project.assets[0] || null;
+    this.activeTool = "move";
     this.projectFolderHandle = null;
-    this.deletedLevelFilenames = [];
+    this.saveQueue = Promise.resolve();
     this.copiedLevel = this.loadCopiedLevel();
+    this.selectedRange = null;
+    this.selectionState = "idle";
+    this.selectionConfirmationTimer = null;
+    this.hoveredGridRef = null;
+    this.dropPreviewRange = null;
+    this.selectedPlacedObjectId = null;
+    this.selectedPlacedObjectIds = new Set();
+    this.copiedPlacedObject = null;
+    this.copyPreviewRange = null;
     this.ui = createEditorLayout(root);
+    this.sidebarWidth = this.loadSidebarWidth();
+    this.isSidebarCollapsed = this.loadSidebarCollapsed();
+    this.applySidebarWidth(this.sidebarWidth);
+    this.applySidebarCollapsedState();
 
     this.gridEditor = new GridEditor({
       root: this.ui.gridStage,
       onCellClick: (cell) => this.handleCellClick(cell),
+      onHoverCell: (cell) => this.handleHoverCell(cell),
+      onSelectionChange: (range, state) => this.handleSelectionChange(range, state),
+      onAssetDrop: (drop) => this.handleAssetDrop(drop),
+      onPlacedObjectSelect: (placedObjectId) => this.selectPlacedObject(placedObjectId),
+      onPlacedObjectProperties: (placedObjectId) => this.openPlacedAssetProperties(placedObjectId),
+      onPlacedObjectTransform: (transform) => this.transformPlacedObject(transform),
+      onPlacedObjectGroupMoveStart: () => this.clearGridAreaSelection(),
+      onCopyPreviewMove: (cell) => this.moveCopyPreview(cell),
+      onAssetRenderError: (placedObject, asset) => {
+        this.setStatus(
+          `Unable to render asset "${asset?.name || placedObject.assetId}" at ${placedObject.rangeRef}.`,
+        );
+      },
     });
 
     this.assetPalette = new AssetPalette({
       root: this.ui.assetPalette,
-      assets: this.project.assets,
-      selectedAssetId: this.selectedAsset.id,
+      assetRegistry: this.project.assetRegistry,
+      selectedAssetId: this.selectedAsset?.id || null,
       onSelect: (asset) => {
         this.selectedAsset = asset;
-        this.activeTool = "paint";
-        this.syncToolButtons();
-        this.render();
-        this.setStatus(`Selected ${asset.name}.`);
+        this.activateTool("move");
+        if (this.selectionState === "selectionReady") {
+          this.setSelectionReadyStatus();
+        } else {
+          this.setStatus(`Selected ${asset.name}.`);
+        }
       },
+      onCreateCategory: () => this.createCategory(),
+      onImportAsset: () => this.importAsset(),
+      onCleanCategories: () => this.cleanEmptyCategories(),
+      onDeleteCategory: (category) => this.deleteCategory(category),
+      onDeleteAsset: (asset) => this.deleteAsset(asset),
     });
 
     this.bindEvents();
@@ -68,10 +121,88 @@ class DevEditor {
   bindEvents() {
     this.root.querySelectorAll("[data-tool]").forEach((button) => {
       button.addEventListener("click", () => {
-        this.activeTool = button.dataset.tool;
-        this.syncToolButtons();
-        this.setStatus(`${this.activeTool === "paint" ? "Paint" : "Delete"} tool active.`);
+        this.activateTool(button.dataset.tool);
       });
+    });
+
+    this.root.querySelector('[data-action="place-selected-asset"]').addEventListener("click", () => {
+      this.placeSelectedAssetInRange();
+    });
+
+    this.ui.sidebarToggle.addEventListener("click", () => {
+      this.toggleSidebarCollapsed();
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (
+        isEditableTarget(event.target) ||
+        document.querySelector("dialog[open]") ||
+        this.root.querySelector("[data-menu][open], [data-role='level-picker'].is-open")
+      ) {
+        return;
+      }
+
+      if (
+        event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        event.key.toLowerCase() === "c" &&
+        this.activeTool === "move" &&
+        this.selectedPlacedObjectId
+      ) {
+        event.preventDefault();
+        if (this.selectedPlacedObjectIds.size > 1) {
+          this.setStatus("Group copy is not implemented yet.");
+          return;
+        }
+        this.startCopyPlacement();
+        return;
+      }
+
+      const hotkeyTool = {
+        q: "move",
+        w: "move",
+        e: "delete",
+      }[event.key.toLowerCase()];
+
+      if (hotkeyTool && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        this.activateTool(hotkeyTool);
+        return;
+      }
+
+      if (
+        (event.key === "Delete" || event.key === "Backspace") &&
+        this.activeTool === "move"
+      ) {
+        if (this.selectedPlacedObjectIds.size > 0 || this.selectedPlacedObjectId) {
+          event.preventDefault();
+          this.deleteSelectedPlacedObjects();
+          return;
+        }
+
+        if (this.selectedRange && this.selectionState === "selectionReady") {
+          event.preventDefault();
+          this.deleteAssetsInSelectedRange();
+          return;
+        }
+      }
+
+      if (event.key === "Escape") {
+        if (this.copiedPlacedObject) {
+          event.preventDefault();
+          this.cancelCopyPlacement();
+          this.render();
+          this.setStatus("Copy placement cancelled.");
+          return;
+        }
+
+        const hadSelection = this.selectedPlacedObjectIds.size > 0 || this.selectedRange;
+        this.clearSelection();
+        this.clearPlacedObjectSelection();
+        this.render();
+        this.setStatus(hadSelection ? "Selection cleared." : "Nothing selected.");
+      }
     });
 
     this.root.querySelector('[data-action="save"]').addEventListener("click", async () => {
@@ -98,6 +229,13 @@ class DevEditor {
       this.closeMenus();
     });
 
+    this.root
+      .querySelector('[data-action="placed-asset-properties"]')
+      .addEventListener("click", () => {
+        this.openPlacedAssetProperties();
+        this.closeMenus();
+      });
+
     this.ui.levelPickerButton.addEventListener("click", () => {
       this.ui.levelPicker.classList.toggle("is-open");
     });
@@ -111,6 +249,8 @@ class DevEditor {
       }
 
       const level = createNewLevel(this.project, name.trim());
+      this.clearSelection();
+      this.clearPlacedObjectSelection();
       this.autosave(`Created ${level.name}.`);
       this.render();
     });
@@ -130,25 +270,7 @@ class DevEditor {
     });
 
     this.root.querySelector('[data-action="delete-level"]').addEventListener("click", () => {
-      const level = getCurrentLevel(this.project);
-
-      if (this.project.levels.length <= 1) {
-        this.setStatus("At least one level is required.");
-        return;
-      }
-
-      if (!window.confirm(`Delete "${level.name}"? This cannot be undone from the editor.`)) {
-        this.setStatus("Delete level cancelled.");
-        return;
-      }
-
-      createProjectBackup(this.project, `Before deleting ${level.name}`);
-      const deletedLevel = deleteCurrentLevel(this.project);
-      if (deletedLevel?.filename) {
-        this.deletedLevelFilenames.push(deletedLevel.filename);
-      }
-      this.autosave(`Deleted ${level.name}. A backup was saved in this browser.`);
-      this.render();
+      this.openDeleteLevelConfirmation();
     });
 
     this.root.querySelector('[data-action="clear"]').addEventListener("click", () => {
@@ -156,11 +278,14 @@ class DevEditor {
         return;
       }
       clearCurrentLevel(this.project);
+      this.clearSelection();
+      this.clearPlacedObjectSelection();
       this.autosave("Cleared the current level and saved the empty grid.");
       this.render();
     });
 
     this.bindMenuBehavior();
+    this.bindSidebarResize();
 
     this.ui.gridSize.addEventListener("change", () => {
       const value = this.ui.gridSize.value;
@@ -190,16 +315,1270 @@ class DevEditor {
   handleCellClick({ x, y }) {
     const level = getCurrentLevel(this.project);
 
+    if (this.activeTool === "move") {
+      if (this.copiedPlacedObject) {
+        this.pasteCopiedPlacedAssetAt(x, y);
+        return;
+      }
+
+      if (this.selectedPlacedObjectIds.size > 0 || this.selectedPlacedObjectId) {
+        this.clearSelection();
+        this.clearPlacedObjectSelection();
+        this.render();
+        this.setStatus("Selection cleared.");
+        return;
+      }
+    }
+
     if (this.activeTool === "delete") {
-      removeObjectsAtCell(level, x, y);
-      this.autosave(`Deleted assets at ${x + 1}, ${y + 1}.`);
+      const removedObjects = removeObjectsAtCell(level, x, y);
+      if (removedObjects.length === 0) {
+        this.setStatus(`No placed asset at ${toGridRef(x, y)}.`);
+        this.render();
+        return;
+      }
+
+      this.clearPlacedObjectSelection();
+      this.closePlacedPropertiesDialog();
+      this.autosave(createDeletedPlacedAssetsMessage(removedObjects.length));
       this.render();
       return;
     }
 
-    placeAsset(level, this.selectedAsset, x, y);
-    this.autosave(`Placed ${this.selectedAsset.name} at ${x + 1}, ${y + 1}.`);
+    if (this.selectionState === "selectionReady" && this.selectedRange) {
+      if (!rangeContains(this.selectedRange, x, y)) {
+        this.clearSelection();
+        this.setStatus("Selection cleared. Click a cell to place, or drag to select an area.");
+        return;
+      }
+
+      if (!this.selectedAsset) {
+        this.setSelectionReadyStatus();
+        return;
+      }
+
+      this.placeAssetInRange(this.selectedAsset, this.selectedRange, "selection");
+      return;
+    }
+
+    if (!this.selectedAsset) {
+      this.setStatus("Import or select an asset before placing.");
+      return;
+    }
+
+    this.placeAssetInRange(this.selectedAsset, { x, y, width: 1, height: 1 }, "cell");
+  }
+
+  handleHoverCell({ x, y, gridRef, isDropTarget = false }) {
+    this.hoveredGridRef = gridRef;
+    this.dropPreviewRange = isDropTarget ? this.getPlacementRangeForCell(x, y) : null;
+    this.syncCoordinateStatus();
+
+    if (isDropTarget) {
+      this.gridEditor.updateDropPreview(this.dropPreviewRange);
+    }
+  }
+
+  handleSelectionChange(range, state) {
+    const hadPlacedObjectSelection = this.activeTool === "move" && this.selectedPlacedObjectIds.size > 0;
+    this.selectedRange = range;
+    this.selectionState = state;
+    this.dropPreviewRange = null;
+    if (hadPlacedObjectSelection) {
+      this.clearPlacedObjectSelection();
+    }
+    this.syncCoordinateStatus();
+    this.syncPlacementButton();
+    this.gridEditor.updateSelection(this.selectedRange);
+    this.gridEditor.updateDropPreview(null);
+
+    if (this.selectionConfirmationTimer) {
+      window.clearTimeout(this.selectionConfirmationTimer);
+      this.selectionConfirmationTimer = null;
+    }
+
+    if (this.activeTool === "delete") {
+      if (state === "selectionReady") {
+        this.deleteAssetsInRange(range, { clearSelection: true });
+      } else if (state === "draggingSelection") {
+        this.setStatus(`Delete area: ${formatRange(range)}.`);
+      }
+      return;
+    }
+
+    if (state === "selectionReady") {
+      const selectedObjects = findObjectsInRange(
+        getCurrentLevel(this.project),
+        range.x,
+        range.y,
+        range.width,
+        range.height,
+      );
+      if (selectedObjects.length > 0) {
+        this.setPlacedObjectSelection(
+          selectedObjects.map((placedObject) => placedObject.id),
+          selectedObjects[0].id,
+        );
+        this.render();
+        this.setStatus(`Selected area: ${formatRange(range)} — ${selectedObjects.length} asset${selectedObjects.length === 1 ? "" : "s"}.`);
+        return;
+      }
+
+      if (hadPlacedObjectSelection) {
+        this.render();
+      }
+      this.setSelectionReadyStatus();
+    } else if (state === "draggingSelection") {
+      const pendingRange = { ...range };
+      this.selectionConfirmationTimer = window.setTimeout(() => {
+        if (
+          this.selectionState === "draggingSelection" &&
+          rangesMatch(this.selectedRange, pendingRange)
+        ) {
+          this.selectionState = "selectionReady";
+          this.setSelectionReadyStatus();
+        }
+      }, 0);
+    }
+  }
+
+  handleAssetDrop({ assetId, x, y }) {
+    const asset = this.project.assets.find((candidate) => candidate.id === assetId);
+
+    if (!asset) {
+      this.setStatus("Dropped asset was not found in the registry.");
+      return;
+    }
+
+    this.selectedAsset = asset;
+    if (this.selectedRange && !rangeContains(this.selectedRange, x, y)) {
+      this.clearSelection();
+    }
+    const range = this.getPlacementRangeForCell(x, y);
+    this.dropPreviewRange = null;
+    this.placeAssetInRange(asset, range, "drop");
+  }
+
+  activateTool(tool) {
+    if (!["move", "delete"].includes(tool)) {
+      return;
+    }
+
+    this.activeTool = tool;
+    if (tool === "delete") {
+      this.clearSelection();
+    }
+    if (tool !== "move") {
+      this.clearPlacedObjectSelection();
+    }
+    this.gridEditor.setInteractionMode(tool);
+    this.syncToolButtons();
     this.render();
+    this.setStatus(`${getToolLabel(tool)} tool active.`);
+  }
+
+  selectPlacedObject(placedObjectId) {
+    if (this.activeTool !== "move") {
+      return;
+    }
+
+    this.cancelCopyPlacement();
+    this.clearSelection();
+    this.setPlacedObjectSelection([placedObjectId], placedObjectId);
+    this.render();
+    this.setStatus("Placed asset selected. Drag to move or use a handle to resize.");
+  }
+
+  openPlacedAssetProperties(placedObjectId = this.selectedPlacedObjectId) {
+    const explicitPlacedObject = arguments.length > 0;
+    if (this.selectedPlacedObjectIds.size > 1 && !explicitPlacedObject) {
+      this.setStatus("Select one asset to edit properties.");
+      return;
+    }
+
+    if (this.activeTool !== "move" || !placedObjectId) {
+      this.setStatus("Select an asset first.");
+      return;
+    }
+
+    const level = getCurrentLevel(this.project);
+    const placedObject = getPlacedObjects(level).find(
+      (candidate) => candidate.id === placedObjectId,
+    );
+
+    if (!placedObject) {
+      this.clearPlacedObjectSelection();
+      this.render();
+      this.setStatus("Select an asset first.");
+      return;
+    }
+
+    this.cancelCopyPlacement();
+    this.clearSelection();
+    this.setPlacedObjectSelection([placedObjectId], placedObjectId);
+    this.render();
+    this.showPlacedAssetPropertiesDialog(level, placedObject);
+  }
+
+  showPlacedAssetPropertiesDialog(level, placedObject) {
+    const sourceAsset = this.project.assets.find((asset) => asset.id === placedObject.assetId);
+    const dialog = document.createElement("dialog");
+    const x = Math.max(1, Number(placedObject.x) || 1);
+    const y = Math.max(1, Number(placedObject.y) || 1);
+    const width = Math.max(1, Number(placedObject.width) || 1);
+    const height = Math.max(1, Number(placedObject.height) || 1);
+    const opacity = normalizeOpacity(placedObject.opacity);
+    const layer = normalizePlacedLayer(placedObject.layer);
+    const titleName = sourceAsset?.name || placedObject.name || placedObject.assetId;
+
+    dialog.className = "placed-properties-dialog";
+    dialog.innerHTML = `
+      <form class="placed-properties-form" method="dialog">
+        <header class="properties-dialog-header">
+          <h2>Placed Asset Properties &mdash; ${escapeHtml(titleName)}</h2>
+        </header>
+        <fieldset class="properties-info">
+          <legend>Identity / Info</legend>
+          <dl>
+            <div><dt>Source asset name</dt><dd>${escapeHtml(sourceAsset?.name || placedObject.name || "-")}</dd></div>
+            <div><dt>Category name</dt><dd>${escapeHtml(sourceAsset?.category || "-")}</dd></div>
+          </dl>
+        </fieldset>
+        <div class="properties-fields">
+          <fieldset class="properties-position">
+            <legend>Position</legend>
+            <label>Grid Ref <input name="gridRef" value="${escapeAttribute(toGridRef(x, y))}" required /></label>
+            <p class="properties-hint">Position on the grid, for example 3.B or 10.F.</p>
+          </fieldset>
+          <fieldset>
+            <legend>Size</legend>
+            <label>Width <input name="width" type="number" min="1" max="${level.gridWidth}" value="${width}" required /></label>
+            <label>Height <input name="height" type="number" min="1" max="${level.gridHeight}" value="${height}" required /></label>
+            <p class="properties-hint">Measured in grid squares.</p>
+          </fieldset>
+          <fieldset>
+            <legend>Display</legend>
+            <label>Visible
+              <select name="visible">
+                <option value="true" ${placedObject.visible !== false ? "selected" : ""}>Yes</option>
+                <option value="false" ${placedObject.visible === false ? "selected" : ""}>No</option>
+              </select>
+            </label>
+            <label>Opacity (0 to 100) <input name="opacity" type="number" min="0" max="100" value="${opacity}" required /></label>
+            <label>Layer
+              <select name="layer">
+                ${createLayerOptions(layer)}
+              </select>
+            </label>
+            <p class="properties-hint">Trigger layer is for future gameplay trigger zones. Full trigger actions are not implemented yet.</p>
+          </fieldset>
+          <fieldset>
+            <legend>Movement / Blocking</legend>
+            <label>Blocks Movement
+              <select name="blocksMovement">
+                <option value="false" ${!placedObject.blocksMovement ? "selected" : ""}>No</option>
+                <option value="true" ${placedObject.blocksMovement ? "selected" : ""}>Yes</option>
+              </select>
+            </label>
+            <label class="properties-notes">Notes
+              <textarea name="notes" rows="4">${escapeHtml(placedObject.notes || "")}</textarea>
+            </label>
+          </fieldset>
+        </div>
+        <p class="form-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button type="button" data-action="cancel-properties">Cancel / Close</button>
+          <button type="submit">Apply / Save Changes</button>
+        </div>
+      </form>
+    `;
+
+    document.body.append(dialog);
+    const form = dialog.querySelector("form");
+    const error = dialog.querySelector(".form-error");
+    const releaseDialogBehavior = this.bindPlacedPropertiesDialogBehavior(dialog);
+
+    dialog.querySelector('[data-action="cancel-properties"]').addEventListener("click", () => {
+      dialog.close();
+    });
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const data = new FormData(form);
+      const result = this.readPlacedAssetPropertyValues(data, level, placedObject);
+
+      if (result.error) {
+        error.hidden = false;
+        error.textContent = result.error;
+        return;
+      }
+
+      const overlaps = findObjectsInRange(
+        level,
+        result.values.x,
+        result.values.y,
+        result.values.width,
+        result.values.height,
+      ).filter((candidate) => candidate.id !== placedObject.id);
+
+      if (
+        overlaps.length > 0 &&
+        !window.confirm("Applying these properties will overlap existing assets. Continue?")
+      ) {
+        error.hidden = false;
+        error.textContent = "Changes were not applied because the new bounds overlap another asset.";
+        return;
+      }
+
+      const updatedObject = updatePlacedAssetProperties(level, placedObject.id, result.values);
+      if (!updatedObject) {
+        error.hidden = false;
+        error.textContent = "The selected placed asset could not be found.";
+        return;
+      }
+
+      this.setPlacedObjectSelection([updatedObject.id], updatedObject.id);
+      dialog.close();
+      this.render();
+      this.autosave(`Saved properties for ${sourceAsset?.name || updatedObject.name || "placed asset"}.`);
+    });
+
+    dialog.addEventListener("close", () => {
+      releaseDialogBehavior();
+      dialog.remove();
+    });
+
+    dialog.showModal();
+    this.restorePlacedPropertiesDialogBounds(dialog);
+  }
+
+  readPlacedAssetPropertyValues(data, level, placedObject) {
+    const width = Number(data.get("width"));
+    const height = Number(data.get("height"));
+    const opacity = Number(data.get("opacity"));
+    const gridRefText = String(data.get("gridRef") || "").trim();
+    const parsedGridRef = parseGridRef(gridRefText);
+
+    if (!parsedGridRef) {
+      return { error: "Grid Ref must use a valid format such as 3.B." };
+    }
+
+    const { x, y } = parsedGridRef;
+    if (x < 1 || x > level.gridWidth || y < 1 || y > level.gridHeight) {
+      return { error: `Position must stay inside this ${level.gridWidth}x${level.gridHeight} grid.` };
+    }
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) {
+      return { error: "Width and Height must be whole numbers of at least 1." };
+    }
+    if (x + width - 1 > level.gridWidth || y + height - 1 > level.gridHeight) {
+      return { error: "This position and size would extend outside the grid bounds." };
+    }
+    if (!Number.isInteger(opacity) || opacity < 0 || opacity > 100) {
+      return { error: "Opacity must be a whole number from 0 to 100." };
+    }
+
+    const layer = String(data.get("layer") || "");
+    if (!PLACED_LAYER_OPTIONS.some((option) => option.value === layer)) {
+      return { error: "Choose a valid layer: Terrain, Objects, Overlay, or Trigger." };
+    }
+
+    return {
+      values: {
+        x,
+        y,
+        width,
+        height,
+        layer,
+        visible: data.get("visible") === "true",
+        opacity,
+        blocksMovement: data.get("blocksMovement") === "true",
+        notes: String(data.get("notes") || ""),
+      },
+    };
+  }
+
+  bindPlacedPropertiesDialogBehavior(dialog) {
+    const header = dialog.querySelector(".properties-dialog-header");
+    let drag = null;
+    const resizeObserver = typeof ResizeObserver === "function"
+      ? new ResizeObserver(() => {
+          this.clampPlacedPropertiesDialogBounds(dialog);
+          this.savePlacedPropertiesDialogBounds(dialog);
+        })
+      : null;
+
+    const move = (event) => {
+      if (!drag || event.pointerId !== drag.pointerId) {
+        return;
+      }
+
+      dialog.style.left = `${drag.left + event.clientX - drag.clientX}px`;
+      dialog.style.top = `${drag.top + event.clientY - drag.clientY}px`;
+      this.clampPlacedPropertiesDialogBounds(dialog);
+    };
+
+    const stop = (event) => {
+      if (!drag || event.pointerId !== drag.pointerId) {
+        return;
+      }
+
+      header.releasePointerCapture?.(event.pointerId);
+      header.classList.remove("is-dragging");
+      drag = null;
+      this.savePlacedPropertiesDialogBounds(dialog);
+    };
+
+    const start = (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+
+      event.preventDefault();
+      const rect = dialog.getBoundingClientRect();
+      drag = {
+        pointerId: event.pointerId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        left: rect.left,
+        top: rect.top,
+      };
+      header.classList.add("is-dragging");
+      header.setPointerCapture?.(event.pointerId);
+    };
+
+    const clampOnResize = () => {
+      this.clampPlacedPropertiesDialogBounds(dialog);
+      this.savePlacedPropertiesDialogBounds(dialog);
+    };
+
+    header.addEventListener("pointerdown", start);
+    header.addEventListener("pointermove", move);
+    header.addEventListener("pointerup", stop);
+    header.addEventListener("pointercancel", stop);
+    window.addEventListener("resize", clampOnResize);
+    resizeObserver?.observe(dialog);
+
+    return () => {
+      header.removeEventListener("pointerdown", start);
+      header.removeEventListener("pointermove", move);
+      header.removeEventListener("pointerup", stop);
+      header.removeEventListener("pointercancel", stop);
+      window.removeEventListener("resize", clampOnResize);
+      resizeObserver?.disconnect();
+    };
+  }
+
+  restorePlacedPropertiesDialogBounds(dialog) {
+    const viewportPadding = 14;
+    let savedBounds = null;
+    try {
+      savedBounds = JSON.parse(localStorage.getItem(PLACED_PROPERTIES_DIALOG_STORAGE_KEY));
+    } catch (error) {
+      console.warn("Properties panel position could not be restored.", error);
+    }
+
+    const initialRect = dialog.getBoundingClientRect();
+    const bounds = savedBounds && typeof savedBounds === "object"
+      ? savedBounds
+      : {
+          left: initialRect.left,
+          top: initialRect.top,
+          width: initialRect.width,
+          height: initialRect.height,
+        };
+
+    dialog.style.margin = "0";
+    dialog.style.left = `${Number(bounds.left) || viewportPadding}px`;
+    dialog.style.top = `${Number(bounds.top) || viewportPadding}px`;
+    dialog.style.width = `${Number(bounds.width) || initialRect.width}px`;
+    dialog.style.height = `${Number(bounds.height) || initialRect.height}px`;
+    this.clampPlacedPropertiesDialogBounds(dialog);
+  }
+
+  clampPlacedPropertiesDialogBounds(dialog) {
+    const padding = 14;
+    const maximumWidth = Math.max(280, window.innerWidth - padding * 2);
+    const maximumHeight = Math.max(240, window.innerHeight - padding * 2);
+    const minimumWidth = Math.min(420, maximumWidth);
+    const minimumHeight = Math.min(320, maximumHeight);
+    const rect = dialog.getBoundingClientRect();
+    const width = clamp(rect.width, minimumWidth, maximumWidth);
+    const height = clamp(rect.height, minimumHeight, maximumHeight);
+    const left = clamp(rect.left, padding, Math.max(padding, window.innerWidth - width - padding));
+    const top = clamp(rect.top, padding, Math.max(padding, window.innerHeight - height - padding));
+
+    dialog.style.width = `${width}px`;
+    dialog.style.height = `${height}px`;
+    dialog.style.left = `${left}px`;
+    dialog.style.top = `${top}px`;
+  }
+
+  savePlacedPropertiesDialogBounds(dialog) {
+    if (!dialog.isConnected || !dialog.open) {
+      return;
+    }
+
+    const rect = dialog.getBoundingClientRect();
+    localStorage.setItem(
+      PLACED_PROPERTIES_DIALOG_STORAGE_KEY,
+      JSON.stringify({
+        left: Math.round(rect.left),
+        top: Math.round(rect.top),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      }),
+    );
+  }
+
+  clearPlacedObjectSelection() {
+    this.selectedPlacedObjectId = null;
+    this.selectedPlacedObjectIds.clear();
+    this.cancelCopyPlacement();
+  }
+
+  setPlacedObjectSelection(placedObjectIds, primaryPlacedObjectId = placedObjectIds[0] || null) {
+    this.selectedPlacedObjectIds = new Set(placedObjectIds.filter(Boolean));
+    this.selectedPlacedObjectId =
+      primaryPlacedObjectId && this.selectedPlacedObjectIds.has(primaryPlacedObjectId)
+        ? primaryPlacedObjectId
+        : placedObjectIds[0] || null;
+  }
+
+  deleteSelectedPlacedObjects() {
+    const level = getCurrentLevel(this.project);
+    const selectedIds = this.selectedPlacedObjectIds.size > 0
+      ? Array.from(this.selectedPlacedObjectIds)
+      : [this.selectedPlacedObjectId].filter(Boolean);
+    const removedObjects = selectedIds
+      .map((placedObjectId) => removePlacedObjectById(level, placedObjectId))
+      .filter(Boolean);
+
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    this.render();
+
+    if (removedObjects.length === 0) {
+      this.setStatus("Selected placed asset was not found.");
+      return false;
+    }
+
+    this.autosave(createDeletedPlacedAssetsMessage(removedObjects.length));
+    return true;
+  }
+
+  deleteAssetsInSelectedRange() {
+    if (!this.selectedRange || this.selectionState !== "selectionReady") {
+      return false;
+    }
+
+    return this.deleteAssetsInRange(this.selectedRange);
+  }
+
+  deleteAssetsInRange(range, { clearSelection = false } = {}) {
+    const level = getCurrentLevel(this.project);
+    const matchingObjects = findObjectsInRange(level, range.x, range.y, range.width, range.height);
+
+    if (matchingObjects.length === 0) {
+      if (clearSelection) {
+        this.clearSelection();
+        this.render();
+      }
+      this.setStatus("No placed assets found in the selected area.");
+      return false;
+    }
+
+    const removedObjects = removeObjectsInRange(level, range.x, range.y, range.width, range.height);
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    if (clearSelection) {
+      this.clearSelection();
+    }
+    this.render();
+    this.autosave(createDeletedPlacedAssetsMessage(removedObjects.length));
+    return true;
+  }
+
+  transformPlacedObject(transform) {
+    const { placedObjectId, x, y, width, height, action } = transform;
+    if (this.activeTool !== "move") {
+      return false;
+    }
+
+    const level = getCurrentLevel(this.project);
+
+    if (action === "group-move") {
+      return this.transformPlacedObjectGroup(transform);
+    }
+
+    const existing = findObjectsInRange(level, x, y, width, height).filter(
+      (placedObject) => placedObject.id !== placedObjectId,
+    );
+
+    if (
+      existing.length > 0 &&
+      !window.confirm("Moving/resizing this asset will overlap existing assets. Continue?")
+    ) {
+      this.render();
+      this.setStatus(`${action === "resize" ? "Resize" : "Move"} cancelled.`);
+      return false;
+    }
+
+    const updatedObject = updatePlacedAssetBounds(level, placedObjectId, x, y, width, height);
+    if (!updatedObject) {
+      this.setStatus("Unable to update the selected asset.");
+      this.render();
+      return false;
+    }
+
+    this.setPlacedObjectSelection([placedObjectId], placedObjectId);
+    this.render();
+    this.autosave(
+      `${action === "resize" ? "Resized" : "Moved"} placed asset to ${updatedObject.rangeRef}.`,
+    );
+    return true;
+  }
+
+  transformPlacedObjectGroup({ placedObjectId, placedObjectIds, boundsById }) {
+    const level = getCurrentLevel(this.project);
+    const selectedIds = placedObjectIds?.length
+      ? placedObjectIds
+      : Array.from(this.selectedPlacedObjectIds);
+    const selectedIdSet = new Set(selectedIds);
+    const updates = new Map(boundsById || []);
+
+    if (selectedIds.length <= 1 || updates.size === 0) {
+      return false;
+    }
+
+    const overlappingObjects = [];
+    updates.forEach((bounds) => {
+      findObjectsInRange(level, bounds.x, bounds.y, bounds.width, bounds.height).forEach(
+        (candidate) => {
+          if (!selectedIdSet.has(candidate.id) && !overlappingObjects.some((item) => item.id === candidate.id)) {
+            overlappingObjects.push(candidate);
+          }
+        },
+      );
+    });
+
+    if (
+      overlappingObjects.length > 0 &&
+      !window.confirm("Moving this group will overlap existing assets. Continue?")
+    ) {
+      this.render();
+      this.setStatus("Group move cancelled.");
+      return false;
+    }
+
+    const updatedObjects = updatePlacedAssetGroupBounds(level, updates);
+    if (!updatedObjects) {
+      this.setStatus("Unable to update the selected assets.");
+      this.render();
+      return false;
+    }
+
+    this.setPlacedObjectSelection(selectedIds, placedObjectId || selectedIds[0]);
+    this.render();
+    this.autosave(`Moved ${updatedObjects.length} selected assets.`);
+    return true;
+  }
+
+  startCopyPlacement() {
+    const level = getCurrentLevel(this.project);
+    const selectedObject = getPlacedObjects(level).find(
+      (placedObject) => placedObject.id === this.selectedPlacedObjectId,
+    );
+
+    if (!selectedObject) {
+      this.setStatus("Select an asset first.");
+      return;
+    }
+
+    this.copiedPlacedObject = { ...selectedObject };
+    this.copyPreviewRange = this.getCopiedPlacementRange(selectedObject.x, selectedObject.y);
+    this.gridEditor.setCopyModeActive(true);
+    this.render();
+    this.setStatus("Copied placed asset. Move over the grid and click to place; Escape cancels.");
+  }
+
+  moveCopyPreview({ x, y }) {
+    if (!this.copiedPlacedObject || this.activeTool !== "move") {
+      return;
+    }
+
+    this.copyPreviewRange = this.getCopiedPlacementRange(x, y);
+    this.gridEditor.updateCopyPreview(this.createCopyPreview());
+  }
+
+  pasteCopiedPlacedAssetAt(x, y) {
+    if (!this.copiedPlacedObject) {
+      return false;
+    }
+
+    const level = getCurrentLevel(this.project);
+    const range = this.getCopiedPlacementRange(x, y);
+    const existing = findObjectsInRange(level, range.x, range.y, range.width, range.height);
+
+    if (
+      existing.length > 0 &&
+      !window.confirm("Placing this copied asset will overlap existing assets. Continue?")
+    ) {
+      this.setStatus("Copy placement cancelled. Click another grid cell or press Escape.");
+      return false;
+    }
+
+    const placedObject = duplicatePlacedAsset(
+      level,
+      this.copiedPlacedObject,
+      range.x,
+      range.y,
+      range.width,
+      range.height,
+    );
+    this.copiedPlacedObject = null;
+    this.copyPreviewRange = null;
+    this.gridEditor.setCopyModeActive(false);
+    this.setPlacedObjectSelection([placedObject.id], placedObject.id);
+    this.render();
+    this.autosave(`Pasted copied asset at ${placedObject.rangeRef} on ${level.name}.`);
+    return true;
+  }
+
+  openDeleteLevelConfirmation() {
+    const level = getCurrentLevel(this.project);
+    const selectedLevelId = level?.id || this.project.lastOpenedLevelId || null;
+
+    console.log("[Delete Level] selectedLevelId:", selectedLevelId);
+    console.log(
+      "[Delete Level] levels before:",
+      this.project.levels.map((candidate) => ({
+        id: candidate.id,
+        name: candidate.name,
+        filename: candidate.filename,
+      })),
+    );
+
+    if (!level || !selectedLevelId) {
+      console.log("[Delete Level] no selected level found.");
+      this.setStatus("No selected level to delete.");
+      return;
+    }
+
+    if (this.project.levels.length <= 1) {
+      console.log("[Delete Level] final remaining level blocked.");
+      this.setStatus("Cannot delete the final remaining level.");
+      return;
+    }
+
+    this.showDeleteLevelDialog(level);
+  }
+
+  showDeleteLevelDialog(level) {
+    const dialog = document.createElement("dialog");
+    dialog.className = "delete-level-dialog";
+    dialog.innerHTML = `
+      <form class="delete-level-form" method="dialog">
+        <h2>Delete "${escapeHtml(level.name)}"?</h2>
+        <p>This removes the level from the current editor project. Existing JSON files on disk are left untouched for safety.</p>
+        <div class="dialog-actions">
+          <button type="button" data-action="cancel-delete-level">Cancel</button>
+          <button type="submit" class="danger">Delete Level</button>
+        </div>
+      </form>
+    `;
+
+    document.body.append(dialog);
+
+    dialog.querySelector('[data-action="cancel-delete-level"]').addEventListener("click", () => {
+      console.log("[Delete Level] confirmed:", false);
+      this.setStatus("Delete level cancelled.");
+      dialog.close();
+    });
+
+    dialog.querySelector("form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      console.log("[Delete Level] confirmed:", true);
+      dialog.close();
+      this.deleteSelectedLevel(level.id);
+    });
+
+    dialog.addEventListener("cancel", () => {
+      console.log("[Delete Level] confirmed:", false);
+      this.setStatus("Delete level cancelled.");
+    });
+
+    dialog.addEventListener("close", () => {
+      dialog.remove();
+    });
+
+    dialog.showModal();
+  }
+
+  deleteSelectedLevel(selectedLevelId) {
+    const selectedLevel = this.project.levels.find((level) => level.id === selectedLevelId);
+
+    if (!selectedLevel) {
+      console.log("[Delete Level] selected level disappeared before deletion:", selectedLevelId);
+      this.setStatus("Selected level was not found.");
+      return;
+    }
+
+    if (this.project.levels.length <= 1) {
+      console.log("[Delete Level] final remaining level blocked.");
+      this.setStatus("Cannot delete the final remaining level.");
+      return;
+    }
+
+    try {
+      createProjectBackup(this.project, `Before deleting ${selectedLevel.name}`);
+      console.log("[Delete Level] backup created:", true);
+    } catch (error) {
+      console.warn("[Delete Level] backup failed; continuing with delete.", error);
+      console.log("[Delete Level] backup created:", false);
+    }
+
+    const deletedLevel = deleteCurrentLevel(this.project, selectedLevelId);
+    const newSelectedLevelId = this.project.lastOpenedLevelId;
+
+    console.log(
+      "[Delete Level] levels after:",
+      this.project.levels.map((level) => ({
+        id: level.id,
+        name: level.name,
+        filename: level.filename,
+      })),
+    );
+    console.log("[Delete Level] new selected level:", newSelectedLevelId);
+
+    this.clearSelection();
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    this.closeLevelPicker();
+    this.render();
+    console.log("[Delete Level] level selector re-rendered:", true);
+
+    this.autosave(
+      "Level deleted from project. Existing JSON file on disk was left untouched for safety.",
+      (saved) => {
+        console.log("[Delete Level] localStorage save succeeded:", saved);
+      },
+    );
+  }
+
+  getCopiedPlacementRange(x, y) {
+    const level = getCurrentLevel(this.project);
+    const width = Math.max(1, Number(this.copiedPlacedObject?.width) || 1);
+    const height = Math.max(1, Number(this.copiedPlacedObject?.height) || 1);
+
+    return {
+      x: clamp(x, 1, Math.max(1, level.gridWidth - width + 1)),
+      y: clamp(y, 1, Math.max(1, level.gridHeight - height + 1)),
+      width: Math.min(width, level.gridWidth),
+      height: Math.min(height, level.gridHeight),
+    };
+  }
+
+  createCopyPreview() {
+    if (!this.copiedPlacedObject || !this.copyPreviewRange) {
+      return null;
+    }
+
+    return {
+      placedObject: this.copiedPlacedObject,
+      asset: this.project.assets.find((asset) => asset.id === this.copiedPlacedObject.assetId),
+      range: this.copyPreviewRange,
+    };
+  }
+
+  cancelCopyPlacement() {
+    this.copiedPlacedObject = null;
+    this.copyPreviewRange = null;
+    this.gridEditor?.setCopyModeActive(false);
+    this.gridEditor?.updateCopyPreview(null);
+  }
+
+  placeSelectedAssetInRange(asset = this.selectedAsset, range = this.selectedRange) {
+    if (!asset) {
+      this.setStatus("No asset selected.");
+      return;
+    }
+
+    if (!range || this.selectionState !== "selectionReady") {
+      this.setStatus("No grid area selected.");
+      return;
+    }
+
+    this.placeAssetInRange(asset, range, "button");
+  }
+
+  placeAssetInRange(asset, range, source) {
+    if (!asset) {
+      this.setStatus("No asset selected.");
+      return false;
+    }
+
+    if (!range) {
+      this.setStatus("No grid area selected.");
+      return false;
+    }
+
+    if (asset.isImported && (!asset.src || typeof asset.src !== "string")) {
+      this.setStatus("Asset image data missing.");
+      return false;
+    }
+
+    const level = getCurrentLevel(this.project);
+    const existing = findObjectsInRange(level, range.x, range.y, range.width, range.height);
+
+    if (
+      existing.length > 0 &&
+      !window.confirm("Placing this asset will replace existing assets in the selected area. Continue?")
+    ) {
+      this.setStatus("Placement cancelled.");
+      this.render();
+      return false;
+    }
+
+    const placedObject = placeAsset(level, asset, range.x, range.y, range.width, range.height);
+    this.selectionState = this.selectedRange ? "selectionReady" : "idle";
+    this.clearPlacedObjectSelection();
+    console.info("Placed asset", {
+      source,
+      assetId: asset.id,
+      assetName: asset.name,
+      range: placedObject.rangeRef,
+      levelId: level.id,
+      placedObject,
+    });
+    this.render();
+    this.autosave(`Placed ${asset.name} at ${placedObject.rangeRef} on ${level.name}.`);
+    return true;
+  }
+
+  getPlacementRangeForCell(x, y) {
+    if (
+      this.selectionState === "selectionReady" &&
+      this.selectedRange &&
+      rangeContains(this.selectedRange, x, y)
+    ) {
+      return this.selectedRange;
+    }
+
+    return { x, y, width: 1, height: 1 };
+  }
+
+  clearSelection() {
+    if (this.selectionConfirmationTimer) {
+      window.clearTimeout(this.selectionConfirmationTimer);
+      this.selectionConfirmationTimer = null;
+    }
+    this.selectedRange = null;
+    this.selectionState = "idle";
+    this.dropPreviewRange = null;
+    this.gridEditor.cancelGesture();
+    this.gridEditor.updateSelection(null);
+    this.gridEditor.updateDropPreview(null);
+    this.syncCoordinateStatus();
+    this.syncPlacementButton();
+  }
+
+  clearGridAreaSelection() {
+    if (this.selectionConfirmationTimer) {
+      window.clearTimeout(this.selectionConfirmationTimer);
+      this.selectionConfirmationTimer = null;
+    }
+    this.selectedRange = null;
+    this.selectionState = "idle";
+    this.dropPreviewRange = null;
+    this.gridEditor.updateSelection(null);
+    this.gridEditor.updateDropPreview(null);
+    this.syncCoordinateStatus();
+    this.syncPlacementButton();
+  }
+
+  setSelectionReadyStatus() {
+    const selected = `${toGridRef(this.selectedRange.x, this.selectedRange.y)} to ${toGridRef(
+      this.selectedRange.x + this.selectedRange.width - 1,
+      this.selectedRange.y + this.selectedRange.height - 1,
+    )}`;
+    this.setStatus(`Selected: ${selected}. Click Place Selected Asset or drag an asset here.`);
+    this.syncPlacementButton();
+  }
+
+  createCategory() {
+    const name = window.prompt("Category name", "New Category");
+
+    if (!name?.trim()) {
+      this.setStatus("Create category cancelled.");
+      return;
+    }
+
+    if (findAssetCategoryByName(this.project, name.trim())) {
+      this.setStatus("Category already exists.");
+      this.render();
+      return;
+    }
+
+    const category = addAssetCategory(this.project, name.trim());
+    this.render();
+    this.autosave(`Created category ${category.name}.`);
+  }
+
+  cleanEmptyCategories() {
+    const removedCount = removeEmptyAssetCategories(this.project);
+
+    if (removedCount === 0) {
+      this.setStatus("No empty asset categories to clean.");
+      this.render();
+      return;
+    }
+
+    this.render();
+    this.autosave(
+      `Removed ${removedCount} empty asset categor${removedCount === 1 ? "y" : "ies"}. Assets were kept.`,
+    );
+  }
+
+  deleteCategory(category) {
+    const assetCount = this.project.assetRegistry.assets.filter(
+      (asset) => asset.categoryId === category.id,
+    ).length;
+
+    if (assetCount === 0) {
+      if (!window.confirm(`Delete category "${category.name}"?`)) {
+        return;
+      }
+
+      deleteAssetCategory(this.project, category.id);
+      this.render();
+      this.autosave(`Deleted category ${category.name}.`);
+      return;
+    }
+
+    this.setStatus("This category contains assets. Delete or move the assets first.");
+  }
+
+  deleteAsset(asset) {
+    if (isAssetUsedOnAnyLevel(this.project, asset.id)) {
+      this.setStatus(
+        "This asset is currently used on a level. Remove placed copies first before deleting the asset.",
+      );
+      return;
+    }
+
+    if (!window.confirm(`Delete asset "${asset.name}"?`)) {
+      return;
+    }
+
+    deleteImportedAsset(this.project, asset.id);
+    if (this.selectedAsset?.id === asset.id) {
+      this.selectedAsset = this.project.assets[0] || null;
+    }
+    this.render();
+    this.autosave(`Deleted asset ${asset.name}.`);
+  }
+
+  async importAsset() {
+    const pendingPlacementRange =
+      this.selectionState === "selectionReady" && this.selectedRange
+        ? { ...this.selectedRange }
+        : null;
+    const files = await this.pickImageFiles();
+
+    if (!files.length) {
+      this.setStatus("Import asset cancelled.");
+      return;
+    }
+
+    let sources;
+    try {
+      sources = await Promise.all(files.map((file) => readFileAsDataUrl(file)));
+    } catch (error) {
+      console.error("Asset image could not be read.", error);
+      this.setStatus("Asset image data missing.");
+      return;
+    }
+    const assetData = await this.collectAssetMetadata(files, sources);
+
+    if (!assetData) {
+      this.setStatus("Import asset cancelled.");
+      return;
+    }
+
+    let importedAssets;
+    try {
+      importedAssets = assetData.assets.map((asset) => addImportedAsset(this.project, asset));
+    } catch (error) {
+      console.error("Asset category assignment failed.", error);
+      this.setStatus("Please create a category for these assets.");
+      return;
+    }
+
+    this.selectedAsset = importedAssets[0] || null;
+    this.render();
+    await this.autosave(
+      `Imported ${importedAssets.length} asset${importedAssets.length === 1 ? "" : "s"} into ${assetData.category.name}.`,
+    );
+
+    if (pendingPlacementRange && importedAssets.length === 1) {
+      const [importedAsset] = importedAssets;
+      if (window.confirm("Place this asset into the selected grid area?")) {
+        this.placeAssetInRange(importedAsset, pendingPlacementRange, "import");
+      } else {
+        this.setStatus(
+          `Asset added to ${importedAsset.category}. Click Place Selected Asset or drag the asset onto the grid to place it.`,
+        );
+      }
+      return;
+    }
+
+    if (pendingPlacementRange && importedAssets.length > 1) {
+      this.setStatus(
+        `Imported ${importedAssets.length} assets. Select one asset to place into the selected grid area.`,
+      );
+      return;
+    }
+
+    this.setStatus(
+      `Imported ${importedAssets.length} asset${importedAssets.length === 1 ? "" : "s"} into ${assetData.category.name}. Select or drag an asset to place it.`,
+    );
+  }
+
+  async pickImageFiles() {
+    if (typeof window.showOpenFilePicker === "function") {
+      try {
+        const fileHandles = await window.showOpenFilePicker({
+          types: [
+            {
+              description: "Image files",
+              accept: {
+                "image/png": [".png"],
+                "image/jpeg": [".jpg", ".jpeg"],
+                "image/webp": [".webp"],
+              },
+            },
+          ],
+          multiple: true,
+        });
+
+        return Promise.all(fileHandles.map((fileHandle) => fileHandle.getFile()));
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          return [];
+        }
+
+        console.warn("File System Access picker failed, falling back to file input.", error);
+      }
+    }
+
+    return pickImagesWithInput();
+  }
+
+  collectAssetMetadata(files, sources) {
+    return new Promise((resolve) => {
+      const dialog = document.createElement("dialog");
+      dialog.className = "asset-import-dialog";
+      const categories = this.project.assetRegistry.categories;
+      const noCategories = categories.length === 0;
+      const previews = files
+        .map((file, index) => {
+          const safeName = file.name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ");
+          return `
+            <label class="asset-import-item">
+              <img class="asset-import-thumbnail" src="${sources[index]}" alt="" />
+              <span>Asset name</span>
+              <input name="name-${index}" value="${escapeAttribute(toTitleCase(safeName))}" required />
+            </label>
+          `;
+        })
+        .join("");
+
+      dialog.innerHTML = `
+        <form class="asset-import-form">
+          <h2>Import Asset${files.length === 1 ? "" : "s"}</h2>
+          <div class="asset-import-previews">${previews}</div>
+          <label>
+            Category
+            <select name="categoryId" ${noCategories ? "disabled" : ""}>
+              ${noCategories
+                ? '<option value="">No available categories</option>'
+                : categories
+                    .map(
+                      (category) =>
+                        `<option value="${escapeAttribute(category.id)}">${escapeHtml(category.name)}</option>`,
+                    )
+                    .join("")}
+            </select>
+          </label>
+          <label>
+            New category
+            <input name="newCategory" placeholder="Optional" />
+          </label>
+          <div class="dialog-actions">
+            <button type="button" value="cancel" data-action="cancel-import">Cancel</button>
+            <button type="submit" value="confirm">Add to Palette</button>
+          </div>
+          <p class="form-error" role="alert" hidden></p>
+        </form>
+      `;
+
+      document.body.append(dialog);
+
+      dialog.querySelector('[data-action="cancel-import"]').addEventListener("click", () => {
+        dialog.close("cancel");
+      });
+
+      const form = dialog.querySelector("form");
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const data = new FormData(form);
+        let categoryId = data.get("categoryId");
+        const newCategoryName = String(data.get("newCategory") || "").trim();
+
+        if (newCategoryName) {
+          categoryId = addAssetCategory(this.project, newCategoryName).id;
+        }
+
+        const category = this.project.assetRegistry.categories.find(
+          (candidate) => candidate.id === categoryId,
+        );
+
+        if (!category) {
+          const error = form.querySelector(".form-error");
+          error.hidden = false;
+          error.textContent = "Please create a category for these assets.";
+          return;
+        }
+
+        dialog.remove();
+        resolve({
+          category,
+          assets: files.map((file, index) => ({
+            name: String(data.get(`name-${index}`) || file.name).trim(),
+            categoryId: category.id,
+            src: sources[index],
+            fileName: file.name,
+            defaultLayer: "objects",
+            collisionEnabled: false,
+            solid: false,
+            blocksMovement: false,
+            transparent: true,
+            visible: true,
+            defaultWidth: 1,
+            defaultHeight: 1,
+          })),
+        });
+      });
+
+      dialog.addEventListener("close", () => {
+        if (dialog.isConnected) {
+          dialog.remove();
+          resolve(null);
+        }
+      });
+
+      dialog.showModal();
+    });
   }
 
   resizeGrid(width, height) {
@@ -220,13 +1599,26 @@ class DevEditor {
       createProjectBackup(this.project, `Before resizing ${level.name} to ${width}x${height}`);
     }
     resizeCurrentLevel(this.project, width, height);
+    this.clearSelection();
+    this.clearPlacedObjectSelection();
     this.autosave(`Grid resized to ${width}x${height}.`);
     this.render();
   }
 
-  autosave(message) {
-    saveProject(this.project);
+  autosave(message, onSaveResult = null) {
     this.setStatus(message);
+    this.saveQueue = this.saveQueue
+      .then(() =>
+        saveProject(this.project).then(() => {
+          onSaveResult?.(true);
+        }),
+      )
+      .catch((error) => {
+        console.error("Could not save browser editor data.", error);
+        onSaveResult?.(false);
+        this.setStatus(`${message} Browser storage failed; this change may not survive refresh.`);
+      });
+    return this.saveQueue;
   }
 
   copyCurrentLevel() {
@@ -254,6 +1646,8 @@ class DevEditor {
     }
 
     pasteLevelContent(this.project, this.copiedLevel);
+    this.clearSelection();
+    this.clearPlacedObjectSelection();
     this.autosave("Pasted copied level into the current level.");
     this.render();
   }
@@ -295,7 +1689,7 @@ class DevEditor {
       if (!this.projectFolderHandle) {
         downloadProjectFiles(projectFiles);
         this.setStatus(
-          "Your browser does not support choosing a project folder, so the project and level JSON files were downloaded instead.",
+          "Your browser does not support choosing a project folder, so the project, asset registry, and level JSON files were downloaded instead.",
         );
         return;
       }
@@ -304,13 +1698,10 @@ class DevEditor {
         folderHandle: this.projectFolderHandle,
         projectIndex: projectFiles.projectIndex,
         levels: projectFiles.levels,
-        deletedLevelFilenames: this.deletedLevelFilenames.filter(
-          (filename) => !projectFiles.levels.some((level) => level.filename === filename),
-        ),
+        assetRegistry: projectFiles.assetRegistry,
       });
-      this.deletedLevelFilenames = [];
       this.setStatus(
-        "Saved project/game-dev-kit-project.json and level JSON files into the selected Game Dev Kit folder.",
+        "Saved active project JSON, active level JSON files, and assets/assetRegistry.json into the selected Game Dev Kit folder. Previously deleted level JSON files are retained on disk.",
       );
     } catch (error) {
       if (error?.name === "AbortError") {
@@ -326,6 +1717,7 @@ class DevEditor {
   createProjectFiles() {
     return {
       projectIndex: createProjectIndex(this.project),
+      assetRegistry: createAssetRegistryData(this.project),
       levels: this.project.levels.map((level) => ({
         filename: level.filename || `${level.id}.json`,
         data: createLevelFileData(level),
@@ -335,12 +1727,25 @@ class DevEditor {
 
   render() {
     const level = getCurrentLevel(this.project);
-    this.assetPalette.selectedAssetId = this.selectedAsset.id;
+    this.assetPalette.assetRegistry = this.project.assetRegistry;
+    this.assetPalette.selectedAssetId = this.selectedAsset?.id || null;
     this.assetPalette.render();
-    this.gridEditor.render(level, this.project.assets);
+    this.gridEditor.setInteractionMode(this.activeTool);
+    this.gridEditor.render(
+      level,
+      this.project.assets,
+      this.selectedRange,
+      this.dropPreviewRange,
+      this.selectedPlacedObjectId,
+      Array.from(this.selectedPlacedObjectIds),
+      this.createCopyPreview(),
+    );
     this.syncLevelSelector(level);
     this.syncGridControls(level);
     this.syncToolButtons();
+    this.syncCoordinateStatus();
+    this.syncPlacementButton();
+    this.syncAssetMenu();
     this.ui.levelSummary.textContent = `${level.name} · ${level.gridWidth}x${level.gridHeight} · ${level.tileSize}px tiles`;
   }
 
@@ -368,6 +1773,8 @@ class DevEditor {
 
       option.addEventListener("click", () => {
         const selectedLevel = switchLevel(this.project, level.id);
+        this.clearSelection();
+        this.clearPlacedObjectSelection();
         this.closeLevelPicker();
         this.autosave(`Opened ${selectedLevel.name}.`);
         this.render();
@@ -422,8 +1829,48 @@ class DevEditor {
     });
   }
 
+  syncCoordinateStatus() {
+    const hover = this.hoveredGridRef || "-";
+    const selected = this.selectedRange
+      ? `${toGridRef(this.selectedRange.x, this.selectedRange.y)} to ${toGridRef(
+          this.selectedRange.x + this.selectedRange.width - 1,
+          this.selectedRange.y + this.selectedRange.height - 1,
+        )}`
+      : "-";
+
+    this.ui.coordinateStatus.textContent = `Hover: ${hover} · Selected: ${selected}`;
+  }
+
+  syncPlacementButton() {
+    this.ui.placeSelectedAssetButton.disabled = !(
+      this.selectedAsset &&
+      this.selectedRange &&
+      this.selectionState === "selectionReady" &&
+      this.activeTool !== "delete"
+    );
+  }
+
+  syncAssetMenu() {
+    const isEnabled =
+      this.activeTool === "move" &&
+      Boolean(this.selectedPlacedObjectId) &&
+      this.selectedPlacedObjectIds.size <= 1;
+    this.ui.assetMenu.classList.toggle("is-disabled", !isEnabled);
+    this.ui.assetMenu.querySelector("summary").setAttribute("aria-disabled", String(!isEnabled));
+    this.ui.assetMenu.querySelector("button").disabled = !isEnabled;
+    if (!isEnabled) {
+      this.ui.assetMenu.removeAttribute("open");
+    }
+  }
+
   bindMenuBehavior() {
     this.root.querySelectorAll("[data-menu]").forEach((menu) => {
+      menu.querySelector("summary").addEventListener("click", (event) => {
+        if (menu.classList.contains("is-disabled")) {
+          event.preventDefault();
+          menu.removeAttribute("open");
+        }
+      });
       menu.addEventListener("toggle", () => {
         if (!menu.open) {
           return;
@@ -454,10 +1901,94 @@ class DevEditor {
     });
   }
 
+  bindSidebarResize() {
+    const handle = this.ui.sidebarResizer;
+
+    handle.addEventListener("pointerdown", (event) => {
+      if (
+        this.isSidebarCollapsed ||
+        event.button !== 0 ||
+        window.matchMedia("(max-width: 820px)").matches
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidth = this.sidebarWidth;
+      handle.classList.add("is-resizing");
+
+      const resize = (pointerEvent) => {
+        this.sidebarWidth = this.clampSidebarWidth(startWidth + pointerEvent.clientX - startX);
+        this.applySidebarWidth(this.sidebarWidth);
+      };
+
+      const finish = () => {
+        document.removeEventListener("pointermove", resize);
+        document.removeEventListener("pointerup", finish);
+        document.removeEventListener("pointercancel", finish);
+        handle.classList.remove("is-resizing");
+        localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(this.sidebarWidth));
+      };
+
+      document.addEventListener("pointermove", resize);
+      document.addEventListener("pointerup", finish);
+      document.addEventListener("pointercancel", finish);
+    });
+
+    window.addEventListener("resize", () => {
+      this.sidebarWidth = this.clampSidebarWidth(this.sidebarWidth);
+      this.applySidebarWidth(this.sidebarWidth);
+    });
+  }
+
+  toggleSidebarCollapsed() {
+    this.isSidebarCollapsed = !this.isSidebarCollapsed;
+    this.applySidebarCollapsedState();
+    localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(this.isSidebarCollapsed));
+    if (!this.isSidebarCollapsed) {
+      localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(this.sidebarWidth));
+    }
+  }
+
+  loadSidebarCollapsed() {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "true";
+  }
+
+  loadSidebarWidth() {
+    const storedWidth = Number(localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY));
+    return this.clampSidebarWidth(Number.isFinite(storedWidth) && storedWidth > 0 ? storedWidth : 260);
+  }
+
+  applySidebarWidth(width) {
+    this.ui.workspace.style.setProperty("--sidebar-width", `${this.clampSidebarWidth(width)}px`);
+  }
+
+  applySidebarCollapsedState() {
+    this.ui.workspace.classList.toggle("is-sidebar-collapsed", this.isSidebarCollapsed);
+    this.ui.sidebarToggle.textContent = this.isSidebarCollapsed ? "»" : "«";
+    this.ui.sidebarToggle.title = this.isSidebarCollapsed
+      ? "Restore asset panel"
+      : "Collapse asset panel";
+    this.ui.sidebarToggle.setAttribute(
+      "aria-label",
+      this.isSidebarCollapsed ? "Restore asset panel" : "Collapse asset panel",
+    );
+  }
+
+  clampSidebarWidth(width) {
+    const maximum = Math.max(180, Math.min(420, Math.floor(window.innerWidth * 0.4)));
+    return clamp(Math.round(width), 180, maximum);
+  }
+
   closeMenus() {
     this.root.querySelectorAll("[data-menu]").forEach((menu) => {
       menu.removeAttribute("open");
     });
+  }
+
+  closePlacedPropertiesDialog() {
+    document.querySelector(".placed-properties-dialog[open]")?.close();
   }
 
   closeLevelPicker() {
@@ -473,12 +2004,155 @@ class DevEditor {
   }
 }
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
   const root = document.querySelector("#app");
 
   if (!root) {
     throw new Error("Editor root element was not found.");
   }
 
-  new DevEditor(root);
+  const loaded = await loadProject();
+  new DevEditor(root, loaded);
 });
+
+function rangeContains(range, x, y) {
+  return x >= range.x && x < range.x + range.width && y >= range.y && y < range.y + range.height;
+}
+
+function isEditableTarget(target) {
+  return target instanceof Element && Boolean(
+    target.closest("input, select, textarea, dialog, [contenteditable='true']"),
+  );
+}
+
+function rangesMatch(first, second) {
+  return Boolean(
+    first &&
+    second &&
+    first.x === second.x &&
+    first.y === second.y &&
+    first.width === second.width &&
+    first.height === second.height,
+  );
+}
+
+function formatRange(range) {
+  if (!range) {
+    return "-";
+  }
+
+  return `${toGridRef(range.x, range.y)} to ${toGridRef(
+    range.x + range.width - 1,
+    range.y + range.height - 1,
+  )}`;
+}
+
+function createDeletedPlacedAssetsMessage(count) {
+  return `Deleted ${count} placed asset${count === 1 ? "" : "s"}.`;
+}
+
+function clamp(value, minimum, maximum) {
+  return Math.max(minimum, Math.min(maximum, value));
+}
+
+function getToolLabel(tool) {
+  return tool === "move" ? "Select/Move" : "Delete";
+}
+
+const PLACED_LAYER_OPTIONS = [
+  { value: "terrain", label: "Terrain" },
+  { value: "objects", label: "Objects" },
+  { value: "overlay", label: "Overlay" },
+  { value: "Trigger", label: "Trigger" },
+];
+
+function normalizePlacedLayer(layer) {
+  if (layer === "triggers" || layer === "Trigger") {
+    return "Trigger";
+  }
+  return PLACED_LAYER_OPTIONS.some((option) => option.value === layer) ? layer : "objects";
+}
+
+function createLayerOptions(selectedLayer) {
+  return PLACED_LAYER_OPTIONS.map(
+    (option) =>
+      `<option value="${option.value}" ${option.value === selectedLayer ? "selected" : ""}>${option.label}</option>`,
+  ).join("");
+}
+
+function normalizeOpacity(opacity) {
+  const number = Number(opacity);
+  return Number.isFinite(number) ? clamp(Math.round(number), 0, 100) : 100;
+}
+
+function parseGridRef(value) {
+  const match = String(value || "").trim().match(/^(\d+)\.([a-z]+)$/i);
+  if (!match) {
+    return null;
+  }
+
+  const x = Number(match[1]);
+  const y = parseGridRow(match[2]);
+  return Number.isInteger(x) && Number.isInteger(y) ? { x, y } : null;
+}
+
+function parseGridRow(value) {
+  const text = String(value || "").trim().toUpperCase();
+  if (/^\d+$/.test(text)) {
+    const row = Number(text);
+    return Number.isInteger(row) && row > 0 ? row : NaN;
+  }
+  if (!/^[A-Z]+$/.test(text)) {
+    return NaN;
+  }
+
+  let row = 0;
+  for (const letter of text) {
+    row = row * 26 + letter.charCodeAt(0) - 64;
+  }
+  return row;
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(reader.result));
+    reader.addEventListener("error", () => reject(reader.error));
+    reader.readAsDataURL(file);
+  });
+}
+
+function pickImagesWithInput() {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/png,image/jpeg,image/webp";
+    input.multiple = true;
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    document.body.append(input);
+    input.addEventListener("change", () => {
+      const files = Array.from(input.files || []);
+      input.remove();
+      resolve(files);
+    });
+    input.click();
+  });
+}
+
+function toTitleCase(value) {
+  return value.replace(/\b\w/g, (letter) => letter.toUpperCase()).trim();
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function escapeAttribute(value) {
+  return escapeHtml(value);
+}

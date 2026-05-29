@@ -96,29 +96,24 @@ export async function saveProjectFilesToFolder({
   folderHandle,
   projectIndex,
   levels,
-  deletedLevelFilenames = [],
+  assetRegistry,
 }) {
   const projectFolder = await folderHandle.getDirectoryHandle("project", { create: true });
   const levelsFolder = await folderHandle.getDirectoryHandle("levels", { create: true });
-  await folderHandle.getDirectoryHandle("assets", { create: true });
+  const assetsFolder = await folderHandle.getDirectoryHandle("assets", { create: true });
 
   await writeJsonFile(projectFolder, "game-dev-kit-project.json", projectIndex);
+  await writeJsonFile(assetsFolder, "assetRegistry.json", assetRegistry);
+  await writeImportedAssets(assetsFolder, assetRegistry.assets || []);
 
   for (const level of levels) {
     await writeJsonFile(levelsFolder, level.filename, level.data);
   }
-
-  for (const filename of deletedLevelFilenames) {
-    try {
-      await levelsFolder.removeEntry(filename);
-    } catch (error) {
-      console.warn(`Could not remove deleted level file: ${filename}`, error);
-    }
-  }
 }
 
-export function downloadProjectFiles({ projectIndex, levels }) {
+export function downloadProjectFiles({ projectIndex, levels, assetRegistry }) {
   tryDownloadJson("game-dev-kit-project.json", JSON.stringify(projectIndex, null, 2));
+  tryDownloadJson("assetRegistry.json", JSON.stringify(assetRegistry, null, 2));
 
   levels.forEach((level) => {
     tryDownloadJson(level.filename, JSON.stringify(level.data, null, 2));
@@ -158,6 +153,39 @@ async function writeJsonFile(directoryHandle, filename, data) {
   const writable = await fileHandle.createWritable();
   await writable.write(JSON.stringify(data, null, 2));
   await writable.close();
+}
+
+async function writeImportedAssets(assetsFolder, assets) {
+  const importedFolder = await assetsFolder.getDirectoryHandle("imported", { create: true });
+
+  for (const asset of assets) {
+    if (!asset.src?.startsWith("data:") || !asset.fileName) {
+      continue;
+    }
+
+    try {
+      const fileHandle = await importedFolder.getFileHandle(asset.fileName, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(dataUrlToBlob(asset.src));
+      await writable.close();
+    } catch (error) {
+      console.warn(`Could not write imported asset file: ${asset.fileName}`, error);
+    }
+  }
+}
+
+function dataUrlToBlob(dataUrl) {
+  const [header, base64] = dataUrl.split(",");
+  const mimeMatch = header.match(/^data:(.*?);base64$/);
+  const mimeType = mimeMatch?.[1] || "application/octet-stream";
+  const binary = atob(base64 || "");
+  const bytes = new Uint8Array(binary.length);
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return new Blob([bytes], { type: mimeType });
 }
 
 function slugify(value) {
