@@ -2,6 +2,7 @@ import { AssetPalette } from "./AssetPalette.js";
 import {
   COPIED_LEVEL_STORAGE_KEY,
   PLACED_PROPERTIES_DIALOG_STORAGE_KEY,
+  SIDEBAR_COLLAPSED_STORAGE_KEY,
   SIDEBAR_WIDTH_STORAGE_KEY,
 } from "./EditorTypes.js";
 import { createEditorLayout } from "./DevEditorUI.js";
@@ -36,12 +37,14 @@ import {
   reorderLevel,
   removeEmptyAssetCategories,
   renameCurrentLevel,
+  removeObjectsInRange,
   removeObjectsAtCell,
   removePlacedObjectById,
   resizeCurrentLevel,
   switchLevel,
   toGridRef,
   updatePlacedAssetBounds,
+  updatePlacedAssetGroupBounds,
   updatePlacedAssetProperties,
 } from "./LevelManager.js";
 import { createProjectBackup, loadProject, saveProject } from "./SaveManager.js";
@@ -52,7 +55,7 @@ class DevEditor {
     this.project = loaded.project;
     this.startupMessage = loaded.message;
     this.selectedAsset = this.project.assets[0] || null;
-    this.activeTool = "paint";
+    this.activeTool = "move";
     this.projectFolderHandle = null;
     this.saveQueue = Promise.resolve();
     this.copiedLevel = this.loadCopiedLevel();
@@ -62,11 +65,14 @@ class DevEditor {
     this.hoveredGridRef = null;
     this.dropPreviewRange = null;
     this.selectedPlacedObjectId = null;
+    this.selectedPlacedObjectIds = new Set();
     this.copiedPlacedObject = null;
     this.copyPreviewRange = null;
     this.ui = createEditorLayout(root);
     this.sidebarWidth = this.loadSidebarWidth();
+    this.isSidebarCollapsed = this.loadSidebarCollapsed();
     this.applySidebarWidth(this.sidebarWidth);
+    this.applySidebarCollapsedState();
 
     this.gridEditor = new GridEditor({
       root: this.ui.gridStage,
@@ -77,6 +83,7 @@ class DevEditor {
       onPlacedObjectSelect: (placedObjectId) => this.selectPlacedObject(placedObjectId),
       onPlacedObjectProperties: (placedObjectId) => this.openPlacedAssetProperties(placedObjectId),
       onPlacedObjectTransform: (transform) => this.transformPlacedObject(transform),
+      onPlacedObjectGroupMoveStart: () => this.clearGridAreaSelection(),
       onCopyPreviewMove: (cell) => this.moveCopyPreview(cell),
       onAssetRenderError: (placedObject, asset) => {
         this.setStatus(
@@ -91,7 +98,7 @@ class DevEditor {
       selectedAssetId: this.selectedAsset?.id || null,
       onSelect: (asset) => {
         this.selectedAsset = asset;
-        this.activateTool("paint");
+        this.activateTool("move");
         if (this.selectionState === "selectionReady") {
           this.setSelectionReadyStatus();
         } else {
@@ -122,6 +129,10 @@ class DevEditor {
       this.placeSelectedAssetInRange();
     });
 
+    this.ui.sidebarToggle.addEventListener("click", () => {
+      this.toggleSidebarCollapsed();
+    });
+
     document.addEventListener("keydown", (event) => {
       if (
         isEditableTarget(event.target) ||
@@ -140,13 +151,17 @@ class DevEditor {
         this.selectedPlacedObjectId
       ) {
         event.preventDefault();
+        if (this.selectedPlacedObjectIds.size > 1) {
+          this.setStatus("Group copy is not implemented yet.");
+          return;
+        }
         this.startCopyPlacement();
         return;
       }
 
       const hotkeyTool = {
         q: "move",
-        w: "paint",
+        w: "move",
         e: "delete",
       }[event.key.toLowerCase()];
 
@@ -158,12 +173,19 @@ class DevEditor {
 
       if (
         (event.key === "Delete" || event.key === "Backspace") &&
-        this.activeTool === "move" &&
-        this.selectedPlacedObjectId
+        this.activeTool === "move"
       ) {
-        event.preventDefault();
-        this.deleteSelectedPlacedObject();
-        return;
+        if (this.selectedPlacedObjectIds.size > 0 || this.selectedPlacedObjectId) {
+          event.preventDefault();
+          this.deleteSelectedPlacedObjects();
+          return;
+        }
+
+        if (this.selectedRange && this.selectionState === "selectionReady") {
+          event.preventDefault();
+          this.deleteAssetsInSelectedRange();
+          return;
+        }
       }
 
       if (event.key === "Escape") {
@@ -175,10 +197,11 @@ class DevEditor {
           return;
         }
 
+        const hadSelection = this.selectedPlacedObjectIds.size > 0 || this.selectedRange;
         this.clearSelection();
         this.clearPlacedObjectSelection();
         this.render();
-        this.setStatus("Selection cleared.");
+        this.setStatus(hadSelection ? "Selection cleared." : "Nothing selected.");
       }
     });
 
@@ -298,15 +321,26 @@ class DevEditor {
         return;
       }
 
-      this.clearPlacedObjectSelection();
-      this.render();
-      this.setStatus("Move selection cleared.");
-      return;
+      if (this.selectedPlacedObjectIds.size > 0 || this.selectedPlacedObjectId) {
+        this.clearSelection();
+        this.clearPlacedObjectSelection();
+        this.render();
+        this.setStatus("Selection cleared.");
+        return;
+      }
     }
 
     if (this.activeTool === "delete") {
-      removeObjectsAtCell(level, x, y);
-      this.autosave(`Deleted assets at ${toGridRef(x, y)}.`);
+      const removedObjects = removeObjectsAtCell(level, x, y);
+      if (removedObjects.length === 0) {
+        this.setStatus(`No placed asset at ${toGridRef(x, y)}.`);
+        this.render();
+        return;
+      }
+
+      this.clearPlacedObjectSelection();
+      this.closePlacedPropertiesDialog();
+      this.autosave(createDeletedPlacedAssetsMessage(removedObjects.length));
       this.render();
       return;
     }
@@ -346,9 +380,13 @@ class DevEditor {
   }
 
   handleSelectionChange(range, state) {
+    const hadPlacedObjectSelection = this.activeTool === "move" && this.selectedPlacedObjectIds.size > 0;
     this.selectedRange = range;
     this.selectionState = state;
     this.dropPreviewRange = null;
+    if (hadPlacedObjectSelection) {
+      this.clearPlacedObjectSelection();
+    }
     this.syncCoordinateStatus();
     this.syncPlacementButton();
     this.gridEditor.updateSelection(this.selectedRange);
@@ -359,7 +397,36 @@ class DevEditor {
       this.selectionConfirmationTimer = null;
     }
 
+    if (this.activeTool === "delete") {
+      if (state === "selectionReady") {
+        this.deleteAssetsInRange(range, { clearSelection: true });
+      } else if (state === "draggingSelection") {
+        this.setStatus(`Delete area: ${formatRange(range)}.`);
+      }
+      return;
+    }
+
     if (state === "selectionReady") {
+      const selectedObjects = findObjectsInRange(
+        getCurrentLevel(this.project),
+        range.x,
+        range.y,
+        range.width,
+        range.height,
+      );
+      if (selectedObjects.length > 0) {
+        this.setPlacedObjectSelection(
+          selectedObjects.map((placedObject) => placedObject.id),
+          selectedObjects[0].id,
+        );
+        this.render();
+        this.setStatus(`Selected area: ${formatRange(range)} — ${selectedObjects.length} asset${selectedObjects.length === 1 ? "" : "s"}.`);
+        return;
+      }
+
+      if (hadPlacedObjectSelection) {
+        this.render();
+      }
       this.setSelectionReadyStatus();
     } else if (state === "draggingSelection") {
       const pendingRange = { ...range };
@@ -393,12 +460,12 @@ class DevEditor {
   }
 
   activateTool(tool) {
-    if (!["move", "paint", "delete"].includes(tool)) {
+    if (!["move", "delete"].includes(tool)) {
       return;
     }
 
     this.activeTool = tool;
-    if (tool !== "paint") {
+    if (tool === "delete") {
       this.clearSelection();
     }
     if (tool !== "move") {
@@ -407,7 +474,7 @@ class DevEditor {
     this.gridEditor.setInteractionMode(tool);
     this.syncToolButtons();
     this.render();
-    this.setStatus(`${tool.charAt(0).toUpperCase()}${tool.slice(1)} tool active.`);
+    this.setStatus(`${getToolLabel(tool)} tool active.`);
   }
 
   selectPlacedObject(placedObjectId) {
@@ -417,12 +484,18 @@ class DevEditor {
 
     this.cancelCopyPlacement();
     this.clearSelection();
-    this.selectedPlacedObjectId = placedObjectId;
+    this.setPlacedObjectSelection([placedObjectId], placedObjectId);
     this.render();
     this.setStatus("Placed asset selected. Drag to move or use a handle to resize.");
   }
 
   openPlacedAssetProperties(placedObjectId = this.selectedPlacedObjectId) {
+    const explicitPlacedObject = arguments.length > 0;
+    if (this.selectedPlacedObjectIds.size > 1 && !explicitPlacedObject) {
+      this.setStatus("Select one asset to edit properties.");
+      return;
+    }
+
     if (this.activeTool !== "move" || !placedObjectId) {
       this.setStatus("Select an asset first.");
       return;
@@ -442,7 +515,7 @@ class DevEditor {
 
     this.cancelCopyPlacement();
     this.clearSelection();
-    this.selectedPlacedObjectId = placedObjectId;
+    this.setPlacedObjectSelection([placedObjectId], placedObjectId);
     this.render();
     this.showPlacedAssetPropertiesDialog(level, placedObject);
   }
@@ -564,7 +637,7 @@ class DevEditor {
         return;
       }
 
-      this.selectedPlacedObjectId = updatedObject.id;
+      this.setPlacedObjectSelection([updatedObject.id], updatedObject.id);
       dialog.close();
       this.render();
       this.autosave(`Saved properties for ${sourceAsset?.name || updatedObject.name || "placed asset"}.`);
@@ -759,31 +832,84 @@ class DevEditor {
 
   clearPlacedObjectSelection() {
     this.selectedPlacedObjectId = null;
+    this.selectedPlacedObjectIds.clear();
     this.cancelCopyPlacement();
   }
 
-  deleteSelectedPlacedObject() {
+  setPlacedObjectSelection(placedObjectIds, primaryPlacedObjectId = placedObjectIds[0] || null) {
+    this.selectedPlacedObjectIds = new Set(placedObjectIds.filter(Boolean));
+    this.selectedPlacedObjectId =
+      primaryPlacedObjectId && this.selectedPlacedObjectIds.has(primaryPlacedObjectId)
+        ? primaryPlacedObjectId
+        : placedObjectIds[0] || null;
+  }
+
+  deleteSelectedPlacedObjects() {
     const level = getCurrentLevel(this.project);
-    const removedObject = removePlacedObjectById(level, this.selectedPlacedObjectId);
+    const selectedIds = this.selectedPlacedObjectIds.size > 0
+      ? Array.from(this.selectedPlacedObjectIds)
+      : [this.selectedPlacedObjectId].filter(Boolean);
+    const removedObjects = selectedIds
+      .map((placedObjectId) => removePlacedObjectById(level, placedObjectId))
+      .filter(Boolean);
 
     this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
     this.render();
 
-    if (!removedObject) {
+    if (removedObjects.length === 0) {
       this.setStatus("Selected placed asset was not found.");
       return false;
     }
 
-    this.autosave(`Deleted selected placed asset from ${level.name}.`);
+    this.autosave(createDeletedPlacedAssetsMessage(removedObjects.length));
     return true;
   }
 
-  transformPlacedObject({ placedObjectId, x, y, width, height, action }) {
+  deleteAssetsInSelectedRange() {
+    if (!this.selectedRange || this.selectionState !== "selectionReady") {
+      return false;
+    }
+
+    return this.deleteAssetsInRange(this.selectedRange);
+  }
+
+  deleteAssetsInRange(range, { clearSelection = false } = {}) {
+    const level = getCurrentLevel(this.project);
+    const matchingObjects = findObjectsInRange(level, range.x, range.y, range.width, range.height);
+
+    if (matchingObjects.length === 0) {
+      if (clearSelection) {
+        this.clearSelection();
+        this.render();
+      }
+      this.setStatus("No placed assets found in the selected area.");
+      return false;
+    }
+
+    const removedObjects = removeObjectsInRange(level, range.x, range.y, range.width, range.height);
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    if (clearSelection) {
+      this.clearSelection();
+    }
+    this.render();
+    this.autosave(createDeletedPlacedAssetsMessage(removedObjects.length));
+    return true;
+  }
+
+  transformPlacedObject(transform) {
+    const { placedObjectId, x, y, width, height, action } = transform;
     if (this.activeTool !== "move") {
       return false;
     }
 
     const level = getCurrentLevel(this.project);
+
+    if (action === "group-move") {
+      return this.transformPlacedObjectGroup(transform);
+    }
+
     const existing = findObjectsInRange(level, x, y, width, height).filter(
       (placedObject) => placedObject.id !== placedObjectId,
     );
@@ -804,11 +930,56 @@ class DevEditor {
       return false;
     }
 
-    this.selectedPlacedObjectId = placedObjectId;
+    this.setPlacedObjectSelection([placedObjectId], placedObjectId);
     this.render();
     this.autosave(
       `${action === "resize" ? "Resized" : "Moved"} placed asset to ${updatedObject.rangeRef}.`,
     );
+    return true;
+  }
+
+  transformPlacedObjectGroup({ placedObjectId, placedObjectIds, boundsById }) {
+    const level = getCurrentLevel(this.project);
+    const selectedIds = placedObjectIds?.length
+      ? placedObjectIds
+      : Array.from(this.selectedPlacedObjectIds);
+    const selectedIdSet = new Set(selectedIds);
+    const updates = new Map(boundsById || []);
+
+    if (selectedIds.length <= 1 || updates.size === 0) {
+      return false;
+    }
+
+    const overlappingObjects = [];
+    updates.forEach((bounds) => {
+      findObjectsInRange(level, bounds.x, bounds.y, bounds.width, bounds.height).forEach(
+        (candidate) => {
+          if (!selectedIdSet.has(candidate.id) && !overlappingObjects.some((item) => item.id === candidate.id)) {
+            overlappingObjects.push(candidate);
+          }
+        },
+      );
+    });
+
+    if (
+      overlappingObjects.length > 0 &&
+      !window.confirm("Moving this group will overlap existing assets. Continue?")
+    ) {
+      this.render();
+      this.setStatus("Group move cancelled.");
+      return false;
+    }
+
+    const updatedObjects = updatePlacedAssetGroupBounds(level, updates);
+    if (!updatedObjects) {
+      this.setStatus("Unable to update the selected assets.");
+      this.render();
+      return false;
+    }
+
+    this.setPlacedObjectSelection(selectedIds, placedObjectId || selectedIds[0]);
+    this.render();
+    this.autosave(`Moved ${updatedObjects.length} selected assets.`);
     return true;
   }
 
@@ -867,7 +1038,7 @@ class DevEditor {
     this.copiedPlacedObject = null;
     this.copyPreviewRange = null;
     this.gridEditor.setCopyModeActive(false);
-    this.selectedPlacedObjectId = placedObject.id;
+    this.setPlacedObjectSelection([placedObject.id], placedObject.id);
     this.render();
     this.autosave(`Pasted copied asset at ${placedObject.rangeRef} on ${level.name}.`);
     return true;
@@ -1070,6 +1241,7 @@ class DevEditor {
 
     const placedObject = placeAsset(level, asset, range.x, range.y, range.width, range.height);
     this.selectionState = this.selectedRange ? "selectionReady" : "idle";
+    this.clearPlacedObjectSelection();
     console.info("Placed asset", {
       source,
       assetId: asset.id,
@@ -1104,6 +1276,20 @@ class DevEditor {
     this.selectionState = "idle";
     this.dropPreviewRange = null;
     this.gridEditor.cancelGesture();
+    this.gridEditor.updateSelection(null);
+    this.gridEditor.updateDropPreview(null);
+    this.syncCoordinateStatus();
+    this.syncPlacementButton();
+  }
+
+  clearGridAreaSelection() {
+    if (this.selectionConfirmationTimer) {
+      window.clearTimeout(this.selectionConfirmationTimer);
+      this.selectionConfirmationTimer = null;
+    }
+    this.selectedRange = null;
+    this.selectionState = "idle";
+    this.dropPreviewRange = null;
     this.gridEditor.updateSelection(null);
     this.gridEditor.updateDropPreview(null);
     this.syncCoordinateStatus();
@@ -1551,6 +1737,7 @@ class DevEditor {
       this.selectedRange,
       this.dropPreviewRange,
       this.selectedPlacedObjectId,
+      Array.from(this.selectedPlacedObjectIds),
       this.createCopyPreview(),
     );
     this.syncLevelSelector(level);
@@ -1664,7 +1851,10 @@ class DevEditor {
   }
 
   syncAssetMenu() {
-    const isEnabled = this.activeTool === "move" && Boolean(this.selectedPlacedObjectId);
+    const isEnabled =
+      this.activeTool === "move" &&
+      Boolean(this.selectedPlacedObjectId) &&
+      this.selectedPlacedObjectIds.size <= 1;
     this.ui.assetMenu.classList.toggle("is-disabled", !isEnabled);
     this.ui.assetMenu.querySelector("summary").setAttribute("aria-disabled", String(!isEnabled));
     this.ui.assetMenu.querySelector("button").disabled = !isEnabled;
@@ -1715,7 +1905,11 @@ class DevEditor {
     const handle = this.ui.sidebarResizer;
 
     handle.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0 || window.matchMedia("(max-width: 820px)").matches) {
+      if (
+        this.isSidebarCollapsed ||
+        event.button !== 0 ||
+        window.matchMedia("(max-width: 820px)").matches
+      ) {
         return;
       }
 
@@ -1748,6 +1942,19 @@ class DevEditor {
     });
   }
 
+  toggleSidebarCollapsed() {
+    this.isSidebarCollapsed = !this.isSidebarCollapsed;
+    this.applySidebarCollapsedState();
+    localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(this.isSidebarCollapsed));
+    if (!this.isSidebarCollapsed) {
+      localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(this.sidebarWidth));
+    }
+  }
+
+  loadSidebarCollapsed() {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "true";
+  }
+
   loadSidebarWidth() {
     const storedWidth = Number(localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY));
     return this.clampSidebarWidth(Number.isFinite(storedWidth) && storedWidth > 0 ? storedWidth : 260);
@@ -1755,6 +1962,18 @@ class DevEditor {
 
   applySidebarWidth(width) {
     this.ui.workspace.style.setProperty("--sidebar-width", `${this.clampSidebarWidth(width)}px`);
+  }
+
+  applySidebarCollapsedState() {
+    this.ui.workspace.classList.toggle("is-sidebar-collapsed", this.isSidebarCollapsed);
+    this.ui.sidebarToggle.textContent = this.isSidebarCollapsed ? "»" : "«";
+    this.ui.sidebarToggle.title = this.isSidebarCollapsed
+      ? "Restore asset panel"
+      : "Collapse asset panel";
+    this.ui.sidebarToggle.setAttribute(
+      "aria-label",
+      this.isSidebarCollapsed ? "Restore asset panel" : "Collapse asset panel",
+    );
   }
 
   clampSidebarWidth(width) {
@@ -1817,8 +2036,27 @@ function rangesMatch(first, second) {
   );
 }
 
+function formatRange(range) {
+  if (!range) {
+    return "-";
+  }
+
+  return `${toGridRef(range.x, range.y)} to ${toGridRef(
+    range.x + range.width - 1,
+    range.y + range.height - 1,
+  )}`;
+}
+
+function createDeletedPlacedAssetsMessage(count) {
+  return `Deleted ${count} placed asset${count === 1 ? "" : "s"}.`;
+}
+
 function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
+}
+
+function getToolLabel(tool) {
+  return tool === "move" ? "Select/Move" : "Delete";
 }
 
 const PLACED_LAYER_OPTIONS = [

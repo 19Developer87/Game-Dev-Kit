@@ -44,15 +44,23 @@ export function createEditorLayout(root) {
             </span>
           </div>
           <div class="toolbar-group">
-            <button type="button" data-tool="move" title="Select/Move (Q)">Select/Move</button>
-            <button type="button" data-tool="paint" class="is-active" title="Paint (W)">Paint</button>
+            <button type="button" data-tool="move" class="is-active" title="Select/Move (Q)">Select/Move</button>
             <button type="button" data-tool="delete" title="Delete (E)">Delete</button>
             <button type="button" data-action="place-selected-asset">Place Selected Asset</button>
           </div>
         </div>
       </header>
       <main class="workspace">
-        <aside class="sidebar" data-role="asset-palette"></aside>
+        <aside class="sidebar" data-role="sidebar">
+          <button
+            type="button"
+            class="sidebar-toggle"
+            data-action="toggle-sidebar"
+            aria-label="Collapse asset panel"
+            title="Collapse asset panel"
+          >«</button>
+          <div class="sidebar-content" data-role="asset-palette"></div>
+        </aside>
         <div
           class="sidebar-resizer"
           data-role="sidebar-resizer"
@@ -116,7 +124,9 @@ export function createEditorLayout(root) {
     levelSummary: root.querySelector('[data-role="level-summary"]'),
     placeSelectedAssetButton: root.querySelector('[data-action="place-selected-asset"]'),
     selectedLevelName: root.querySelector('[data-role="selected-level-name"]'),
+    sidebar: root.querySelector('[data-role="sidebar"]'),
     sidebarResizer: root.querySelector('[data-role="sidebar-resizer"]'),
+    sidebarToggle: root.querySelector('[data-action="toggle-sidebar"]'),
     startupStatus: root.querySelector('[data-role="startup-status"]'),
     statusMessage: root.querySelector('[data-role="status-message"]'),
     workspace: root.querySelector(".workspace"),

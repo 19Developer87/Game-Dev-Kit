@@ -60,20 +60,26 @@ The editor currently supports:
 - Hover coordinate display and selected range display.
 - Imported asset placement into one grid cell or a selected multi-cell area.
 - A Place Selected Asset button that is enabled when an asset and ready grid selection exist.
-- A Move tool for selecting, dragging, and resizing an existing placed asset on the grid.
-- In Move mode, `Ctrl+C` starts a floating copied-object placement for the selected placed asset.
-- Tool hotkeys: `Q` for Move, `W` for Paint, and `E` for Delete outside text-entry/modal contexts.
-- Eight resize handles on an asset selected in Move mode.
-- Delete and Backspace remove the currently selected placed object in Move mode when focus is not in editable UI.
+- A Select/Move tool for selecting placed assets, moving/resizing placed assets, selecting grid areas, and placing imported assets.
+- In Select/Move mode, `Ctrl+C` starts a floating copied-object placement for the selected placed asset.
+- Tool hotkeys: `Q` for Select/Move, `W` for Select/Move compatibility, and `E` for Delete outside text-entry/modal contexts.
+- Eight resize handles on an asset selected in Select/Move mode.
+- Delete and Backspace remove the currently selected placed object in Select/Move mode when focus is not in editable UI.
+- Delete and Backspace bulk delete placed assets intersecting the selected grid area immediately when no placed asset is selected.
+- The separate Paint toolbar button has been removed; placement now happens through Select/Move grid selections or asset drag/drop.
 - A compact Placed Asset Properties modal opened with `Asset > Properties` or by double-clicking a placed asset in Select/Move mode.
 - Placed instance properties for Grid Ref, Width/Height, Visible, Opacity, Layer, Blocks Movement, and Notes.
 - Identity / Info shows the source asset name and category only; internal placed/source IDs are kept in saved data but hidden from normal editing UI.
 - A movable and resizable Placed Asset Properties modal whose last panel bounds persist as a browser UI preference.
 - A dedicated grid viewport with its own accessible horizontal and vertical scrolling for large maps.
 - A horizontally resizable left asset/category panel whose width persists in the browser.
+- A minimisable left asset/category panel; when collapsed, only a restore button remains and the grid uses the freed space.
 - Drag/drop of imported assets from a category onto the grid.
 - Multi-cell placement as one stretched/fitted asset object, not one repeated asset per cell.
-- Delete mode that removes a placed copy by clicking any covered grid cell, including a stretched object.
+- Delete mode that immediately removes a placed copy by clicking any covered grid cell, including a stretched object.
+- Delete mode supports click-and-drag area deletion for placed grid assets.
+- Select/Move supports multi-selecting placed assets by dragging a grid area across them.
+- Multi-selected placed assets can be moved together as a snapped group while preserving relative spacing.
 - Overwrite confirmation before a new placement removes overlapping objects.
 - Browser refresh restoration of project data, levels, categories, imported image data, and placed objects.
 - No visible default placeholder asset library.
@@ -94,7 +100,7 @@ Current limitations:
 - Do not show Collision, Solid, Blocks Movement, Transparent, or Visible in the import modal yet.
 - The import modal still does not expose instance fields; Phase 4 editing applies only to placed grid assets.
 - Do not change the grid coordinate system.
-- Do not break Move, Paint, or Delete tool behaviour or their `Q`, `W`, and `E` hotkeys.
+- Do not break Select/Move or Delete tool behaviour or their `Q`, `W`, and `E` hotkeys.
 - Do not change save structures or storage keys without a migration path.
 - Do not wipe browser storage, categories, assets, levels, or placed objects.
 - Do not overwrite project JSON files unless the user chooses Save or Save As.
@@ -169,6 +175,7 @@ Storage constants currently visible in `EditorTypes.js`:
 | Destructive-action backups | localStorage: `game-dev-kit-editor-backups` |
 | Copied level clipboard | localStorage: `game-dev-kit-copied-level` |
 | Left asset panel width preference | localStorage: `game-dev-kit-sidebar-width` |
+| Left asset panel collapsed preference | localStorage: `game-dev-kit-sidebar-collapsed` |
 | Placed Asset Properties panel bounds preference | localStorage: `game-dev-kit-properties-dialog-bounds` |
 | Imported image store database | IndexedDB database: `game-dev-kit-assets` |
 | Imported image object store | IndexedDB store: `imported-images` |
@@ -238,7 +245,11 @@ Deleting a level removes it from browser project state and from the active proje
 - Releasing the mouse keeps the selected area active in a ready state.
 - Pressing Escape clears the selection.
 - Changing to Delete mode clears active placement selection and deletes objects rather than extending selection.
+- Select/Move owns grid-area selection on empty cells; mouse down on a placed asset selects/moves that placed asset instead.
 - The selected range drives one stretched/fitted asset placement.
+- The selected range can also drive bulk deletion: with no placed asset selected, Delete or Backspace immediately deletes all placed assets intersecting the selected range.
+- When a Select/Move selection range intersects placed assets, those placed assets become selected/highlighted for group operations.
+- Select/Move drag selection is calculated from grid-surface coordinates so the selection rectangle draws continuously above placed assets and selects any placed asset it intersects.
 - The grid viewport owns its scrollbars, so horizontal scrolling is available at the bottom of the visible grid panel instead of only after scrolling the browser page to the bottom.
 
 Grid implementation notes:
@@ -247,6 +258,7 @@ Grid implementation notes:
 - Editable cells occupy `grid-surface`.
 - Placed objects render in an absolutely positioned `asset-overlay-layer` above cells.
 - Selection/drop feedback renders in a separate absolute overlay.
+- The Select/Move selection rectangle sits above the placed asset overlay and is not interrupted by placed assets under the pointer.
 - Placed images therefore do not push or move the number or letter headers.
 - Row and column headers remain aligned using sticky header regions inside the scrolling grid viewport.
 - The top-left alignment spacer is hidden and non-interactive; it must not paint over row labels while the grid scrolls.
@@ -336,7 +348,12 @@ For one imported file while a grid range is already selected, the editor may off
 - Dragging an asset onto an active selected range places one stretched asset over that range.
 - Dragging an asset onto an unselected cell places one `1x1` object.
 - Placement warns before removing any object overlapping the target rectangle.
-- Move mode selects one placed object without changing its registry asset, lets it be dragged to a snapped grid position, and lets its eight handles resize it within grid bounds.
+- Select/Move mode selects one placed object without changing its registry asset, lets it be dragged to a snapped grid position, and lets its eight handles resize it within grid bounds.
+- Select/Move mode can select multiple placed objects by dragging a grid range that intersects them.
+- Dragging any asset in a multi-selected group moves the whole group together, clamps the group inside the grid, and preserves each asset's width, height, source asset, and relative offset.
+- When group dragging begins, the original grid-area selection rectangle is cleared while the selected asset borders remain visible.
+- Group move updates each moved asset's `x`, `y`, `gridRef`, and `rangeRef` in the current level only.
+- Group resize is not implemented; resize handles are shown only when a single placed asset is selected.
 - Moving or resizing updates only that current-level object's `x`, `y`, `width`, `height`, `gridRef`, and `rangeRef`; its `id` and `assetId` remain stable.
 - Placed Asset Properties uses `Grid Ref` as its user-facing position field. `x` and `y` remain stored internally and are recalculated from the submitted Grid Ref; `rangeRef` is recalculated after position or size edits.
 - Identity / Info deliberately hides internal `id` and `assetId` values while keeping them on placed asset data for saving and loading.
@@ -347,11 +364,18 @@ For one imported file while a grid range is already selected, the editor may off
 - Layer is a per-instance choice (`Terrain`, `Objects`, `Overlay`, or `Trigger`) with basic draw ordering only; selecting Trigger saves `layer: "Trigger"` as a marker for future gameplay trigger zones.
 - Full trigger actions and a hide/lock layer panel remain future work; Trigger Type, target level/spawn, dialogue, battle, cutscene, door, and exit behavior are not implemented.
 - Moving or resizing into another object's rectangle warns first, then uses the existing replacement policy if confirmed.
-- In Move mode, `Ctrl+C` copies the selected placed object into a floating placement preview with a yellow outline; clicking a grid cell commits a new placed object with a new ID and the same asset/size fields.
-- The floating copy preview snaps to valid grid positions, is not saved before placement, and is cancelled with Escape or by switching away from Move mode.
-- In Move mode, Delete or Backspace removes the selected placed copy from the current level only and clears its selection.
-- Delete mode removes a placed copy from the current level only. Clicking any covered cell removes the whole stretched object.
+- In Select/Move mode, `Ctrl+C` copies the selected placed object into a floating placement preview with a yellow outline; clicking a grid cell commits a new placed object with a new ID and the same asset/size fields.
+- `Ctrl+C` group copy is not implemented; with multiple placed assets selected, the editor reports that group copy is not implemented yet.
+- The floating copy preview snaps to valid grid positions, is not saved before placement, and is cancelled with Escape or by switching away from Select/Move mode.
+- In Select/Move mode, Delete or Backspace removes the selected placed copy from the current level only, clears its selection, and does not ask for confirmation.
+- In Select/Move mode, Delete or Backspace removes all multi-selected placed copies from the current level only when a group is selected.
+- In Select/Move mode, if no placed copy is selected but a grid area is selected, Delete or Backspace immediately deletes every current-level placed copy that intersects that area.
+- Asset menu Properties is for a single selected placed asset only; multi-asset properties are not implemented.
+- Delete mode removes placed copies from the current level only without confirmation. Clicking any covered cell removes the whole stretched object.
+- Delete mode click-and-drag shows the selected delete area and immediately removes every current-level placed copy intersecting that area on mouse release.
+- Delete mode drag-delete remains unchanged by Select/Move multi-selection behaviour.
 - Deleting an imported asset from the palette is separate: it removes registry availability only when that asset is not currently placed on any level.
+- Confirmation prompts still remain for deleting levels, clearing levels, deleting categories, and deleting imported palette assets.
 
 Example placed asset JSON:
 
@@ -410,13 +434,14 @@ For browser autosave, an imported asset's stored `src` may be `indexeddb:[asset-
 
 The current editor UI includes:
 
-- Top toolbar containing level controls, grid size controls, Move, Paint, Delete, and Place Selected Asset, with `Q`, `W`, and `E` shortcut hints in tooltips.
+- Top toolbar containing level controls, grid size controls, Select/Move, Delete, and Place Selected Asset, with `Q` and `E` shortcut hints in tooltips.
 - Level controls for selecting, creating, renaming, deleting, clearing, and drag-reordering levels.
 - A File menu for Choose Project Folder, Save, and Save As.
 - An Edit menu for Copy Level and Paste Level.
 - An Asset menu for Properties that is inactive until a placed asset is selected with Select/Move.
 - A movable/resizable Placed Asset Properties modal; Grid Ref is the visible position editor while X/Y remain internal data.
 - A left asset panel containing Create Category, Import Asset, Clean Empty Categories, search, category sections, thumbnails, delete controls, and drag sources; its divider can be dragged horizontally and the width persists after refresh.
+- The left asset panel has a collapse/restore button. Collapsed state persists in browser UI preferences and does not affect project, level, or asset registry JSON.
 - A status bar containing general feedback, hover/selected coordinate display, and current level/grid summary.
 - The main grid viewport with its own scrollbars, sticky coordinate headers, editable cells, the placed asset overlay, and selection/drop overlays.
 
@@ -479,21 +504,28 @@ Before accepting changes to existing editor behaviour, verify:
 - [ ] Drag an asset from a category to a single cell.
 - [ ] Drag an asset from a category onto an active selected area.
 - [ ] Confirm overwrite warning appears when placement overlaps an existing object.
-- [ ] Activate Move with its toolbar button and with `Q`; activate Paint with `W` and Delete with `E`.
+- [ ] Activate Select/Move with its toolbar button and with `Q`; press `W` and confirm it remains in Select/Move; activate Delete with `E`.
 - [ ] Focus an editable input or import modal field and confirm typing `Q`, `W`, or `E` does not switch tools.
-- [ ] Select a placed asset in Move mode and confirm its outline and eight resize handles appear.
+- [ ] Select a placed asset in Select/Move mode and confirm its outline and eight resize handles appear.
 - [ ] Drag a selected placed asset, confirm it snaps within bounds, then refresh and confirm the new position persists.
 - [ ] Resize a selected asset from corner and side handles, confirm it cannot leave the grid or shrink below `1x1`, then refresh and confirm the size persists.
-- [ ] In Move mode, select a placed asset, press `Ctrl+C`, confirm a yellow floating preview appears, click a new grid position, and confirm the new placed copy survives refresh.
+- [ ] In Select/Move mode, select a placed asset, press `Ctrl+C`, confirm a yellow floating preview appears, click a new grid position, and confirm the new placed copy survives refresh.
 - [ ] Start floating copy placement and press Escape; confirm no copied placed asset is added.
 - [ ] Move or resize over another asset and confirm the overlap replacement warning appears before removal.
-- [ ] Select a placed object in Move mode, press Delete and Backspace in separate tests, and confirm each removes only the selected grid copy.
+- [ ] Select a placed object in Select/Move mode, press Delete and Backspace in separate tests, and confirm each removes only the selected grid copy.
+- [ ] Drag-select multiple placed assets in Select/Move mode and confirm every intersecting placed copy is highlighted.
+- [ ] Drag one selected asset in a multi-selection and confirm the whole group moves together, snaps to grid, and remains inside grid bounds.
+- [ ] Confirm resize handles and Asset Properties remain single-asset only and are not shown for multi-selected groups.
+- [ ] Press Delete or Backspace with multiple placed assets selected and confirm all selected placed copies are removed without deleting palette assets.
+- [ ] Select a grid area in Select/Move mode, press Delete or Backspace with no placed object selected, and confirm every intersecting placed copy is removed without a confirmation prompt.
 - [ ] Type Delete/Backspace inside an editable input and confirm editor object deletion is not triggered.
 - [ ] Open a `50x50` grid and confirm horizontal and vertical grid viewport scrollbars are accessible in the visible panel.
 - [ ] Drag the asset panel divider wider/narrower, refresh, and confirm the saved width returns without disrupting grid scrollbars or alignment.
+- [ ] Collapse and restore the asset panel, then refresh and confirm the collapsed/restored state and previous expanded width return.
 - [ ] Confirm coordinate axes sit flush beside the grid and the hidden top-left spacer never covers row labels during scrolling.
 - [ ] Scroll the grid horizontally and vertically, then place, move, and resize an asset and confirm grid alignment remains correct.
-- [ ] Use Delete mode on any covered cell of a stretched asset and confirm the whole placed copy is removed.
+- [ ] Use Delete mode on any covered cell of a stretched asset and confirm the whole placed copy is removed without a confirmation prompt.
+- [ ] In Delete mode, drag over a grid area containing placed assets and confirm every intersecting placed copy is removed without a confirmation prompt.
 - [ ] Attempt to delete a palette asset still used on a level and confirm deletion is blocked.
 - [ ] Delete an unused palette asset.
 - [ ] Delete an empty category.

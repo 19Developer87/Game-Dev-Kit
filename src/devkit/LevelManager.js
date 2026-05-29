@@ -238,11 +238,20 @@ export function findObjectsAtCell(level, x, y) {
 }
 
 export function removeObjectsAtCell(level, x, y) {
+  const removedObjects = [];
+
   LAYERS.forEach((layerName) => {
-    level.layers[layerName] = (level.layers[layerName] || []).filter(
-      (placedObject) => !objectCoversCell(placedObject, x, y),
-    );
+    level.layers[layerName] = (level.layers[layerName] || []).filter((placedObject) => {
+      if (!objectCoversCell(placedObject, x, y)) {
+        return true;
+      }
+
+      removedObjects.push(placedObject);
+      return false;
+    });
   });
+
+  return removedObjects;
 }
 
 export function removePlacedObjectById(level, placedObjectId) {
@@ -278,21 +287,31 @@ export function findObjectsInRange(level, x, y, width = 1, height = 1) {
 }
 
 export function removeObjectsInRange(level, x, y, width = 1, height = 1) {
+  const removedObjects = [];
+
   LAYERS.forEach((layerName) => {
-    level.layers[layerName] = (level.layers[layerName] || []).filter(
-      (placedObject) =>
-        !rangesOverlap(
-          x,
-          y,
-          width,
-          height,
-          Number(placedObject.x) || 1,
-          Number(placedObject.y) || 1,
-          Number(placedObject.width) || 1,
-          Number(placedObject.height) || 1,
-        ),
-    );
+    level.layers[layerName] = (level.layers[layerName] || []).filter((placedObject) => {
+      const overlaps = rangesOverlap(
+        x,
+        y,
+        width,
+        height,
+        Number(placedObject.x) || 1,
+        Number(placedObject.y) || 1,
+        Number(placedObject.width) || 1,
+        Number(placedObject.height) || 1,
+      );
+
+      if (!overlaps) {
+        return true;
+      }
+
+      removedObjects.push(placedObject);
+      return false;
+    });
   });
+
+  return removedObjects;
 }
 
 function removeObjectsInRangeExcept(level, x, y, width, height, preservedObjectId) {
@@ -311,6 +330,29 @@ function removeObjectsInRangeExcept(level, x, y, width, height, preservedObjectI
           Number(placedObject.height) || 1,
         ),
     );
+  });
+}
+
+function removeObjectsInRangesExcept(level, ranges, preservedIds) {
+  LAYERS.forEach((layerName) => {
+    level.layers[layerName] = (level.layers[layerName] || []).filter((placedObject) => {
+      if (preservedIds.has(placedObject.id)) {
+        return true;
+      }
+
+      return !ranges.some((range) =>
+        rangesOverlap(
+          range.x,
+          range.y,
+          range.width,
+          range.height,
+          Number(placedObject.x) || 1,
+          Number(placedObject.y) || 1,
+          Number(placedObject.width) || 1,
+          Number(placedObject.height) || 1,
+        ),
+      );
+    });
   });
 }
 
@@ -389,6 +431,48 @@ export function updatePlacedAssetBounds(level, placedObjectId, x, y, width, heig
   selectedObject.gridRef = toGridRef(x, y);
   selectedObject.rangeRef = toRangeRef(x, y, width, height);
   return selectedObject;
+}
+
+export function updatePlacedAssetGroupBounds(level, boundsById) {
+  const updates = new Map(boundsById);
+  const selectedObjects = [];
+
+  LAYERS.forEach((layerName) => {
+    (level.layers[layerName] || []).forEach((placedObject) => {
+      if (updates.has(placedObject.id)) {
+        selectedObjects.push(placedObject);
+      }
+    });
+  });
+
+  if (selectedObjects.length !== updates.size) {
+    return null;
+  }
+
+  const preservedIds = new Set(updates.keys());
+  const targetRanges = selectedObjects.map((placedObject) => {
+    const bounds = updates.get(placedObject.id);
+    return {
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
+    };
+  });
+
+  removeObjectsInRangesExcept(level, targetRanges, preservedIds);
+
+  selectedObjects.forEach((placedObject) => {
+    const bounds = updates.get(placedObject.id);
+    placedObject.x = bounds.x;
+    placedObject.y = bounds.y;
+    placedObject.width = bounds.width;
+    placedObject.height = bounds.height;
+    placedObject.gridRef = toGridRef(bounds.x, bounds.y);
+    placedObject.rangeRef = toRangeRef(bounds.x, bounds.y, bounds.width, bounds.height);
+  });
+
+  return selectedObjects;
 }
 
 export function updatePlacedAssetProperties(level, placedObjectId, properties) {

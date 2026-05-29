@@ -11,6 +11,7 @@ export class GridEditor {
     onPlacedObjectSelect,
     onPlacedObjectProperties,
     onPlacedObjectTransform,
+    onPlacedObjectGroupMoveStart,
     onCopyPreviewMove,
   }) {
     this.root = root;
@@ -22,8 +23,9 @@ export class GridEditor {
     this.onPlacedObjectSelect = onPlacedObjectSelect;
     this.onPlacedObjectProperties = onPlacedObjectProperties;
     this.onPlacedObjectTransform = onPlacedObjectTransform;
+    this.onPlacedObjectGroupMoveStart = onPlacedObjectGroupMoveStart;
     this.onCopyPreviewMove = onCopyPreviewMove;
-    this.interactionMode = "paint";
+    this.interactionMode = "move";
     this.copyModeActive = false;
     this.gesture = null;
     this.level = null;
@@ -32,6 +34,7 @@ export class GridEditor {
     this.dropPreviewBox = null;
     this.copyPreviewBox = null;
     this.selectedPlacedObjectId = null;
+    this.selectedPlacedObjectIds = new Set();
     this.lastPlacedObjectPointerDown = null;
   }
 
@@ -50,10 +53,12 @@ export class GridEditor {
     selection = null,
     dropPreview = null,
     selectedPlacedObjectId = null,
+    selectedPlacedObjectIds = [],
     copyPreview = null,
   ) {
     this.level = level;
     this.selectedPlacedObjectId = selectedPlacedObjectId;
+    this.selectedPlacedObjectIds = new Set(selectedPlacedObjectIds);
     this.root.innerHTML = "";
 
     const wrap = document.createElement("div");
@@ -177,16 +182,19 @@ export class GridEditor {
         return;
       }
 
-      const cell = this.findCellAtPoint(event.clientX, event.clientY);
-      if (!cell) {
+      const current = this.getCellFromClientPoint(event.clientX, event.clientY);
+      if (!current) {
         return;
       }
 
-      const current = readCellPosition(cell);
       this.gesture.current = current;
       const moved = current.x !== this.gesture.start.x || current.y !== this.gesture.start.y;
 
-      if (moved && this.interactionMode === "paint") {
+      if (
+        moved &&
+        (this.interactionMode === "move" || this.interactionMode === "delete") &&
+        !this.copyModeActive
+      ) {
         this.gesture.moved = true;
         const range = createRange(
           this.gesture.start.x,
@@ -267,7 +275,11 @@ export class GridEditor {
       this.surface.releasePointerCapture(gesture.pointerId);
     }
 
-    if (gesture.moved && this.interactionMode === "paint") {
+    if (
+      gesture.moved &&
+      (this.interactionMode === "move" || this.interactionMode === "delete") &&
+      !this.copyModeActive
+    ) {
       const range = createRange(
         gesture.start.x,
         gesture.start.y,
@@ -349,6 +361,7 @@ export class GridEditor {
       const asset = assetLookup.get(placedObject.assetId);
       const marker = document.createElement("div");
       marker.className = "placed-asset";
+      marker.dataset.placedObjectId = placedObject.id;
       marker.title = `${asset?.name || placedObject.name || placedObject.assetId} ${placedObject.rangeRef || ""}`.trim();
       marker.style.left = `${(Number(placedObject.x) - 1) * level.tileSize}px`;
       marker.style.top = `${(Number(placedObject.y) - 1) * level.tileSize}px`;
@@ -356,10 +369,13 @@ export class GridEditor {
       marker.style.height = `${(Number(placedObject.height) || 1) * level.tileSize}px`;
       marker.style.zIndex = String(getPlacedAssetLayerOrder(placedObject.layer));
       const isSelected =
-        this.interactionMode === "move" && placedObject.id === selectedPlacedObjectId;
+        this.interactionMode === "move" &&
+        (placedObject.id === selectedPlacedObjectId || this.selectedPlacedObjectIds.has(placedObject.id));
+      const isPrimarySelected = placedObject.id === selectedPlacedObjectId;
       const isVisible = placedObject.visible !== false;
       const opacity = normalizeOpacity(placedObject.opacity);
       marker.classList.toggle("is-selected", isSelected);
+      marker.classList.toggle("is-primary-selected", isPrimarySelected);
       marker.classList.toggle("is-hidden", !isVisible);
       marker.classList.toggle("is-zero-opacity", isVisible && opacity === 0);
 
@@ -409,16 +425,20 @@ export class GridEditor {
             return;
           }
 
-          if (!isSelected) {
-            this.onPlacedObjectSelect?.(placedObject.id);
+          if (isSelected && this.selectedPlacedObjectIds.size > 1) {
+            this.startPlacedObjectGroupTransform(event, placedObject);
             return;
+          }
+
+          if (!isSelected) {
+            this.selectedPlacedObjectIds = new Set([placedObject.id]);
           }
 
           this.startPlacedObjectTransform(event, marker, placedObject, "move");
         });
       }
 
-      if (isSelected) {
+      if (isSelected && this.selectedPlacedObjectIds.size <= 1) {
         this.appendResizeHandles(marker, placedObject);
       }
 
@@ -483,6 +503,8 @@ export class GridEditor {
           ...preview,
           action,
         });
+      } else if (action === "move") {
+        this.onPlacedObjectSelect?.(placedObject.id);
       }
     };
 
@@ -499,6 +521,125 @@ export class GridEditor {
     marker.addEventListener("pointermove", movePreview);
     marker.addEventListener("pointerup", finishTransform);
     marker.addEventListener("pointercancel", cancelTransform);
+  }
+
+  startPlacedObjectGroupTransform(event, activePlacedObject) {
+    const selectedIds = Array.from(this.selectedPlacedObjectIds);
+    const selectedObjects = getPlacedObjects(this.level).filter((placedObject) =>
+      this.selectedPlacedObjectIds.has(placedObject.id),
+    );
+
+    if (selectedObjects.length <= 1) {
+      const marker = this.surface.querySelector(
+        `.placed-asset[data-placed-object-id="${CSS.escape(activePlacedObject.id)}"]`,
+      );
+      if (marker) {
+        this.startPlacedObjectTransform(event, marker, activePlacedObject, "move");
+      }
+      return;
+    }
+
+    const startClientX = event.clientX;
+    const startClientY = event.clientY;
+    const startBoundsById = new Map(
+      selectedObjects.map((placedObject) => [
+        placedObject.id,
+        {
+          x: Number(placedObject.x) || 1,
+          y: Number(placedObject.y) || 1,
+          width: Number(placedObject.width) || 1,
+          height: Number(placedObject.height) || 1,
+        },
+      ]),
+    );
+    let preview = this.calculateGroupMoveBounds(startBoundsById, 0, 0);
+    let hasStartedGroupMove = false;
+
+    const movePreview = (pointerEvent) => {
+      const cellsX = Math.round((pointerEvent.clientX - startClientX) / this.level.tileSize);
+      const cellsY = Math.round((pointerEvent.clientY - startClientY) / this.level.tileSize);
+      if (!hasStartedGroupMove && (cellsX !== 0 || cellsY !== 0)) {
+        hasStartedGroupMove = true;
+        this.onPlacedObjectGroupMoveStart?.();
+      }
+      preview = this.calculateGroupMoveBounds(startBoundsById, cellsX, cellsY);
+      preview.boundsById.forEach((bounds, placedObjectId) => {
+        const marker = this.surface.querySelector(
+          `.placed-asset[data-placed-object-id="${CSS.escape(placedObjectId)}"]`,
+        );
+        if (marker) {
+          this.positionMarker(marker, bounds);
+        }
+      });
+    };
+
+    const finishTransform = (pointerEvent) => {
+      this.surface.removeEventListener("pointermove", movePreview);
+      this.surface.removeEventListener("pointerup", finishTransform);
+      this.surface.removeEventListener("pointercancel", cancelTransform);
+      if (this.surface.hasPointerCapture?.(pointerEvent.pointerId)) {
+        this.surface.releasePointerCapture(pointerEvent.pointerId);
+      }
+
+      if (preview.deltaX !== 0 || preview.deltaY !== 0) {
+        this.onPlacedObjectTransform?.({
+          placedObjectId: activePlacedObject.id,
+          placedObjectIds: selectedIds,
+          boundsById: Array.from(preview.boundsById.entries()),
+          action: "group-move",
+        });
+      }
+    };
+
+    const cancelTransform = (pointerEvent) => {
+      this.surface.removeEventListener("pointermove", movePreview);
+      this.surface.removeEventListener("pointerup", finishTransform);
+      this.surface.removeEventListener("pointercancel", cancelTransform);
+      if (this.surface.hasPointerCapture?.(pointerEvent.pointerId)) {
+        this.surface.releasePointerCapture(pointerEvent.pointerId);
+      }
+      startBoundsById.forEach((bounds, placedObjectId) => {
+        const marker = this.surface.querySelector(
+          `.placed-asset[data-placed-object-id="${CSS.escape(placedObjectId)}"]`,
+        );
+        if (marker) {
+          this.positionMarker(marker, bounds);
+        }
+      });
+    };
+
+    this.surface.setPointerCapture(event.pointerId);
+    this.surface.addEventListener("pointermove", movePreview);
+    this.surface.addEventListener("pointerup", finishTransform);
+    this.surface.addEventListener("pointercancel", cancelTransform);
+  }
+
+  calculateGroupMoveBounds(startBoundsById, requestedDeltaX, requestedDeltaY) {
+    let minDeltaX = -Infinity;
+    let maxDeltaX = Infinity;
+    let minDeltaY = -Infinity;
+    let maxDeltaY = Infinity;
+
+    startBoundsById.forEach((bounds) => {
+      minDeltaX = Math.max(minDeltaX, 1 - bounds.x);
+      maxDeltaX = Math.min(maxDeltaX, this.level.gridWidth - (bounds.x + bounds.width - 1));
+      minDeltaY = Math.max(minDeltaY, 1 - bounds.y);
+      maxDeltaY = Math.min(maxDeltaY, this.level.gridHeight - (bounds.y + bounds.height - 1));
+    });
+
+    const deltaX = clamp(requestedDeltaX, minDeltaX, maxDeltaX);
+    const deltaY = clamp(requestedDeltaY, minDeltaY, maxDeltaY);
+    const boundsById = new Map();
+
+    startBoundsById.forEach((bounds, placedObjectId) => {
+      boundsById.set(placedObjectId, {
+        ...bounds,
+        x: bounds.x + deltaX,
+        y: bounds.y + deltaY,
+      });
+    });
+
+    return { deltaX, deltaY, boundsById };
   }
 
   calculateTransformBounds(start, deltaX, deltaY, action, direction) {
@@ -546,10 +687,6 @@ export class GridEditor {
     marker.style.height = `${bounds.height * this.level.tileSize}px`;
   }
 
-  findCellAtPoint(clientX, clientY) {
-    return document.elementFromPoint(clientX, clientY)?.closest(".grid-cell");
-  }
-
   getCellFromClientPoint(clientX, clientY) {
     const bounds = this.surface.getBoundingClientRect();
     const x = Math.floor((clientX - bounds.left) / this.level.tileSize) + 1;
@@ -561,13 +698,6 @@ export class GridEditor {
 
     return { x, y };
   }
-}
-
-function readCellPosition(cell) {
-  return {
-    x: Number(cell.dataset.x),
-    y: Number(cell.dataset.y),
-  };
 }
 
 function createRange(startX, startY, endX, endY) {
