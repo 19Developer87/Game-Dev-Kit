@@ -40,10 +40,11 @@ The editor currently supports:
 - Grid size selection for `10x10`, `20x20`, `30x30`, `40x40`, `50x50`, and custom sizes up to `100x100`.
 - Level selector with current-level display.
 - Create New Level, Rename Level, Delete Level, and Clear Level.
+- Delete Level is working: it confirms first, removes only the selected level from the project, selects another level, rerenders the grid/level selector, and persists to browser storage.
 - Level reordering by drag within the level selector.
 - File menu with Choose Project Folder, Save, and Save As.
 - Edit menu with Copy Level and Paste Level.
-- Asset menu beside File/Edit, enabled only for a placed asset selected in Select/Move mode.
+- Asset menu beside File/Edit, enabled only for one placed asset selected in Select/Move mode.
 - Automatic browser persistence plus project-folder JSON saving.
 - Separate project JSON, level JSON, and asset registry JSON output.
 - Asset import from local image files.
@@ -60,11 +61,11 @@ The editor currently supports:
 - Hover coordinate display and selected range display.
 - Imported asset placement into one grid cell or a selected multi-cell area.
 - A Place Selected Asset button that is enabled when an asset and ready grid selection exist.
-- A Select/Move tool for selecting placed assets, moving/resizing placed assets, selecting grid areas, and placing imported assets.
+- Select/Move is the main editing tool for selecting placed assets, moving/resizing placed assets, selecting grid areas, multi-selecting placed assets, and placing imported assets.
 - In Select/Move mode, `Ctrl+C` starts a floating copied-object placement for the selected placed asset.
 - Tool hotkeys: `Q` for Select/Move, `W` for Select/Move compatibility, and `E` for Delete outside text-entry/modal contexts.
 - Eight resize handles on an asset selected in Select/Move mode.
-- Delete and Backspace remove the currently selected placed object in Select/Move mode when focus is not in editable UI.
+- Delete and Backspace remove the currently selected placed object or selected placed-object group in Select/Move mode when focus is not in editable UI.
 - Delete and Backspace bulk delete placed assets intersecting the selected grid area immediately when no placed asset is selected.
 - The separate Paint toolbar button has been removed; placement now happens through Select/Move grid selections or asset drag/drop.
 - A compact Placed Asset Properties modal opened with `Asset > Properties` or by double-clicking a placed asset in Select/Move mode.
@@ -73,7 +74,7 @@ The editor currently supports:
 - A movable and resizable Placed Asset Properties modal whose last panel bounds persist as a browser UI preference.
 - A dedicated grid viewport with its own accessible horizontal and vertical scrolling for large maps.
 - A horizontally resizable left asset/category panel whose width persists in the browser.
-- A minimisable left asset/category panel; when collapsed, only a restore button remains and the grid uses the freed space.
+- A minimisable left asset/category panel; when collapsed, only a restore button remains, the grid uses the freed space, and restoring returns the previous expanded width.
 - Drag/drop of imported assets from a category onto the grid.
 - Multi-cell placement as one stretched/fitted asset object, not one repeated asset per cell.
 - Delete mode that immediately removes a placed copy by clicking any covered grid cell, including a stretched object.
@@ -81,6 +82,7 @@ The editor currently supports:
 - Select/Move supports multi-selecting placed assets by dragging a grid area across them.
 - Multi-selected placed assets can be moved together as a snapped group while preserving relative spacing.
 - Overwrite confirmation before a new placement removes overlapping objects.
+- Confirmation prompts remain for Delete Level, Clear Level, Delete Category, and Delete Palette Asset.
 - Browser refresh restoration of project data, levels, categories, imported image data, and placed objects.
 - No visible default placeholder asset library.
 
@@ -223,6 +225,7 @@ Deleting a level removes it from browser project state and from the active proje
 - Create New Level creates and immediately selects a new empty level.
 - Rename Level changes the current level display name. The existing filename is retained.
 - Delete Level uses an in-app confirmation dialog, refuses to delete the final remaining level, attempts a browser backup without blocking deletion if backup storage fails, removes only the selected level from project state, and selects the next level when available or the previous level otherwise.
+- Delete Level updates `lastOpenedLevelId`, refreshes the level picker/grid, clears selected placed assets/properties for the deleted level, and saves the updated browser state immediately.
 - Clear Level requires confirmation and clears placed content from the current level layers only.
 - Copy Level stores full copied level data in localStorage under `game-dev-kit-copied-level`.
 - Paste Level pastes copied grid size and content into the current level while preserving that destination level's ID, name, and filename. It warns before replacing existing current-level content.
@@ -250,6 +253,7 @@ Deleting a level removes it from browser project state and from the active proje
 - The selected range can also drive bulk deletion: with no placed asset selected, Delete or Backspace immediately deletes all placed assets intersecting the selected range.
 - When a Select/Move selection range intersects placed assets, those placed assets become selected/highlighted for group operations.
 - Select/Move drag selection is calculated from grid-surface coordinates so the selection rectangle draws continuously above placed assets and selects any placed asset it intersects.
+- Selected placed-asset borders remain visible during single and group movement; when group dragging begins, the grid-area selection rectangle clears.
 - The grid viewport owns its scrollbars, so horizontal scrolling is available at the bottom of the visible grid panel instead of only after scrolling the browser page to the bottom.
 
 Grid implementation notes:
@@ -265,6 +269,7 @@ Grid implementation notes:
 - Axis bands sit flush against the scrollable grid viewport and directly beside/above the editable cell surface.
 - Pointer/drop coordinate calculations continue to use the scrolled grid surface bounds, so asset placement, movement, and resizing remain mapped to grid cells after scrolling.
 - Resizing the asset panel changes available viewport width only; grid-cell coordinate calculations remain based on the grid surface and tile size.
+- Grid coordinate headers remain aligned with cells while scrolling, placing, moving, resizing, deleting, and collapsing/restoring the left asset panel.
 
 ## 10. Asset System
 
@@ -350,13 +355,14 @@ For one imported file while a grid range is already selected, the editor may off
 - Placement warns before removing any object overlapping the target rectangle.
 - Select/Move mode selects one placed object without changing its registry asset, lets it be dragged to a snapped grid position, and lets its eight handles resize it within grid bounds.
 - Select/Move mode can select multiple placed objects by dragging a grid range that intersects them.
+- The Select/Move selection rectangle draws above placed assets and uses rectangle intersection, so stretched assets are selected when any part intersects the drag area.
 - Dragging any asset in a multi-selected group moves the whole group together, clamps the group inside the grid, and preserves each asset's width, height, source asset, and relative offset.
 - When group dragging begins, the original grid-area selection rectangle is cleared while the selected asset borders remain visible.
 - Group move updates each moved asset's `x`, `y`, `gridRef`, and `rangeRef` in the current level only.
 - Group resize is not implemented; resize handles are shown only when a single placed asset is selected.
 - Moving or resizing updates only that current-level object's `x`, `y`, `width`, `height`, `gridRef`, and `rangeRef`; its `id` and `assetId` remain stable.
 - Placed Asset Properties uses `Grid Ref` as its user-facing position field. `x` and `y` remain stored internally and are recalculated from the submitted Grid Ref; `rangeRef` is recalculated after position or size edits.
-- Identity / Info deliberately hides internal `id` and `assetId` values while keeping them on placed asset data for saving and loading.
+- Identity / Info shows Source asset name and Category name only. It deliberately hides internal `id` and `assetId` values while keeping them on placed asset data for saving and loading.
 - Placed Asset Properties updates the current-level object only and preserves unknown/custom fields.
 - The properties modal exposes `visible`, `opacity`, `layer`, `blocksMovement`, and `notes`; Collision/Solid/Walkable are not separate UI fields.
 - The properties modal can be dragged by its header and resized from its bottom-right corner; its position and size are kept in browser UI preferences rather than level JSON.
@@ -370,12 +376,12 @@ For one imported file while a grid range is already selected, the editor may off
 - In Select/Move mode, Delete or Backspace removes the selected placed copy from the current level only, clears its selection, and does not ask for confirmation.
 - In Select/Move mode, Delete or Backspace removes all multi-selected placed copies from the current level only when a group is selected.
 - In Select/Move mode, if no placed copy is selected but a grid area is selected, Delete or Backspace immediately deletes every current-level placed copy that intersects that area.
-- Asset menu Properties is for a single selected placed asset only; multi-asset properties are not implemented.
+- Asset menu Properties opens the same placed-asset properties panel for a single selected placed asset only; multi-asset properties are not implemented.
 - Delete mode removes placed copies from the current level only without confirmation. Clicking any covered cell removes the whole stretched object.
 - Delete mode click-and-drag shows the selected delete area and immediately removes every current-level placed copy intersecting that area on mouse release.
 - Delete mode drag-delete remains unchanged by Select/Move multi-selection behaviour.
 - Deleting an imported asset from the palette is separate: it removes registry availability only when that asset is not currently placed on any level.
-- Confirmation prompts still remain for deleting levels, clearing levels, deleting categories, and deleting imported palette assets.
+- Confirmation prompts still remain for Delete Level, Clear Level, Delete Category, and Delete Palette Asset.
 
 Example placed asset JSON:
 
@@ -441,7 +447,7 @@ The current editor UI includes:
 - An Asset menu for Properties that is inactive until a placed asset is selected with Select/Move.
 - A movable/resizable Placed Asset Properties modal; Grid Ref is the visible position editor while X/Y remain internal data.
 - A left asset panel containing Create Category, Import Asset, Clean Empty Categories, search, category sections, thumbnails, delete controls, and drag sources; its divider can be dragged horizontally and the width persists after refresh.
-- The left asset panel has a collapse/restore button. Collapsed state persists in browser UI preferences and does not affect project, level, or asset registry JSON.
+- The left asset panel has a collapse/restore button. Collapsed state persists in browser UI preferences, restoring returns the previous expanded width, and this does not affect project, level, or asset registry JSON.
 - A status bar containing general feedback, hover/selected coordinate display, and current level/grid summary.
 - The main grid viewport with its own scrollbars, sticky coordinate headers, editable cells, the placed asset overlay, and selection/drop overlays.
 
@@ -462,6 +468,8 @@ These issues occurred during earlier development and must not return:
 - Collision, Solid, Blocks Movement, Transparent, and Visible appeared too early in import UI; they must stay hidden until later explicitly requested work.
 - The placed-asset properties modal must remain instance-scoped; it must not edit source palette assets or expand into later gameplay systems.
 - The sticky top-left header spacer must remain visually hidden and must not obscure the left letter axis while scrolling.
+- Select/Move multi-selection previously stopped when dragging across placed assets; selection must continue using grid-surface coordinates and draw above placed assets.
+- Delete Level previously confirmed but did not remove the selected level in Chrome; it must keep removing the selected level from project state and refreshing the UI immediately.
 
 ## 17. Do Not Change Without Permission
 
