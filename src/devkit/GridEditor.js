@@ -36,6 +36,11 @@ export class GridEditor {
     this.selectedPlacedObjectId = null;
     this.selectedPlacedObjectIds = new Set();
     this.lastPlacedObjectPointerDown = null;
+    this.pendingSelectionCell = null;
+    this.selectionAnimationFrame = null;
+    this.lastLiveSelectionRange = null;
+    this.pendingCopyCell = null;
+    this.copyAnimationFrame = null;
   }
 
   setInteractionMode(mode) {
@@ -59,6 +64,8 @@ export class GridEditor {
     this.level = level;
     this.selectedPlacedObjectId = selectedPlacedObjectId;
     this.selectedPlacedObjectIds = new Set(selectedPlacedObjectIds);
+    this.cancelPendingSelectionFrame();
+    this.cancelPendingCopyFrame();
     this.root.innerHTML = "";
 
     const wrap = document.createElement("div");
@@ -157,12 +164,14 @@ export class GridEditor {
       if (this.gesture?.moved) {
         this.completeGesture();
       }
+      this.cancelPendingSelectionFrame();
       this.gesture = {
         pointerId: event.pointerId,
         start: { x, y },
         current: { x, y },
         moved: false,
       };
+      this.lastLiveSelectionRange = null;
       this.surface.setPointerCapture(event.pointerId);
     });
 
@@ -174,7 +183,7 @@ export class GridEditor {
       if (this.copyModeActive) {
         const target = this.getCellFromClientPoint(event.clientX, event.clientY);
         if (target) {
-          this.onCopyPreviewMove?.(target);
+          this.scheduleCopyPreviewUpdate(target);
         }
       }
 
@@ -196,14 +205,7 @@ export class GridEditor {
         !this.copyModeActive
       ) {
         this.gesture.moved = true;
-        const range = createRange(
-          this.gesture.start.x,
-          this.gesture.start.y,
-          current.x,
-          current.y,
-        );
-        this.updateSelection(range);
-        this.onSelectionChange(range, "draggingSelection");
+        this.scheduleSelectionUpdate(current);
       }
     });
 
@@ -220,6 +222,7 @@ export class GridEditor {
     });
 
     this.surface.addEventListener("pointercancel", () => {
+      this.cancelPendingSelectionFrame();
       this.gesture = null;
     });
   }
@@ -266,6 +269,7 @@ export class GridEditor {
   completeGesture() {
     const gesture = this.gesture;
     this.gesture = null;
+    this.cancelPendingSelectionFrame();
 
     if (!gesture) {
       return;
@@ -299,9 +303,11 @@ export class GridEditor {
 
   updateSelection(selection) {
     this.positionFeedbackBox(this.selectionBox, selection);
+    this.lastLiveSelectionRange = selection ? { ...selection } : null;
   }
 
   cancelGesture() {
+    this.cancelPendingSelectionFrame();
     this.gesture = null;
   }
 
@@ -335,6 +341,75 @@ export class GridEditor {
     }
 
     this.positionFeedbackBox(this.copyPreviewBox, preview.range);
+  }
+
+  scheduleSelectionUpdate(current) {
+    this.pendingSelectionCell = current;
+
+    if (this.selectionAnimationFrame !== null) {
+      return;
+    }
+
+    this.selectionAnimationFrame = window.requestAnimationFrame(() => {
+      this.selectionAnimationFrame = null;
+      this.flushSelectionUpdate();
+    });
+  }
+
+  flushSelectionUpdate() {
+    if (!this.gesture || !this.pendingSelectionCell) {
+      this.pendingSelectionCell = null;
+      return;
+    }
+
+    const current = this.pendingSelectionCell;
+    this.pendingSelectionCell = null;
+    const range = createRange(
+      this.gesture.start.x,
+      this.gesture.start.y,
+      current.x,
+      current.y,
+    );
+
+    if (rangesMatch(range, this.lastLiveSelectionRange)) {
+      return;
+    }
+
+    this.updateSelection(range);
+    this.onSelectionChange(range, "draggingSelection");
+  }
+
+  cancelPendingSelectionFrame() {
+    if (this.selectionAnimationFrame !== null) {
+      window.cancelAnimationFrame(this.selectionAnimationFrame);
+      this.selectionAnimationFrame = null;
+    }
+    this.pendingSelectionCell = null;
+  }
+
+  cancelPendingCopyFrame() {
+    if (this.copyAnimationFrame !== null) {
+      window.cancelAnimationFrame(this.copyAnimationFrame);
+      this.copyAnimationFrame = null;
+    }
+    this.pendingCopyCell = null;
+  }
+
+  scheduleCopyPreviewUpdate(target) {
+    this.pendingCopyCell = target;
+
+    if (this.copyAnimationFrame !== null) {
+      return;
+    }
+
+    this.copyAnimationFrame = window.requestAnimationFrame(() => {
+      this.copyAnimationFrame = null;
+      const pending = this.pendingCopyCell;
+      this.pendingCopyCell = null;
+      if (pending) {
+        this.onCopyPreviewMove?.(pending);
+      }
+    });
   }
 
   positionFeedbackBox(box, range) {
@@ -475,24 +550,61 @@ export class GridEditor {
     const startClientX = event.clientX;
     const startClientY = event.clientY;
     let preview = startBounds;
+    let pendingPreview = null;
+    let transformAnimationFrame = null;
+
+    const applyPreview = () => {
+      transformAnimationFrame = null;
+      if (!pendingPreview) {
+        return;
+      }
+      preview = pendingPreview;
+      pendingPreview = null;
+      this.positionMarker(marker, preview);
+    };
+
+    const schedulePreview = (bounds) => {
+      pendingPreview = bounds;
+      if (transformAnimationFrame !== null) {
+        return;
+      }
+      transformAnimationFrame = window.requestAnimationFrame(applyPreview);
+    };
+
+    const cancelPreviewFrame = () => {
+      if (transformAnimationFrame !== null) {
+        window.cancelAnimationFrame(transformAnimationFrame);
+        transformAnimationFrame = null;
+      }
+      pendingPreview = null;
+    };
+
+    const flushPreview = () => {
+      if (transformAnimationFrame !== null) {
+        window.cancelAnimationFrame(transformAnimationFrame);
+        applyPreview();
+      }
+    };
 
     marker.setPointerCapture(event.pointerId);
 
     const movePreview = (pointerEvent) => {
-      preview = this.calculateTransformBounds(
-        startBounds,
-        pointerEvent.clientX - startClientX,
-        pointerEvent.clientY - startClientY,
-        action,
-        direction,
+      schedulePreview(
+        this.calculateTransformBounds(
+          startBounds,
+          pointerEvent.clientX - startClientX,
+          pointerEvent.clientY - startClientY,
+          action,
+          direction,
+        ),
       );
-      this.positionMarker(marker, preview);
     };
 
     const finishTransform = (pointerEvent) => {
       marker.removeEventListener("pointermove", movePreview);
       marker.removeEventListener("pointerup", finishTransform);
       marker.removeEventListener("pointercancel", cancelTransform);
+      flushPreview();
       if (marker.hasPointerCapture?.(pointerEvent.pointerId)) {
         marker.releasePointerCapture(pointerEvent.pointerId);
       }
@@ -512,6 +624,7 @@ export class GridEditor {
       marker.removeEventListener("pointermove", movePreview);
       marker.removeEventListener("pointerup", finishTransform);
       marker.removeEventListener("pointercancel", cancelTransform);
+      cancelPreviewFrame();
       if (marker.hasPointerCapture?.(pointerEvent.pointerId)) {
         marker.releasePointerCapture(pointerEvent.pointerId);
       }
@@ -554,6 +667,54 @@ export class GridEditor {
     );
     let preview = this.calculateGroupMoveBounds(startBoundsById, 0, 0);
     let hasStartedGroupMove = false;
+    let pendingGroupPreview = null;
+    let groupAnimationFrame = null;
+    const markersById = new Map(
+      selectedObjects.map((placedObject) => [
+        placedObject.id,
+        this.surface.querySelector(
+          `.placed-asset[data-placed-object-id="${CSS.escape(placedObject.id)}"]`,
+        ),
+      ]),
+    );
+
+    const applyGroupPreview = () => {
+      groupAnimationFrame = null;
+      if (!pendingGroupPreview) {
+        return;
+      }
+      preview = pendingGroupPreview;
+      pendingGroupPreview = null;
+      preview.boundsById.forEach((bounds, placedObjectId) => {
+        const marker = markersById.get(placedObjectId);
+        if (marker) {
+          this.positionMarker(marker, bounds);
+        }
+      });
+    };
+
+    const scheduleGroupPreview = (nextPreview) => {
+      pendingGroupPreview = nextPreview;
+      if (groupAnimationFrame !== null) {
+        return;
+      }
+      groupAnimationFrame = window.requestAnimationFrame(applyGroupPreview);
+    };
+
+    const cancelGroupPreviewFrame = () => {
+      if (groupAnimationFrame !== null) {
+        window.cancelAnimationFrame(groupAnimationFrame);
+        groupAnimationFrame = null;
+      }
+      pendingGroupPreview = null;
+    };
+
+    const flushGroupPreview = () => {
+      if (groupAnimationFrame !== null) {
+        window.cancelAnimationFrame(groupAnimationFrame);
+        applyGroupPreview();
+      }
+    };
 
     const movePreview = (pointerEvent) => {
       const cellsX = Math.round((pointerEvent.clientX - startClientX) / this.level.tileSize);
@@ -562,21 +723,14 @@ export class GridEditor {
         hasStartedGroupMove = true;
         this.onPlacedObjectGroupMoveStart?.();
       }
-      preview = this.calculateGroupMoveBounds(startBoundsById, cellsX, cellsY);
-      preview.boundsById.forEach((bounds, placedObjectId) => {
-        const marker = this.surface.querySelector(
-          `.placed-asset[data-placed-object-id="${CSS.escape(placedObjectId)}"]`,
-        );
-        if (marker) {
-          this.positionMarker(marker, bounds);
-        }
-      });
+      scheduleGroupPreview(this.calculateGroupMoveBounds(startBoundsById, cellsX, cellsY));
     };
 
     const finishTransform = (pointerEvent) => {
       this.surface.removeEventListener("pointermove", movePreview);
       this.surface.removeEventListener("pointerup", finishTransform);
       this.surface.removeEventListener("pointercancel", cancelTransform);
+      flushGroupPreview();
       if (this.surface.hasPointerCapture?.(pointerEvent.pointerId)) {
         this.surface.releasePointerCapture(pointerEvent.pointerId);
       }
@@ -595,13 +749,12 @@ export class GridEditor {
       this.surface.removeEventListener("pointermove", movePreview);
       this.surface.removeEventListener("pointerup", finishTransform);
       this.surface.removeEventListener("pointercancel", cancelTransform);
+      cancelGroupPreviewFrame();
       if (this.surface.hasPointerCapture?.(pointerEvent.pointerId)) {
         this.surface.releasePointerCapture(pointerEvent.pointerId);
       }
       startBoundsById.forEach((bounds, placedObjectId) => {
-        const marker = this.surface.querySelector(
-          `.placed-asset[data-placed-object-id="${CSS.escape(placedObjectId)}"]`,
-        );
+        const marker = markersById.get(placedObjectId);
         if (marker) {
           this.positionMarker(marker, bounds);
         }
@@ -720,6 +873,14 @@ function sameBounds(first, second) {
     first.width === second.width &&
     first.height === second.height
   );
+}
+
+function rangesMatch(first, second) {
+  if (!first || !second) {
+    return first === second;
+  }
+
+  return sameBounds(first, second);
 }
 
 function normalizeOpacity(opacity) {

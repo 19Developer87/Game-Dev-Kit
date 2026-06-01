@@ -125,8 +125,8 @@ class DevEditor {
       });
     });
 
-    this.root.querySelector('[data-action="place-selected-asset"]').addEventListener("click", () => {
-      this.placeSelectedAssetInRange();
+    this.root.querySelector('[data-action="place-selected-asset"]').addEventListener("click", async () => {
+      await this.placeSelectedAssetInRange();
     });
 
     this.ui.sidebarToggle.addEventListener("click", () => {
@@ -224,8 +224,8 @@ class DevEditor {
       this.closeMenus();
     });
 
-    this.root.querySelector('[data-action="paste-level"]').addEventListener("click", () => {
-      this.pasteCopiedLevel();
+    this.root.querySelector('[data-action="paste-level"]').addEventListener("click", async () => {
+      await this.pasteCopiedLevel();
       this.closeMenus();
     });
 
@@ -240,8 +240,13 @@ class DevEditor {
       this.ui.levelPicker.classList.toggle("is-open");
     });
 
-    this.root.querySelector('[data-action="create-level"]').addEventListener("click", () => {
-      const name = window.prompt("New level name", "New Level");
+    this.root.querySelector('[data-action="create-level"]').addEventListener("click", async () => {
+      const name = await this.showPromptModal({
+        title: "Create New Level",
+        label: "Level name",
+        value: "New Level",
+        confirmLabel: "Create Level",
+      });
 
       if (!name?.trim()) {
         this.setStatus("Create level cancelled.");
@@ -255,9 +260,14 @@ class DevEditor {
       this.render();
     });
 
-    this.root.querySelector('[data-action="rename-level"]').addEventListener("click", () => {
+    this.root.querySelector('[data-action="rename-level"]').addEventListener("click", async () => {
       const level = getCurrentLevel(this.project);
-      const name = window.prompt("Rename level", level.name);
+      const name = await this.showPromptModal({
+        title: "Rename Level",
+        label: "Level name",
+        value: level.name,
+        confirmLabel: "Rename Level",
+      });
 
       if (!name?.trim()) {
         this.setStatus("Rename cancelled.");
@@ -269,12 +279,19 @@ class DevEditor {
       this.render();
     });
 
-    this.root.querySelector('[data-action="delete-level"]').addEventListener("click", () => {
-      this.openDeleteLevelConfirmation();
+    this.root.querySelector('[data-action="delete-level"]').addEventListener("click", async () => {
+      await this.openDeleteLevelConfirmation();
     });
 
-    this.root.querySelector('[data-action="clear"]').addEventListener("click", () => {
-      if (!window.confirm("Clear every placed asset from the current level?")) {
+    this.root.querySelector('[data-action="clear"]').addEventListener("click", async () => {
+      const confirmed = await this.showConfirmModal({
+        title: "Clear Level?",
+        message: "Clear every placed asset from the current level? This cannot be undone.",
+        confirmLabel: "Clear Level",
+        danger: true,
+      });
+
+      if (!confirmed) {
         return;
       }
       clearCurrentLevel(this.project);
@@ -287,19 +304,19 @@ class DevEditor {
     this.bindMenuBehavior();
     this.bindSidebarResize();
 
-    this.ui.gridSize.addEventListener("change", () => {
+    this.ui.gridSize.addEventListener("change", async () => {
       const value = this.ui.gridSize.value;
       this.ui.customSize.classList.toggle("is-visible", value === "custom");
 
       if (value !== "custom") {
         const size = Number(value);
-        this.resizeGrid(size, size);
+        await this.resizeGrid(size, size);
       }
     });
 
     this.root
       .querySelector('[data-action="apply-custom-size"]')
-      .addEventListener("click", () => {
+      .addEventListener("click", async () => {
         const width = Number(this.ui.customWidth.value);
         const height = Number(this.ui.customHeight.value);
 
@@ -308,16 +325,16 @@ class DevEditor {
           return;
         }
 
-        this.resizeGrid(Math.min(width, 100), Math.min(height, 100));
+        await this.resizeGrid(Math.min(width, 100), Math.min(height, 100));
       });
   }
 
-  handleCellClick({ x, y }) {
+  async handleCellClick({ x, y }) {
     const level = getCurrentLevel(this.project);
 
     if (this.activeTool === "move") {
       if (this.copiedPlacedObject) {
-        this.pasteCopiedPlacedAssetAt(x, y);
+        await this.pasteCopiedPlacedAssetAt(x, y);
         return;
       }
 
@@ -357,7 +374,7 @@ class DevEditor {
         return;
       }
 
-      this.placeAssetInRange(this.selectedAsset, this.selectedRange, "selection");
+      await this.placeAssetInRange(this.selectedAsset, this.selectedRange, "selection");
       return;
     }
 
@@ -366,7 +383,7 @@ class DevEditor {
       return;
     }
 
-    this.placeAssetInRange(this.selectedAsset, { x, y, width: 1, height: 1 }, "cell");
+    await this.placeAssetInRange(this.selectedAsset, { x, y, width: 1, height: 1 }, "cell");
   }
 
   handleHoverCell({ x, y, gridRef, isDropTarget = false }) {
@@ -388,20 +405,26 @@ class DevEditor {
       this.clearPlacedObjectSelection();
     }
     this.syncCoordinateStatus();
-    this.syncPlacementButton();
-    this.gridEditor.updateSelection(this.selectedRange);
-    this.gridEditor.updateDropPreview(null);
 
     if (this.selectionConfirmationTimer) {
       window.clearTimeout(this.selectionConfirmationTimer);
       this.selectionConfirmationTimer = null;
     }
 
+    if (state === "draggingSelection") {
+      if (this.activeTool === "delete") {
+        this.setStatus(`Delete area: ${formatRange(range)}.`);
+      }
+      return;
+    }
+
+    this.syncPlacementButton();
+    this.gridEditor.updateSelection(this.selectedRange);
+    this.gridEditor.updateDropPreview(null);
+
     if (this.activeTool === "delete") {
       if (state === "selectionReady") {
         this.deleteAssetsInRange(range, { clearSelection: true });
-      } else if (state === "draggingSelection") {
-        this.setStatus(`Delete area: ${formatRange(range)}.`);
       }
       return;
     }
@@ -428,21 +451,10 @@ class DevEditor {
         this.render();
       }
       this.setSelectionReadyStatus();
-    } else if (state === "draggingSelection") {
-      const pendingRange = { ...range };
-      this.selectionConfirmationTimer = window.setTimeout(() => {
-        if (
-          this.selectionState === "draggingSelection" &&
-          rangesMatch(this.selectedRange, pendingRange)
-        ) {
-          this.selectionState = "selectionReady";
-          this.setSelectionReadyStatus();
-        }
-      }, 0);
     }
   }
 
-  handleAssetDrop({ assetId, x, y }) {
+  async handleAssetDrop({ assetId, x, y }) {
     const asset = this.project.assets.find((candidate) => candidate.id === assetId);
 
     if (!asset) {
@@ -456,7 +468,7 @@ class DevEditor {
     }
     const range = this.getPlacementRangeForCell(x, y);
     this.dropPreviewRange = null;
-    this.placeAssetInRange(asset, range, "drop");
+    await this.placeAssetInRange(asset, range, "drop");
   }
 
   activateTool(tool) {
@@ -602,7 +614,7 @@ class DevEditor {
       dialog.close();
     });
 
-    form.addEventListener("submit", (event) => {
+    form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const data = new FormData(form);
       const result = this.readPlacedAssetPropertyValues(data, level, placedObject);
@@ -621,12 +633,23 @@ class DevEditor {
         result.values.height,
       ).filter((candidate) => candidate.id !== placedObject.id);
 
-      if (
-        overlaps.length > 0 &&
-        !window.confirm("Applying these properties will overlap existing assets. Continue?")
-      ) {
+      if (overlaps.length > 0) {
+        const confirmed = await this.showConfirmModal({
+          title: "Overlap Existing Assets?",
+          message: "Applying these properties will overlap existing assets. Continue?",
+          confirmLabel: "Apply Changes",
+        });
+
+        if (!confirmed) {
+          error.hidden = false;
+          error.textContent = "Changes were not applied because the new bounds overlap another asset.";
+          return;
+        }
+      }
+
+      if (!dialog.isConnected) {
         error.hidden = false;
-        error.textContent = "Changes were not applied because the new bounds overlap another asset.";
+        error.textContent = "The properties panel was closed before changes were applied.";
         return;
       }
 
@@ -898,7 +921,7 @@ class DevEditor {
     return true;
   }
 
-  transformPlacedObject(transform) {
+  async transformPlacedObject(transform) {
     const { placedObjectId, x, y, width, height, action } = transform;
     if (this.activeTool !== "move") {
       return false;
@@ -914,13 +937,18 @@ class DevEditor {
       (placedObject) => placedObject.id !== placedObjectId,
     );
 
-    if (
-      existing.length > 0 &&
-      !window.confirm("Moving/resizing this asset will overlap existing assets. Continue?")
-    ) {
-      this.render();
-      this.setStatus(`${action === "resize" ? "Resize" : "Move"} cancelled.`);
-      return false;
+    if (existing.length > 0) {
+      const confirmed = await this.showConfirmModal({
+        title: "Overlap Existing Assets?",
+        message: "Moving/resizing this asset will overlap existing assets. Continue?",
+        confirmLabel: action === "resize" ? "Resize Asset" : "Move Asset",
+      });
+
+      if (!confirmed) {
+        this.render();
+        this.setStatus(`${action === "resize" ? "Resize" : "Move"} cancelled.`);
+        return false;
+      }
     }
 
     const updatedObject = updatePlacedAssetBounds(level, placedObjectId, x, y, width, height);
@@ -938,7 +966,7 @@ class DevEditor {
     return true;
   }
 
-  transformPlacedObjectGroup({ placedObjectId, placedObjectIds, boundsById }) {
+  async transformPlacedObjectGroup({ placedObjectId, placedObjectIds, boundsById }) {
     const level = getCurrentLevel(this.project);
     const selectedIds = placedObjectIds?.length
       ? placedObjectIds
@@ -961,13 +989,18 @@ class DevEditor {
       );
     });
 
-    if (
-      overlappingObjects.length > 0 &&
-      !window.confirm("Moving this group will overlap existing assets. Continue?")
-    ) {
-      this.render();
-      this.setStatus("Group move cancelled.");
-      return false;
+    if (overlappingObjects.length > 0) {
+      const confirmed = await this.showConfirmModal({
+        title: "Overlap Existing Assets?",
+        message: "Moving this group will overlap existing assets. Continue?",
+        confirmLabel: "Move Group",
+      });
+
+      if (!confirmed) {
+        this.render();
+        this.setStatus("Group move cancelled.");
+        return false;
+      }
     }
 
     const updatedObjects = updatePlacedAssetGroupBounds(level, updates);
@@ -1010,7 +1043,7 @@ class DevEditor {
     this.gridEditor.updateCopyPreview(this.createCopyPreview());
   }
 
-  pasteCopiedPlacedAssetAt(x, y) {
+  async pasteCopiedPlacedAssetAt(x, y) {
     if (!this.copiedPlacedObject) {
       return false;
     }
@@ -1019,12 +1052,17 @@ class DevEditor {
     const range = this.getCopiedPlacementRange(x, y);
     const existing = findObjectsInRange(level, range.x, range.y, range.width, range.height);
 
-    if (
-      existing.length > 0 &&
-      !window.confirm("Placing this copied asset will overlap existing assets. Continue?")
-    ) {
-      this.setStatus("Copy placement cancelled. Click another grid cell or press Escape.");
-      return false;
+    if (existing.length > 0) {
+      const confirmed = await this.showConfirmModal({
+        title: "Overlap Existing Assets?",
+        message: "Placing this copied asset will overlap existing assets. Continue?",
+        confirmLabel: "Place Copy",
+      });
+
+      if (!confirmed) {
+        this.setStatus("Copy placement cancelled. Click another grid cell or press Escape.");
+        return false;
+      }
     }
 
     const placedObject = duplicatePlacedAsset(
@@ -1044,7 +1082,152 @@ class DevEditor {
     return true;
   }
 
-  openDeleteLevelConfirmation() {
+  showAlertModal(message, options = {}) {
+    return this.showEditorModal({
+      type: "alert",
+      title: options.title || "Message",
+      message,
+      confirmLabel: options.confirmLabel || "OK",
+    });
+  }
+
+  showConfirmModal(options) {
+    return this.showEditorModal({
+      type: "confirm",
+      title: options.title || "Confirm",
+      message: options.message || "",
+      confirmLabel: options.confirmLabel || "Confirm",
+      cancelLabel: options.cancelLabel || "Cancel",
+      danger: Boolean(options.danger),
+    });
+  }
+
+  showPromptModal(options) {
+    return this.showEditorModal({
+      type: "prompt",
+      title: options.title || "Input Required",
+      message: options.message || "",
+      label: options.label || "Value",
+      value: options.value || "",
+      placeholder: options.placeholder || "",
+      confirmLabel: options.confirmLabel || "OK",
+      cancelLabel: options.cancelLabel || "Cancel",
+    });
+  }
+
+  showEditorModal(options) {
+    return new Promise((resolve) => {
+      const dialog = document.createElement("dialog");
+      const type = options.type || "alert";
+      const isPrompt = type === "prompt";
+      const isConfirm = type === "confirm";
+      const isAlert = type === "alert";
+      let resolved = false;
+
+      dialog.className = `editor-modal-dialog editor-modal-${type}`;
+      dialog.innerHTML = `
+        <form class="editor-modal-form" method="dialog">
+          <h2>${escapeHtml(options.title || "")}</h2>
+          ${options.message ? `<p>${escapeHtml(options.message)}</p>` : ""}
+          ${
+            isPrompt
+              ? `<label>${escapeHtml(options.label || "Value")}
+                  <input name="modalValue" value="${escapeAttribute(options.value || "")}" placeholder="${escapeAttribute(options.placeholder || "")}" required />
+                </label>
+                <p class="form-error" role="alert" hidden></p>`
+              : ""
+          }
+          <div class="dialog-actions">
+            ${
+              isAlert
+                ? ""
+                : `<button type="button" data-action="cancel-modal">${escapeHtml(options.cancelLabel || "Cancel")}</button>`
+            }
+            <button type="submit" class="${options.danger ? "danger" : ""}">${escapeHtml(options.confirmLabel || "OK")}</button>
+          </div>
+        </form>
+      `;
+
+      const finish = (value) => {
+        if (resolved) {
+          return;
+        }
+        resolved = true;
+        resolve(value);
+        if (dialog.open) {
+          dialog.close();
+        } else {
+          dialog.remove();
+        }
+      };
+
+      document.body.append(dialog);
+
+      const form = dialog.querySelector("form");
+      const input = dialog.querySelector("input[name='modalValue']");
+      const error = dialog.querySelector(".form-error");
+      const cancelButton = dialog.querySelector('[data-action="cancel-modal"]');
+
+      cancelButton?.addEventListener("click", () => {
+        finish(isPrompt ? null : false);
+      });
+
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+
+        if (isConfirm) {
+          finish(true);
+          return;
+        }
+
+        if (isPrompt) {
+          const value = input.value.trim();
+          if (!value) {
+            error.hidden = false;
+            error.textContent = "Enter a value before continuing.";
+            input.focus();
+            return;
+          }
+          finish(value);
+          return;
+        }
+
+        finish(true);
+      });
+
+      form.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && isConfirm) {
+          event.preventDefault();
+        }
+      });
+
+      dialog.addEventListener("cancel", (event) => {
+        event.preventDefault();
+        finish(isPrompt ? null : false);
+      });
+
+      dialog.addEventListener("close", () => {
+        if (!resolved) {
+          resolved = true;
+          resolve(isPrompt ? null : false);
+        }
+        dialog.remove();
+      });
+
+      dialog.showModal();
+
+      if (input) {
+        input.focus();
+        input.select();
+      } else if (isConfirm && cancelButton) {
+        cancelButton.focus();
+      } else {
+        dialog.querySelector("button[type='submit']")?.focus();
+      }
+    });
+  }
+
+  async openDeleteLevelConfirmation() {
     const level = getCurrentLevel(this.project);
     const selectedLevelId = level?.id || this.project.lastOpenedLevelId || null;
 
@@ -1070,48 +1253,21 @@ class DevEditor {
       return;
     }
 
-    this.showDeleteLevelDialog(level);
-  }
+    const confirmed = await this.showConfirmModal({
+      title: `Delete "${level.name}"?`,
+      message:
+        "This removes the level from the current editor project. Existing JSON files on disk are left untouched for safety.",
+      confirmLabel: "Delete Level",
+      danger: true,
+    });
 
-  showDeleteLevelDialog(level) {
-    const dialog = document.createElement("dialog");
-    dialog.className = "delete-level-dialog";
-    dialog.innerHTML = `
-      <form class="delete-level-form" method="dialog">
-        <h2>Delete "${escapeHtml(level.name)}"?</h2>
-        <p>This removes the level from the current editor project. Existing JSON files on disk are left untouched for safety.</p>
-        <div class="dialog-actions">
-          <button type="button" data-action="cancel-delete-level">Cancel</button>
-          <button type="submit" class="danger">Delete Level</button>
-        </div>
-      </form>
-    `;
-
-    document.body.append(dialog);
-
-    dialog.querySelector('[data-action="cancel-delete-level"]').addEventListener("click", () => {
-      console.log("[Delete Level] confirmed:", false);
+    console.log("[Delete Level] confirmed:", confirmed);
+    if (!confirmed) {
       this.setStatus("Delete level cancelled.");
-      dialog.close();
-    });
+      return;
+    }
 
-    dialog.querySelector("form").addEventListener("submit", (event) => {
-      event.preventDefault();
-      console.log("[Delete Level] confirmed:", true);
-      dialog.close();
-      this.deleteSelectedLevel(level.id);
-    });
-
-    dialog.addEventListener("cancel", () => {
-      console.log("[Delete Level] confirmed:", false);
-      this.setStatus("Delete level cancelled.");
-    });
-
-    dialog.addEventListener("close", () => {
-      dialog.remove();
-    });
-
-    dialog.showModal();
+    this.deleteSelectedLevel(level.id);
   }
 
   deleteSelectedLevel(selectedLevelId) {
@@ -1197,7 +1353,7 @@ class DevEditor {
     this.gridEditor?.updateCopyPreview(null);
   }
 
-  placeSelectedAssetInRange(asset = this.selectedAsset, range = this.selectedRange) {
+  async placeSelectedAssetInRange(asset = this.selectedAsset, range = this.selectedRange) {
     if (!asset) {
       this.setStatus("No asset selected.");
       return;
@@ -1208,10 +1364,10 @@ class DevEditor {
       return;
     }
 
-    this.placeAssetInRange(asset, range, "button");
+    await this.placeAssetInRange(asset, range, "button");
   }
 
-  placeAssetInRange(asset, range, source) {
+  async placeAssetInRange(asset, range, source) {
     if (!asset) {
       this.setStatus("No asset selected.");
       return false;
@@ -1230,13 +1386,18 @@ class DevEditor {
     const level = getCurrentLevel(this.project);
     const existing = findObjectsInRange(level, range.x, range.y, range.width, range.height);
 
-    if (
-      existing.length > 0 &&
-      !window.confirm("Placing this asset will replace existing assets in the selected area. Continue?")
-    ) {
-      this.setStatus("Placement cancelled.");
-      this.render();
-      return false;
+    if (existing.length > 0) {
+      const confirmed = await this.showConfirmModal({
+        title: "Replace Existing Assets?",
+        message: "Placing this asset will replace existing assets in the selected area. Continue?",
+        confirmLabel: "Place Asset",
+      });
+
+      if (!confirmed) {
+        this.setStatus("Placement cancelled.");
+        this.render();
+        return false;
+      }
     }
 
     const placedObject = placeAsset(level, asset, range.x, range.y, range.width, range.height);
@@ -1305,8 +1466,13 @@ class DevEditor {
     this.syncPlacementButton();
   }
 
-  createCategory() {
-    const name = window.prompt("Category name", "New Category");
+  async createCategory() {
+    const name = await this.showPromptModal({
+      title: "Create Category",
+      label: "Category name",
+      value: "New Category",
+      confirmLabel: "Create Category",
+    });
 
     if (!name?.trim()) {
       this.setStatus("Create category cancelled.");
@@ -1315,6 +1481,9 @@ class DevEditor {
 
     if (findAssetCategoryByName(this.project, name.trim())) {
       this.setStatus("Category already exists.");
+      await this.showAlertModal("Category already exists.", {
+        title: "Category Already Exists",
+      });
       this.render();
       return;
     }
@@ -1339,13 +1508,20 @@ class DevEditor {
     );
   }
 
-  deleteCategory(category) {
+  async deleteCategory(category) {
     const assetCount = this.project.assetRegistry.assets.filter(
       (asset) => asset.categoryId === category.id,
     ).length;
 
     if (assetCount === 0) {
-      if (!window.confirm(`Delete category "${category.name}"?`)) {
+      const confirmed = await this.showConfirmModal({
+        title: `Delete "${category.name}"?`,
+        message: "Delete this empty category? Placed grid assets are not affected.",
+        confirmLabel: "Delete Category",
+        danger: true,
+      });
+
+      if (!confirmed) {
         return;
       }
 
@@ -1356,17 +1532,31 @@ class DevEditor {
     }
 
     this.setStatus("This category contains assets. Delete or move the assets first.");
+    await this.showAlertModal("This category contains assets. Delete or move the assets first.", {
+      title: "Category Not Empty",
+    });
   }
 
-  deleteAsset(asset) {
+  async deleteAsset(asset) {
     if (isAssetUsedOnAnyLevel(this.project, asset.id)) {
       this.setStatus(
         "This asset is currently used on a level. Remove placed copies first before deleting the asset.",
       );
+      await this.showAlertModal(
+        "This asset is currently used on a level. Remove placed copies first before deleting the asset.",
+        { title: "Asset Is In Use" },
+      );
       return;
     }
 
-    if (!window.confirm(`Delete asset "${asset.name}"?`)) {
+    const confirmed = await this.showConfirmModal({
+      title: `Delete "${asset.name}"?`,
+      message: "Delete this imported palette asset? Placed grid copies are not deleted by this action.",
+      confirmLabel: "Delete Asset",
+      danger: true,
+    });
+
+    if (!confirmed) {
       return;
     }
 
@@ -1422,8 +1612,14 @@ class DevEditor {
 
     if (pendingPlacementRange && importedAssets.length === 1) {
       const [importedAsset] = importedAssets;
-      if (window.confirm("Place this asset into the selected grid area?")) {
-        this.placeAssetInRange(importedAsset, pendingPlacementRange, "import");
+      const confirmed = await this.showConfirmModal({
+        title: "Place Imported Asset?",
+        message: "Place this asset into the selected grid area?",
+        confirmLabel: "Place Asset",
+      });
+
+      if (confirmed) {
+        await this.placeAssetInRange(importedAsset, pendingPlacementRange, "import");
       } else {
         this.setStatus(
           `Asset added to ${importedAsset.category}. Click Place Selected Asset or drag the asset onto the grid to place it.`,
@@ -1581,18 +1777,22 @@ class DevEditor {
     });
   }
 
-  resizeGrid(width, height) {
+  async resizeGrid(width, height) {
     const level = getCurrentLevel(this.project);
     const outsideCount = countObjectsOutsideBounds(level, width, height);
 
-    if (
-      outsideCount > 0 &&
-      !window.confirm(
-        `${outsideCount} placed asset(s) are outside the new grid size and will be removed. Continue?`,
-      )
-    ) {
-      this.render();
-      return;
+    if (outsideCount > 0) {
+      const confirmed = await this.showConfirmModal({
+        title: "Resize Grid?",
+        message: `${outsideCount} placed asset(s) are outside the new grid size and will be removed. Continue?`,
+        confirmLabel: "Resize Grid",
+        danger: true,
+      });
+
+      if (!confirmed) {
+        this.render();
+        return;
+      }
     }
 
     if (outsideCount > 0) {
@@ -1627,7 +1827,7 @@ class DevEditor {
     this.setStatus("Copied current level.");
   }
 
-  pasteCopiedLevel() {
+  async pasteCopiedLevel() {
     if (!this.copiedLevel) {
       this.setStatus("No copied level available.");
       return;
@@ -1635,14 +1835,19 @@ class DevEditor {
 
     const currentLevel = getCurrentLevel(this.project);
 
-    if (
-      hasLevelContent(currentLevel) &&
-      !window.confirm(
-        "Pasting this level will replace the current level's grid size and all placed assets/objects on this level. Existing assets on this level may be lost. Continue?",
-      )
-    ) {
-      this.setStatus("Paste level cancelled.");
-      return;
+    if (hasLevelContent(currentLevel)) {
+      const confirmed = await this.showConfirmModal({
+        title: "Paste Over Current Level?",
+        message:
+          "Pasting this level will replace the current level's grid size and all placed assets/objects on this level. Existing assets on this level may be lost. Continue?",
+        confirmLabel: "Paste Level",
+        danger: true,
+      });
+
+      if (!confirmed) {
+        this.setStatus("Paste level cancelled.");
+        return;
+      }
     }
 
     pasteLevelContent(this.project, this.copiedLevel);
@@ -1916,18 +2121,59 @@ class DevEditor {
       event.preventDefault();
       const startX = event.clientX;
       const startWidth = this.sidebarWidth;
+      const minimumWidth = 180;
+      const maximumWidth = this.getSidebarMaximumWidth();
+      let pendingWidth = this.sidebarWidth;
+      let appliedWidth = this.sidebarWidth;
+      let sidebarAnimationFrame = null;
       handle.classList.add("is-resizing");
+      this.ui.workspace.classList.add("is-sidebar-resizing");
+      document.body.classList.add("is-sidebar-resizing");
+
+      const clampResizeWidth = (width) => clamp(Math.round(width), minimumWidth, maximumWidth);
+
+      const applyResize = () => {
+        sidebarAnimationFrame = null;
+        if (pendingWidth === appliedWidth) {
+          return;
+        }
+        appliedWidth = pendingWidth;
+        this.applySidebarWidth(pendingWidth);
+      };
+
+      const scheduleResize = (width) => {
+        if (width === pendingWidth) {
+          return;
+        }
+        pendingWidth = width;
+
+        if (sidebarAnimationFrame !== null) {
+          return;
+        }
+
+        sidebarAnimationFrame = window.requestAnimationFrame(applyResize);
+      };
+
+      const flushResize = () => {
+        if (sidebarAnimationFrame !== null) {
+          window.cancelAnimationFrame(sidebarAnimationFrame);
+          applyResize();
+        }
+      };
 
       const resize = (pointerEvent) => {
-        this.sidebarWidth = this.clampSidebarWidth(startWidth + pointerEvent.clientX - startX);
-        this.applySidebarWidth(this.sidebarWidth);
+        this.sidebarWidth = clampResizeWidth(startWidth + pointerEvent.clientX - startX);
+        scheduleResize(this.sidebarWidth);
       };
 
       const finish = () => {
         document.removeEventListener("pointermove", resize);
         document.removeEventListener("pointerup", finish);
         document.removeEventListener("pointercancel", finish);
+        flushResize();
         handle.classList.remove("is-resizing");
+        this.ui.workspace.classList.remove("is-sidebar-resizing");
+        document.body.classList.remove("is-sidebar-resizing");
         localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(this.sidebarWidth));
       };
 
@@ -1977,8 +2223,12 @@ class DevEditor {
   }
 
   clampSidebarWidth(width) {
-    const maximum = Math.max(180, Math.min(420, Math.floor(window.innerWidth * 0.4)));
+    const maximum = this.getSidebarMaximumWidth();
     return clamp(Math.round(width), 180, maximum);
+  }
+
+  getSidebarMaximumWidth() {
+    return Math.max(180, Math.min(420, Math.floor(window.innerWidth * 0.4)));
   }
 
   closeMenus() {

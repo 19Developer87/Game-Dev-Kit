@@ -200,6 +200,10 @@ textarea {
   overflow: hidden;
 }
 
+.workspace.is-sidebar-resizing {
+  cursor: ew-resize;
+}
+
 .workspace.is-sidebar-collapsed {
   grid-template-columns: var(--sidebar-collapsed-width) 0 minmax(0, 1fr);
 }
@@ -258,9 +262,10 @@ textarea {
 
 .sidebar-resizer {
   position: relative;
-  cursor: col-resize;
+  cursor: ew-resize;
   background: #101316;
   touch-action: none;
+  user-select: none;
 }
 
 .sidebar-resizer::after {
@@ -268,7 +273,14 @@ textarea {
   position: absolute;
   inset: 0 2px;
   background: #29333a;
+  cursor: ew-resize;
   transition: background 120ms ease;
+}
+
+body.is-sidebar-resizing,
+body.is-sidebar-resizing * {
+  cursor: ew-resize !important;
+  user-select: none;
 }
 
 .sidebar-resizer:hover::after,
@@ -542,6 +554,7 @@ textarea {
   overflow: auto;
   padding: 0;
   scrollbar-gutter: stable;
+  contain: layout paint;
 }
 
 .grid-wrap {
@@ -648,6 +661,7 @@ textarea {
 .copy-preview-box {
   position: absolute;
   pointer-events: none;
+  will-change: left, top, width, height;
 }
 
 .selection-box {
@@ -710,6 +724,7 @@ textarea {
   border: 2px solid #8dc9ea;
   box-shadow: inset 0 0 0 1px #101316;
   z-index: 1;
+  will-change: left, top, width, height;
 }
 
 .placed-asset.is-primary-selected {
@@ -851,7 +866,8 @@ textarea {
 }
 
 .asset-import-dialog,
-.delete-level-dialog {
+.delete-level-dialog,
+.editor-modal-dialog {
   width: min(540px, calc(100vw - 28px));
   border: 1px solid #38424a;
   border-radius: 8px;
@@ -862,33 +878,42 @@ textarea {
 
 .asset-import-dialog::backdrop,
 .delete-level-dialog::backdrop,
+.editor-modal-dialog::backdrop,
 .placed-properties-dialog::backdrop {
   background: rgba(0, 0, 0, 0.58);
 }
 
 .asset-import-form,
-.delete-level-form {
+.delete-level-form,
+.editor-modal-form {
   display: grid;
   gap: 12px;
 }
 
 .asset-import-form h2,
-.delete-level-form h2 {
+.delete-level-form h2,
+.editor-modal-form h2 {
   margin: 0;
   font-size: 18px;
 }
 
-.delete-level-form p {
+.delete-level-form p,
+.editor-modal-form p {
   margin: 0;
   color: #b8c5cd;
   line-height: 1.45;
 }
 
-.asset-import-form label {
+.asset-import-form label,
+.editor-modal-form label {
   display: grid;
   gap: 6px;
   color: #b8c5cd;
   font-size: 13px;
+}
+
+.editor-modal-form input {
+  min-width: 0;
 }
 
 .asset-import-previews {
