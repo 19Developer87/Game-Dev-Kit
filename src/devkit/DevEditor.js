@@ -1,6 +1,7 @@
 import { AssetPalette } from "./AssetPalette.js";
 import {
   COPIED_LEVEL_STORAGE_KEY,
+  LAYERS,
   PLACED_PROPERTIES_DIALOG_STORAGE_KEY,
   SIDEBAR_COLLAPSED_STORAGE_KEY,
   SIDEBAR_WIDTH_STORAGE_KEY,
@@ -236,6 +237,13 @@ class DevEditor {
 
     this.root
       .querySelector('[data-action="placed-asset-properties"]')
+      .addEventListener("click", () => {
+        this.openPlacedAssetProperties();
+        this.closeMenus();
+      });
+
+    this.root
+      .querySelector('[data-action="edit-placed-asset-properties"]')
       .addEventListener("click", () => {
         this.openPlacedAssetProperties();
         this.closeMenus();
@@ -546,6 +554,7 @@ class DevEditor {
     const height = Math.max(1, Number(placedObject.height) || 1);
     const opacity = normalizeOpacity(placedObject.opacity);
     const layer = normalizePlacedLayer(placedObject.layer);
+    const layerOptions = normalizeLayerOptions(placedObject.layerOptions);
     const titleName = sourceAsset?.name || placedObject.name || placedObject.assetId;
 
     dialog.className = "placed-properties-dialog";
@@ -582,15 +591,15 @@ class DevEditor {
               </select>
             </label>
             <label>Opacity (0 to 100) <input name="opacity" type="number" min="0" max="100" value="${opacity}" required /></label>
+            <p class="properties-hint">Visibility and opacity are editor display settings for this placed copy.</p>
+          </fieldset>
+          <fieldset>
+            <legend>Layer / Behaviour</legend>
             <label>Layer
-              <select name="layer">
+              <select name="layer" data-role="placed-layer-select">
                 ${createLayerOptions(layer)}
               </select>
             </label>
-            <p class="properties-hint">Trigger layer is for future gameplay trigger zones. Full trigger actions are not implemented yet.</p>
-          </fieldset>
-          <fieldset>
-            <legend>Movement / Blocking</legend>
             <label>Blocks Movement
               <select name="blocksMovement">
                 <option value="false" ${!placedObject.blocksMovement ? "selected" : ""}>No</option>
@@ -600,6 +609,10 @@ class DevEditor {
             <label class="properties-notes">Notes
               <textarea name="notes" rows="4">${escapeHtml(placedObject.notes || "")}</textarea>
             </label>
+            <p class="properties-hint">Layer choice is saved on this placed copy. Full layer visibility, locking, solo, and runtime systems are not implemented yet.</p>
+          </fieldset>
+          <fieldset class="properties-layer-options" data-role="layer-options-container">
+            ${createLayerOptionsFields(layer, layerOptions)}
           </fieldset>
         </div>
         <p class="form-error" role="alert" hidden></p>
@@ -613,7 +626,13 @@ class DevEditor {
     document.body.append(dialog);
     const form = dialog.querySelector("form");
     const error = dialog.querySelector(".form-error");
+    const layerSelect = dialog.querySelector('[data-role="placed-layer-select"]');
+    const layerOptionsContainer = dialog.querySelector('[data-role="layer-options-container"]');
     const releaseDialogBehavior = this.bindPlacedPropertiesDialogBehavior(dialog);
+
+    layerSelect.addEventListener("change", () => {
+      layerOptionsContainer.innerHTML = createLayerOptionsFields(layerSelect.value, layerOptions);
+    });
 
     dialog.querySelector('[data-action="cancel-properties"]').addEventListener("click", () => {
       dialog.close();
@@ -705,10 +724,13 @@ class DevEditor {
       return { error: "Opacity must be a whole number from 0 to 100." };
     }
 
-    const layer = String(data.get("layer") || "");
-    if (!PLACED_LAYER_OPTIONS.some((option) => option.value === layer)) {
-      return { error: "Choose a valid layer: Terrain, Objects, Overlay, or Trigger." };
+    const rawLayer = String(data.get("layer") || "");
+    const layer = rawLayer === "Trigger" ? "triggers" : rawLayer;
+    if (!LAYERS.includes(layer)) {
+      return { error: "Choose a valid layer." };
     }
+    const previousLayerOptions = normalizeLayerOptions(placedObject.layerOptions);
+    const layerSpecificOptions = readLayerSpecificOptions(data, layer);
 
     return {
       values: {
@@ -720,6 +742,10 @@ class DevEditor {
         visible: data.get("visible") === "true",
         opacity,
         blocksMovement: data.get("blocksMovement") === "true",
+        layerOptions: {
+          ...previousLayerOptions,
+          ...layerSpecificOptions,
+        },
         notes: String(data.get("notes") || ""),
       },
     };
@@ -2127,6 +2153,7 @@ class DevEditor {
     this.ui.assetMenu.classList.toggle("is-disabled", !isEnabled);
     this.ui.assetMenu.querySelector("summary").setAttribute("aria-disabled", String(!isEnabled));
     this.ui.assetMenu.querySelector("button").disabled = !isEnabled;
+    this.ui.editPropertiesButton.disabled = !isEnabled;
     if (!isEnabled) {
       this.ui.assetMenu.removeAttribute("open");
     }
@@ -2373,25 +2400,196 @@ function getToolLabel(tool) {
   return tool === "move" ? "Select/Move" : "Delete";
 }
 
-const PLACED_LAYER_OPTIONS = [
-  { value: "terrain", label: "Terrain" },
-  { value: "objects", label: "Objects" },
-  { value: "overlay", label: "Overlay" },
-  { value: "Trigger", label: "Trigger" },
-];
+const LAYER_LABELS = {
+  terrain: "Terrain",
+  decorations: "Decorations",
+  objects: "Objects",
+  collisions: "Collisions",
+  spawns: "Spawns",
+  items: "Items",
+  npcs: "NPCs",
+  enemies: "Enemies",
+  triggers: "Triggers",
+  overlay: "Overlay",
+};
 
 function normalizePlacedLayer(layer) {
   if (layer === "triggers" || layer === "Trigger") {
-    return "Trigger";
+    return "triggers";
   }
-  return PLACED_LAYER_OPTIONS.some((option) => option.value === layer) ? layer : "objects";
+  return LAYERS.includes(layer) ? layer : "objects";
 }
 
 function createLayerOptions(selectedLayer) {
-  return PLACED_LAYER_OPTIONS.map(
-    (option) =>
-      `<option value="${option.value}" ${option.value === selectedLayer ? "selected" : ""}>${option.label}</option>`,
+  return LAYERS.map(
+    (layerName) =>
+      `<option value="${layerName}" ${layerName === selectedLayer ? "selected" : ""}>${LAYER_LABELS[layerName] || toTitleCase(layerName)}</option>`,
   ).join("");
+}
+
+function normalizeLayerOptions(layerOptions) {
+  return layerOptions && typeof layerOptions === "object" && !Array.isArray(layerOptions)
+    ? layerOptions
+    : {};
+}
+
+function createLayerOptionsFields(layer, options) {
+  const fieldValue = (key) => escapeAttribute(options[key] ?? "");
+  const boolValue = (key, fallback = false) => Boolean(options[key] ?? fallback);
+  const yesNoOptions = (key, fallback = false) => `
+    <option value="false" ${!boolValue(key, fallback) ? "selected" : ""}>No</option>
+    <option value="true" ${boolValue(key, fallback) ? "selected" : ""}>Yes</option>
+  `;
+
+  switch (layer) {
+    case "terrain":
+      return `
+        <legend>Terrain Options</legend>
+        <label>Terrain Tag <input name="terrainTag" value="${fieldValue("terrainTag")}" /></label>
+        <p class="properties-hint">Use terrain tags to describe ground type for future movement, visuals, or rules.</p>
+      `;
+    case "decorations":
+      return `
+        <legend>Decoration Options</legend>
+        <label>Decorative Only
+          <select name="decorativeOnly">${yesNoOptions("decorativeOnly", true)}</select>
+        </label>
+        <p class="properties-hint">Decoration assets are visual dressing and should not affect movement unless future rules say otherwise.</p>
+      `;
+    case "objects":
+      return `
+        <legend>Object Options</legend>
+        <label>Object Type / Note <input name="objectType" value="${fieldValue("objectType")}" /></label>
+        <p class="properties-hint">Objects are general placed props. Use Blocks Movement above for current editor blocking intent.</p>
+      `;
+    case "collisions":
+      return `
+        <legend>Collision Options</legend>
+        <label>Collision Type / Note <input name="collisionType" value="${fieldValue("collisionType")}" /></label>
+        <p class="properties-hint">Collision entries mark future blocking or collision zones. Runtime collision is not implemented yet.</p>
+      `;
+    case "spawns":
+      return `
+        <legend>Spawn Options</legend>
+        <label>Spawn Name <input name="spawnName" value="${fieldValue("spawnName")}" /></label>
+        <label>Spawn Direction
+          <select name="spawnDirection">
+            ${createSelectOptions(["up", "down", "left", "right"], options.spawnDirection || "down")}
+          </select>
+        </label>
+        <p class="properties-hint">Spawn fields mark future player or entity spawn points. Spawn behavior is not implemented yet.</p>
+      `;
+    case "items":
+      return `
+        <legend>Item Options</legend>
+        <label>Item ID <input name="itemId" value="${fieldValue("itemId")}" /></label>
+        <label>Quantity <input name="quantity" type="number" min="0" value="${fieldValue("quantity")}" /></label>
+        <p class="properties-hint">Item fields identify future pickup data. Inventory and pickup runtime are not implemented yet.</p>
+      `;
+    case "npcs":
+      return `
+        <legend>NPC Options</legend>
+        <label>NPC Name <input name="npcName" value="${fieldValue("npcName")}" /></label>
+        <label>Dialogue ID <input name="dialogueId" value="${fieldValue("dialogueId")}" /></label>
+        <p class="properties-hint">NPC fields prepare future dialogue connections. NPC runtime is not implemented yet.</p>
+      `;
+    case "enemies":
+      return `
+        <legend>Enemy Options</legend>
+        <label>Enemy Type <input name="enemyType" value="${fieldValue("enemyType")}" /></label>
+        <label>Spawn Chance <input name="spawnChance" type="number" min="0" max="100" value="${fieldValue("spawnChance")}" /></label>
+        <p class="properties-hint">Enemy fields prepare future battle or encounter data. Enemy runtime is not implemented yet.</p>
+      `;
+    case "triggers":
+      return `
+        <legend>Trigger Options</legend>
+        <label>Trigger Type
+          <select name="triggerType">
+            ${createSelectOptions(["none", "levelExit", "dialogue", "battle", "cutscene", "custom"], options.triggerType || "none")}
+          </select>
+        </label>
+        <label>Target Level <input name="targetLevel" value="${fieldValue("targetLevel")}" /></label>
+        <label>Target Spawn <input name="targetSpawn" value="${fieldValue("targetSpawn")}" /></label>
+        <label>Dialogue ID <input name="dialogueId" value="${fieldValue("dialogueId")}" /></label>
+        <label>Battle ID <input name="battleId" value="${fieldValue("battleId")}" /></label>
+        <label>Cutscene ID <input name="cutsceneId" value="${fieldValue("cutsceneId")}" /></label>
+        <p class="properties-hint">Trigger fields are metadata only. Level exits, dialogue, battles, and cutscenes are not implemented yet.</p>
+      `;
+    case "overlay":
+      return `
+        <legend>Overlay Options</legend>
+        <label>Render Above Player
+          <select name="renderAbovePlayer">${yesNoOptions("renderAbovePlayer", true)}</select>
+        </label>
+        <label>Overlay Type / Note <input name="overlayType" value="${fieldValue("overlayType")}" /></label>
+        <p class="properties-hint">Overlay fields mark future above-player visuals. Runtime layering is not implemented yet.</p>
+      `;
+    default:
+      return `
+        <legend>Layer Options</legend>
+        <p class="properties-hint">Choose a layer to edit layer-specific metadata.</p>
+      `;
+  }
+}
+
+function createSelectOptions(values, selectedValue) {
+  return values.map((value) => {
+    const selected = value === selectedValue ? "selected" : "";
+    return `<option value="${escapeAttribute(value)}" ${selected}>${escapeHtml(toTitleCase(value))}</option>`;
+  }).join("");
+}
+
+function readLayerSpecificOptions(data, layer) {
+  switch (layer) {
+    case "terrain":
+      return { terrainTag: readFormText(data, "terrainTag") };
+    case "decorations":
+      return { decorativeOnly: data.get("decorativeOnly") === "true" };
+    case "objects":
+      return { objectType: readFormText(data, "objectType") };
+    case "collisions":
+      return { collisionType: readFormText(data, "collisionType") };
+    case "spawns":
+      return {
+        spawnName: readFormText(data, "spawnName"),
+        spawnDirection: readFormText(data, "spawnDirection"),
+      };
+    case "items":
+      return {
+        itemId: readFormText(data, "itemId"),
+        quantity: readFormText(data, "quantity"),
+      };
+    case "npcs":
+      return {
+        npcName: readFormText(data, "npcName"),
+        dialogueId: readFormText(data, "dialogueId"),
+      };
+    case "enemies":
+      return {
+        enemyType: readFormText(data, "enemyType"),
+        spawnChance: readFormText(data, "spawnChance"),
+      };
+    case "triggers":
+      return {
+        triggerType: readFormText(data, "triggerType") || "none",
+        targetLevel: readFormText(data, "targetLevel"),
+        targetSpawn: readFormText(data, "targetSpawn"),
+        dialogueId: readFormText(data, "dialogueId"),
+        battleId: readFormText(data, "battleId"),
+        cutsceneId: readFormText(data, "cutsceneId"),
+      };
+    case "overlay":
+      return {
+        renderAbovePlayer: data.get("renderAbovePlayer") === "true",
+        overlayType: readFormText(data, "overlayType"),
+      };
+    default:
+      return {};
+  }
+}
+
+function readFormText(data, key) {
+  return String(data.get(key) || "").trim();
 }
 
 function normalizeOpacity(opacity) {

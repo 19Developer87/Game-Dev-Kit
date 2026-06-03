@@ -92,6 +92,7 @@ export function createEditorLayout(root) {
                 <div class="menu-panel">
                   <button type="button" data-action="copy-level">Copy Level</button>
                   <button type="button" data-action="paste-level">Paste Level</button>
+                  <button type="button" data-action="edit-placed-asset-properties">Properties</button>
                 </div>
               </details>
               <details class="menu is-disabled" data-menu data-role="asset-menu">
@@ -120,6 +121,7 @@ export function createEditorLayout(root) {
     customSize: root.querySelector('[data-role="custom-size"]'),
     customWidth: root.querySelector('[data-role="custom-width"]'),
     coordinateStatus: root.querySelector('[data-role="coordinate-status"]'),
+    editPropertiesButton: root.querySelector('[data-action="edit-placed-asset-properties"]'),
     gridSize: root.querySelector('[data-role="grid-size"]'),
     gridStage: root.querySelector('[data-role="grid-stage"]'),
     levelPicker: root.querySelector('[data-role="level-picker"]'),

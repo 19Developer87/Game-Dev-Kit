@@ -1052,6 +1052,10 @@ body.is-sidebar-resizing * {
   gap: 7px;
 }
 
+.properties-layer-options {
+  grid-column: 1 / -1;
+}
+
 .properties-position input {
   width: min(150px, 100%);
 }
