@@ -49,6 +49,11 @@ import {
 } from "./LevelManager.js";
 import { createProjectBackup, loadProject, saveProject } from "./SaveManager.js";
 
+const GRID_SIZE_PRESETS = ["10", "20", "30", "40", "50", "75", "100", "150", "200"];
+const LARGE_GRID_WARNING_SIZE = 100;
+const VERY_LARGE_GRID_WARNING_SIZE = 250;
+const MAX_GRID_SIZE = 500;
+
 class DevEditor {
   constructor(root, loaded) {
     this.root = root;
@@ -325,7 +330,7 @@ class DevEditor {
           return;
         }
 
-        await this.resizeGrid(Math.min(width, 100), Math.min(height, 100));
+        await this.resizeGrid(width, height);
       });
   }
 
@@ -1778,8 +1783,44 @@ class DevEditor {
   }
 
   async resizeGrid(width, height) {
+    const requestedWidth = Math.round(Number(width));
+    const requestedHeight = Math.round(Number(height));
+
+    if (
+      !Number.isInteger(requestedWidth) ||
+      !Number.isInteger(requestedHeight) ||
+      requestedWidth < 1 ||
+      requestedHeight < 1
+    ) {
+      this.setStatus("Enter a grid width and height of at least 1.");
+      this.render();
+      return;
+    }
+
+    if (requestedWidth > MAX_GRID_SIZE || requestedHeight > MAX_GRID_SIZE) {
+      await this.showAlertModal(
+        "Grid sizes above 500x500 are not supported yet. Future chunked maps will be better for very large worlds.",
+        {
+          title: "Grid Too Large",
+        },
+      );
+      this.setStatus(`Grid size must be ${MAX_GRID_SIZE}x${MAX_GRID_SIZE} or smaller.`);
+      this.render();
+      return;
+    }
+
+    const warning = this.getLargeGridWarning(requestedWidth, requestedHeight);
+    if (warning) {
+      const confirmed = await this.showConfirmModal(warning);
+
+      if (!confirmed) {
+        this.render();
+        return;
+      }
+    }
+
     const level = getCurrentLevel(this.project);
-    const outsideCount = countObjectsOutsideBounds(level, width, height);
+    const outsideCount = countObjectsOutsideBounds(level, requestedWidth, requestedHeight);
 
     if (outsideCount > 0) {
       const confirmed = await this.showConfirmModal({
@@ -1796,13 +1837,37 @@ class DevEditor {
     }
 
     if (outsideCount > 0) {
-      createProjectBackup(this.project, `Before resizing ${level.name} to ${width}x${height}`);
+      createProjectBackup(this.project, `Before resizing ${level.name} to ${requestedWidth}x${requestedHeight}`);
     }
-    resizeCurrentLevel(this.project, width, height);
+    resizeCurrentLevel(this.project, requestedWidth, requestedHeight);
     this.clearSelection();
     this.clearPlacedObjectSelection();
-    this.autosave(`Grid resized to ${width}x${height}.`);
+    this.autosave(`Grid resized to ${requestedWidth}x${requestedHeight}.`);
     this.render();
+  }
+
+  getLargeGridWarning(width, height) {
+    const largestDimension = Math.max(width, height);
+
+    if (largestDimension > VERY_LARGE_GRID_WARNING_SIZE) {
+      return {
+        title: "Very Large Grid",
+        message:
+          "Very large grids may affect scrolling, saving, and future Play Mode performance. Consider using multiple levels or future chunked maps. Continue?",
+        confirmLabel: "Create Very Large Grid",
+        danger: true,
+      };
+    }
+
+    if (largestDimension > LARGE_GRID_WARNING_SIZE) {
+      return {
+        title: "Large Grid",
+        message: "Large grids may affect editor performance. Continue?",
+        confirmLabel: "Create Large Grid",
+      };
+    }
+
+    return null;
   }
 
   autosave(message, onSaveResult = null) {
@@ -2017,8 +2082,7 @@ class DevEditor {
 
   syncGridControls(level) {
     const sameSize = level.gridWidth === level.gridHeight;
-    const presetValues = ["10", "20", "30", "40", "50"];
-    const preset = sameSize && presetValues.includes(String(level.gridWidth))
+    const preset = sameSize && GRID_SIZE_PRESETS.includes(String(level.gridWidth))
       ? String(level.gridWidth)
       : "custom";
 

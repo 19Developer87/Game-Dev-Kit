@@ -28,17 +28,21 @@ export function createEditorLayout(root) {
                 <option value="30">30x30</option>
                 <option value="40">40x40</option>
                 <option value="50">50x50</option>
+                <option value="75">75x75</option>
+                <option value="100">100x100</option>
+                <option value="150">150x150</option>
+                <option value="200">200x200</option>
                 <option value="custom">Custom</option>
               </select>
             </label>
             <span class="custom-size" data-role="custom-size">
               <label>
                 W
-                <input data-role="custom-width" type="number" min="1" max="100" />
+                <input data-role="custom-width" type="number" min="1" max="500" />
               </label>
               <label>
                 H
-                <input data-role="custom-height" type="number" min="1" max="100" />
+                <input data-role="custom-height" type="number" min="1" max="500" />
               </label>
               <button type="button" data-action="apply-custom-size">Apply</button>
             </span>
