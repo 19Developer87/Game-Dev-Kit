@@ -30,6 +30,7 @@ export class GridEditor {
     this.gesture = null;
     this.level = null;
     this.surface = null;
+    this.hoverBox = null;
     this.selectionBox = null;
     this.dropPreviewBox = null;
     this.copyPreviewBox = null;
@@ -39,6 +40,7 @@ export class GridEditor {
     this.pendingSelectionCell = null;
     this.selectionAnimationFrame = null;
     this.lastLiveSelectionRange = null;
+    this.lastHoveredCellKey = null;
     this.pendingCopyCell = null;
     this.copyAnimationFrame = null;
   }
@@ -109,13 +111,7 @@ export class GridEditor {
 
     const cells = document.createElement("div");
     cells.className = "editor-grid-cells";
-    cells.style.gridTemplateColumns = `repeat(${level.gridWidth}, ${level.tileSize}px)`;
-    cells.style.gridTemplateRows = `repeat(${level.gridHeight}, ${level.tileSize}px)`;
-    for (let y = 1; y <= level.gridHeight; y += 1) {
-      for (let x = 1; x <= level.gridWidth; x += 1) {
-        cells.append(this.renderCell(level, x, y));
-      }
-    }
+    cells.setAttribute("aria-hidden", "true");
 
     const assetsLayer = document.createElement("div");
     assetsLayer.className = "asset-overlay-layer";
@@ -123,6 +119,8 @@ export class GridEditor {
 
     const selectionLayer = document.createElement("div");
     selectionLayer.className = "selection-overlay-layer";
+    this.hoverBox = document.createElement("div");
+    this.hoverBox.className = "hover-box";
     this.selectionBox = document.createElement("div");
     this.selectionBox.className = "selection-box";
     this.dropPreviewBox = document.createElement("div");
@@ -131,7 +129,7 @@ export class GridEditor {
     this.copyPreviewBox.className = "copy-preview-box";
     selectionLayer.append(this.selectionBox, this.dropPreviewBox, this.copyPreviewBox);
 
-    this.surface.append(cells, assetsLayer, selectionLayer);
+    this.surface.append(cells, this.hoverBox, assetsLayer, selectionLayer);
     this.bindSurfacePointerEvents();
     this.bindSurfaceDragEvents();
     layout.append(corner, columnHeaders, rowHeaders, this.surface);
@@ -143,20 +141,14 @@ export class GridEditor {
     this.updateCopyPreview(copyPreview);
   }
 
-  renderCell(level, x, y) {
-    const cell = document.createElement("button");
-    cell.type = "button";
-    cell.className = "grid-cell";
-    cell.dataset.x = String(x);
-    cell.dataset.y = String(y);
-    cell.setAttribute("aria-label", `Cell ${toGridRef(x, y)}`);
-
-    cell.addEventListener("pointerenter", () => {
-      this.onHoverCell({ x, y, gridRef: toGridRef(x, y) });
-    });
-
-    cell.addEventListener("pointerdown", (event) => {
+  bindSurfacePointerEvents() {
+    this.surface.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) {
+        return;
+      }
+
+      const target = this.getCellFromClientPoint(event.clientX, event.clientY);
+      if (!target) {
         return;
       }
 
@@ -167,21 +159,21 @@ export class GridEditor {
       this.cancelPendingSelectionFrame();
       this.gesture = {
         pointerId: event.pointerId,
-        start: { x, y },
-        current: { x, y },
+        start: target,
+        current: target,
         moved: false,
       };
       this.lastLiveSelectionRange = null;
       this.surface.setPointerCapture(event.pointerId);
     });
 
-    return cell;
-  }
-
-  bindSurfacePointerEvents() {
     this.surface.addEventListener("pointermove", (event) => {
+      const target = this.getCellFromClientPoint(event.clientX, event.clientY);
+      if (target) {
+        this.reportHoveredCell(target);
+      }
+
       if (this.copyModeActive) {
-        const target = this.getCellFromClientPoint(event.clientX, event.clientY);
         if (target) {
           this.scheduleCopyPreviewUpdate(target);
         }
@@ -191,11 +183,11 @@ export class GridEditor {
         return;
       }
 
-      const current = this.getCellFromClientPoint(event.clientX, event.clientY);
-      if (!current) {
+      if (!target) {
         return;
       }
 
+      const current = target;
       this.gesture.current = current;
       const moved = current.x !== this.gesture.start.x || current.y !== this.gesture.start.y;
 
@@ -224,6 +216,11 @@ export class GridEditor {
     this.surface.addEventListener("pointercancel", () => {
       this.cancelPendingSelectionFrame();
       this.gesture = null;
+    });
+
+    this.surface.addEventListener("pointerleave", () => {
+      this.lastHoveredCellKey = null;
+      this.positionFeedbackBox(this.hoverBox, null);
     });
   }
 
@@ -264,6 +261,17 @@ export class GridEditor {
       this.updateDropPreview(null);
       this.onAssetDrop({ assetId, ...target });
     });
+  }
+
+  reportHoveredCell(cell) {
+    const key = `${cell.x}:${cell.y}`;
+    if (key === this.lastHoveredCellKey) {
+      return;
+    }
+
+    this.lastHoveredCellKey = key;
+    this.positionFeedbackBox(this.hoverBox, { ...cell, width: 1, height: 1 });
+    this.onHoverCell({ ...cell, gridRef: toGridRef(cell.x, cell.y) });
   }
 
   completeGesture() {

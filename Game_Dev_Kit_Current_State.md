@@ -40,7 +40,7 @@ The editor currently supports:
 
 - A standalone browser editor served locally by `dev-server.mjs`.
 - Grid display and fixed coordinate headers.
-- Grid size selection for `10x10`, `20x20`, `30x30`, `40x40`, `50x50`, and custom sizes up to `100x100`.
+- Grid size selection for `10x10`, `20x20`, `30x30`, `40x40`, `50x50`, `75x75`, `100x100`, `150x150`, `200x200`, and custom sizes up to `500x500`.
 - Level selector with current-level display.
 - Create New Level, Rename Level, Delete Level, and Clear Level.
 - Delete Level is working: it confirms first, removes only the selected level from the project, selects another level, rerenders the grid/level selector, and persists to browser storage.
@@ -241,7 +241,11 @@ Deleting a level removes it from browser project state and from the active proje
 - Copy Level stores full copied level data in localStorage under `game-dev-kit-copied-level`.
 - Paste Level pastes copied grid size and content into the current level while preserving that destination level's ID, name, and filename. It uses an in-app warning modal before replacing existing current-level content.
 - Duplicate Level is not exposed in the UI. Copy Level and Paste Level are the supported workflow for copying level content.
-- Grid resizing supports presets and a custom width/height, capped at `100`.
+- Grid resizing supports presets and a custom width/height, capped at `500`.
+- Grid sizes larger than `100x100` show an in-app large-grid performance warning before resizing.
+- Grid sizes larger than `250x250` show a stronger in-app warning about scrolling, saving, and future Play Mode performance before resizing.
+- Grid sizes above `500x500` are blocked with an in-app message. Massive worlds such as `1000x1000` should not be one giant level grid yet.
+- Future very large worlds should use chunked or region-based maps, such as editable `50x50` or `100x100` chunks that can load nearby regions for seamless Play Mode while keeping editor scrolling, collision, triggers, and asset rendering manageable.
 - If shrinking a grid would remove any wholly or partly out-of-bounds placed objects, the editor warns first with an in-app modal and creates a browser backup before proceeding.
 
 ## 9. Grid System
@@ -255,7 +259,7 @@ Deleting a level removes it from browser project state and from the active proje
 - Rows after `Z` use Excel-style labels: `AA`, `AB`, `AC`, and so on.
 - The status bar shows a compact hover reference such as `Hover: 12.F`.
 - The status bar shows an active selection such as `Selected: 3.B to 8.E`.
-- Dragging with the left mouse button across cells creates a rectangular range.
+- Dragging with the left mouse button across the grid surface creates a rectangular range.
 - Drag selection is rendered as one live overlay rectangle rather than by updating individual grid cells.
 - During drag, the live selection overlay updates through a requestAnimationFrame-throttled path so pointer movement does not trigger full grid rerenders or per-cell style changes.
 - Releasing the mouse keeps the selected area active in a ready state.
@@ -274,8 +278,11 @@ Deleting a level removes it from browser project state and from the active proje
 Grid implementation notes:
 
 - Coordinate headers occupy separate grid layout regions.
-- Editable cells occupy `grid-surface`.
-- Placed objects render in an absolutely positioned `asset-overlay-layer` above cells.
+- The editable grid background occupies `grid-surface` and is drawn by one lightweight `editor-grid-cells` background layer, not one DOM element per tile.
+- The grid background uses CSS repeating grid lines sized from `--tile-size`, so `30x30`, `50x50`, and larger supported grids avoid creating hundreds or thousands of individual cell elements.
+- Hit testing no longer depends on per-cell buttons. Pointer, hover, drop, selection, placement, delete, move, and resize coordinates are calculated from the grid surface bounding rectangle and tile size.
+- A single hover overlay provides the visible current-cell outline.
+- Placed objects render in an absolutely positioned `asset-overlay-layer` above the grid background.
 - Selection/drop feedback renders in a separate absolute overlay.
 - The Select/Move selection rectangle sits above the placed asset overlay and is not interrupted by placed assets under the pointer.
 - The selection overlay is one absolutely positioned rectangle whose left/top/width/height are updated from the latest pointer cell once per animation frame when needed.
@@ -285,9 +292,9 @@ Grid implementation notes:
 - Axis bands sit flush against the scrollable grid viewport and directly beside/above the editable cell surface.
 - Pointer/drop coordinate calculations continue to use the scrolled grid surface bounds, so asset placement, movement, and resizing remain mapped to grid cells after scrolling.
 - Selection and delete-area pointer calculations use the grid surface bounding rectangle and tile size, so the internal grid viewport scroll position is naturally accounted for after horizontal or vertical scrolling.
-- Resizing the asset panel changes available viewport width only; grid-cell coordinate calculations remain based on the grid surface and tile size.
+- Resizing the asset panel changes available viewport width only; grid coordinate calculations remain based on the grid surface and tile size.
 - Grid coordinate headers remain aligned with cells while scrolling, placing, moving, resizing, deleting, and collapsing/restoring the left asset panel.
-- Grid-size changes still rebuild cells, headers, overlays, and placed assets once for the new dimensions, then save once after the resize action completes.
+- Grid-size changes still rebuild headers, overlays, the lightweight grid background, and placed assets once for the new dimensions, then save once after the resize action completes.
 - Autosave/localStorage writes are avoided during pointer-move drag loops. Drag operations update visual previews live and save only after a completed action such as move, resize, grid resize, delete, placement, or panel resize.
 
 ## 10. Asset System
@@ -479,7 +486,7 @@ The current editor UI includes:
 - The left asset panel has a collapse/restore button. Collapsed state persists in browser UI preferences, restoring returns the previous expanded width, and this does not affect project, level, or asset registry JSON.
 - Dragging the left asset panel divider updates the panel width live through a throttled visual path and saves the final width to browser preferences only after release.
 - A status bar containing general feedback, hover/selected coordinate display, and current level/grid summary.
-- The main grid viewport with its own scrollbars, sticky coordinate headers, editable cells, the placed asset overlay, and selection/drop overlays.
+- The main grid viewport with its own scrollbars, sticky coordinate headers, lightweight CSS grid background, the placed asset overlay, and selection/drop overlays.
 - While any app-owned modal is open, editor hotkeys such as `Q`, `E`, Delete, and Backspace do not trigger grid tools or placed-asset deletion.
 
 ## Rendering, Performance and App-Owned UI Rules
@@ -509,7 +516,9 @@ All current and future editor features must follow these rendering rules:
     - header offsets
 13. The grid viewport should remain self-contained with its own scrollbars.
 14. Avoid using full browser page scrolling as the main way to navigate the grid.
-15. Large grids such as `50x50` should remain usable.
+15. Large grids such as `50x50`, `100x100`, and `200x200` should remain usable.
+16. The grid background should stay lightweight and should not return to thousands of per-cell DOM elements unless there is a clear, user-approved reason.
+17. Very large worlds such as `1000x1000` should be deferred until chunked or region-based maps are designed and explicitly requested.
 
 ### App-Owned UI Rules
 
@@ -647,7 +656,7 @@ Before accepting changes to existing editor behaviour, verify:
 - [ ] Select a placed object in Select/Move mode, press Delete and Backspace in separate tests, and confirm each removes only the selected grid copy.
 - [ ] Drag-select multiple placed assets in Select/Move mode and confirm every intersecting placed copy is highlighted.
 - [ ] Drag one selected asset in a multi-selection and confirm the whole group moves together, snaps to grid, and remains inside grid bounds.
-- [ ] Confirm single asset move/resize and group move remain smooth on `30x30` and `50x50` grids and persist after refresh.
+- [ ] Confirm single asset move/resize and group move remain smooth on `30x30`, `50x50`, `100x100`, and `200x200` grids and persist after refresh.
 - [ ] Confirm resize handles and Asset Properties remain single-asset only and are not shown for multi-selected groups.
 - [ ] Open Asset > Properties for one selected placed asset and confirm Source asset name, Category name, Grid Ref, Width, Height, Visible, Opacity, Layer, Blocks Movement, and Notes are shown.
 - [ ] Double-click a placed asset and confirm the same Placed Asset Properties panel opens.
@@ -664,7 +673,10 @@ Before accepting changes to existing editor behaviour, verify:
 - [ ] Press Delete or Backspace with multiple placed assets selected and confirm all selected placed copies are removed without deleting palette assets.
 - [ ] Select a grid area in Select/Move mode, press Delete or Backspace with no placed object selected, and confirm every intersecting placed copy is removed without a confirmation prompt.
 - [ ] Type Delete/Backspace inside an editable input and confirm editor object deletion is not triggered.
-- [ ] Open a `50x50` grid and confirm horizontal and vertical grid viewport scrollbars are accessible in the visible panel.
+- [ ] Open a `50x50`, `100x100`, and `200x200` grid and confirm horizontal and vertical grid viewport scrollbars are accessible in the visible panel.
+- [ ] Try a custom grid larger than `100x100` and confirm an in-app large-grid warning appears.
+- [ ] Try a custom grid larger than `250x250` and confirm the stronger in-app very-large-grid warning appears.
+- [ ] Try a custom grid larger than `500x500` and confirm it is blocked with an in-app message.
 - [ ] Drag the asset panel divider wider/narrower, refresh, and confirm the saved width returns without disrupting grid scrollbars or alignment.
 - [ ] Confirm dragging the asset panel divider feels smooth and saves the final width only after release.
 - [ ] Collapse and restore the asset panel, then refresh and confirm the collapsed/restored state and previous expanded width return.
