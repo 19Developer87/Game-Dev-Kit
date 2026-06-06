@@ -1,6 +1,7 @@
 import { AssetPalette } from "./AssetPalette.js";
 import {
   COPIED_LEVEL_STORAGE_KEY,
+  LAYER_VISIBILITY_STORAGE_KEY,
   LAYERS,
   PLACED_PROPERTIES_DIALOG_STORAGE_KEY,
   SIDEBAR_COLLAPSED_STORAGE_KEY,
@@ -74,6 +75,7 @@ class DevEditor {
     this.selectedPlacedObjectIds = new Set();
     this.copiedPlacedObject = null;
     this.copyPreviewRange = null;
+    this.layerVisibility = this.loadLayerVisibility();
     this.ui = createEditorLayout(root);
     this.sidebarWidth = this.loadSidebarWidth();
     this.isSidebarCollapsed = this.loadSidebarCollapsed();
@@ -97,6 +99,7 @@ class DevEditor {
         );
       },
     });
+    this.gridEditor.setLayerVisibility(this.layerVisibility);
 
     this.assetPalette = new AssetPalette({
       root: this.ui.assetPalette,
@@ -137,6 +140,16 @@ class DevEditor {
 
     this.ui.sidebarToggle.addEventListener("click", () => {
       this.toggleSidebarCollapsed();
+    });
+
+    this.ui.layerVisibilityInputs.forEach((input) => {
+      input.addEventListener("change", () => {
+        this.setLayerVisibility(input.dataset.layer, input.checked);
+      });
+    });
+
+    this.root.querySelector('[data-action="show-all-layers"]').addEventListener("click", () => {
+      this.showAllLayers();
     });
 
     document.addEventListener("keydown", (event) => {
@@ -361,7 +374,12 @@ class DevEditor {
     }
 
     if (this.activeTool === "delete") {
-      const removedObjects = removeObjectsAtCell(level, x, y);
+      const removedObjects = removeObjectsAtCell(
+        level,
+        x,
+        y,
+        this.getVisibleLayerNames(),
+      );
       if (removedObjects.length === 0) {
         this.setStatus(`No placed asset at ${toGridRef(x, y)}.`);
         this.render();
@@ -449,6 +467,7 @@ class DevEditor {
         range.y,
         range.width,
         range.height,
+        this.getVisibleLayerNames(),
       );
       if (selectedObjects.length > 0) {
         this.setPlacedObjectSelection(
@@ -507,6 +526,15 @@ class DevEditor {
       return;
     }
 
+    const placedObject = getPlacedObjects(
+      getCurrentLevel(this.project),
+      this.getVisibleLayerNames(),
+    ).find((candidate) => candidate.id === placedObjectId);
+    if (!placedObject) {
+      this.setStatus("That asset is on a hidden editor layer.");
+      return;
+    }
+
     this.cancelCopyPlacement();
     this.clearSelection();
     this.setPlacedObjectSelection([placedObjectId], placedObjectId);
@@ -527,7 +555,7 @@ class DevEditor {
     }
 
     const level = getCurrentLevel(this.project);
-    const placedObject = getPlacedObjects(level).find(
+    const placedObject = getPlacedObjects(level, this.getVisibleLayerNames()).find(
       (candidate) => candidate.id === placedObjectId,
     );
 
@@ -667,7 +695,10 @@ class DevEditor {
       if (overlaps.length > 0) {
         const confirmed = await this.showConfirmModal({
           title: "Overlap Existing Assets?",
-          message: "Applying these properties will overlap existing assets. Continue?",
+          message: this.createOverlapWarningMessage(
+            "Applying these properties will overlap existing assets. Continue?",
+            overlaps,
+          ),
           confirmLabel: "Apply Changes",
         });
 
@@ -691,10 +722,19 @@ class DevEditor {
         return;
       }
 
-      this.setPlacedObjectSelection([updatedObject.id], updatedObject.id);
+      const movedToHiddenLayer = !this.isLayerVisible(updatedObject.layer);
+      if (movedToHiddenLayer) {
+        this.clearPlacedObjectSelection();
+      } else {
+        this.setPlacedObjectSelection([updatedObject.id], updatedObject.id);
+      }
       dialog.close();
       this.render();
-      this.autosave(`Saved properties for ${sourceAsset?.name || updatedObject.name || "placed asset"}.`);
+      this.autosave(
+        movedToHiddenLayer
+          ? `Saved properties and moved ${sourceAsset?.name || updatedObject.name || "placed asset"} to hidden editor layer ${updatedObject.layer}.`
+          : `Saved properties for ${sourceAsset?.name || updatedObject.name || "placed asset"}.`,
+      );
     });
 
     dialog.addEventListener("close", () => {
@@ -911,7 +951,9 @@ class DevEditor {
       ? Array.from(this.selectedPlacedObjectIds)
       : [this.selectedPlacedObjectId].filter(Boolean);
     const removedObjects = selectedIds
-      .map((placedObjectId) => removePlacedObjectById(level, placedObjectId))
+      .map((placedObjectId) =>
+        removePlacedObjectById(level, placedObjectId, this.getVisibleLayerNames()),
+      )
       .filter(Boolean);
 
     this.clearPlacedObjectSelection();
@@ -937,7 +979,15 @@ class DevEditor {
 
   deleteAssetsInRange(range, { clearSelection = false } = {}) {
     const level = getCurrentLevel(this.project);
-    const matchingObjects = findObjectsInRange(level, range.x, range.y, range.width, range.height);
+    const visibleLayerNames = this.getVisibleLayerNames();
+    const matchingObjects = findObjectsInRange(
+      level,
+      range.x,
+      range.y,
+      range.width,
+      range.height,
+      visibleLayerNames,
+    );
 
     if (matchingObjects.length === 0) {
       if (clearSelection) {
@@ -948,7 +998,14 @@ class DevEditor {
       return false;
     }
 
-    const removedObjects = removeObjectsInRange(level, range.x, range.y, range.width, range.height);
+    const removedObjects = removeObjectsInRange(
+      level,
+      range.x,
+      range.y,
+      range.width,
+      range.height,
+      visibleLayerNames,
+    );
     this.clearPlacedObjectSelection();
     this.closePlacedPropertiesDialog();
     if (clearSelection) {
@@ -978,7 +1035,10 @@ class DevEditor {
     if (existing.length > 0) {
       const confirmed = await this.showConfirmModal({
         title: "Overlap Existing Assets?",
-        message: "Moving/resizing this asset will overlap existing assets. Continue?",
+        message: this.createOverlapWarningMessage(
+          "Moving/resizing this asset will overlap existing assets. Continue?",
+          existing,
+        ),
         confirmLabel: action === "resize" ? "Resize Asset" : "Move Asset",
       });
 
@@ -1030,7 +1090,10 @@ class DevEditor {
     if (overlappingObjects.length > 0) {
       const confirmed = await this.showConfirmModal({
         title: "Overlap Existing Assets?",
-        message: "Moving this group will overlap existing assets. Continue?",
+        message: this.createOverlapWarningMessage(
+          "Moving this group will overlap existing assets. Continue?",
+          overlappingObjects,
+        ),
         confirmLabel: "Move Group",
       });
 
@@ -1056,7 +1119,7 @@ class DevEditor {
 
   startCopyPlacement() {
     const level = getCurrentLevel(this.project);
-    const selectedObject = getPlacedObjects(level).find(
+    const selectedObject = getPlacedObjects(level, this.getVisibleLayerNames()).find(
       (placedObject) => placedObject.id === this.selectedPlacedObjectId,
     );
 
@@ -1093,7 +1156,10 @@ class DevEditor {
     if (existing.length > 0) {
       const confirmed = await this.showConfirmModal({
         title: "Overlap Existing Assets?",
-        message: "Placing this copied asset will overlap existing assets. Continue?",
+        message: this.createOverlapWarningMessage(
+          "Placing this copied asset will overlap existing assets. Continue?",
+          existing,
+        ),
         confirmLabel: "Place Copy",
       });
 
@@ -1427,7 +1493,10 @@ class DevEditor {
     if (existing.length > 0) {
       const confirmed = await this.showConfirmModal({
         title: "Replace Existing Assets?",
-        message: "Placing this asset will replace existing assets in the selected area. Continue?",
+        message: this.createOverlapWarningMessage(
+          "Placing this asset will replace existing assets in the selected area. Continue?",
+          existing,
+        ),
         confirmLabel: "Place Asset",
       });
 
@@ -2043,9 +2112,15 @@ class DevEditor {
       Array.from(this.selectedPlacedObjectIds),
       this.createCopyPreview(),
     );
+    this.gridEditor.setLayerVisibility(this.layerVisibility);
+    this.gridEditor.syncPlacedObjectSelection(
+      this.selectedPlacedObjectId,
+      Array.from(this.selectedPlacedObjectIds),
+    );
     this.syncLevelSelector(level);
     this.syncGridControls(level);
     this.syncToolButtons();
+    this.syncLayerVisibilityControls();
     this.syncCoordinateStatus();
     this.syncPlacementButton();
     this.syncAssetMenu();
@@ -2129,6 +2204,129 @@ class DevEditor {
     this.root.querySelectorAll("[data-tool]").forEach((button) => {
       button.classList.toggle("is-active", button.dataset.tool === this.activeTool);
     });
+  }
+
+  loadLayerVisibility() {
+    const defaults = Object.fromEntries(LAYERS.map((layerName) => [layerName, true]));
+    const storedVisibility = localStorage.getItem(LAYER_VISIBILITY_STORAGE_KEY);
+
+    if (!storedVisibility) {
+      return defaults;
+    }
+
+    try {
+      const parsedVisibility = JSON.parse(storedVisibility);
+      if (
+        !parsedVisibility ||
+        typeof parsedVisibility !== "object" ||
+        Array.isArray(parsedVisibility)
+      ) {
+        return defaults;
+      }
+
+      return Object.fromEntries(
+        LAYERS.map((layerName) => [layerName, parsedVisibility[layerName] !== false]),
+      );
+    } catch (error) {
+      console.warn("Layer visibility preferences could not be loaded.", error);
+      return defaults;
+    }
+  }
+
+  saveLayerVisibility() {
+    try {
+      localStorage.setItem(
+        LAYER_VISIBILITY_STORAGE_KEY,
+        JSON.stringify(this.layerVisibility),
+      );
+    } catch (error) {
+      console.warn("Layer visibility preferences could not be saved.", error);
+    }
+  }
+
+  getVisibleLayerNames() {
+    return LAYERS.filter((layerName) => this.layerVisibility[layerName] !== false);
+  }
+
+  isLayerVisible(layerName) {
+    const normalizedLayer = layerName === "Trigger" ? "triggers" : layerName || "objects";
+    return !LAYERS.includes(normalizedLayer) || this.layerVisibility[normalizedLayer] !== false;
+  }
+
+  setLayerVisibility(layerName, isVisible) {
+    if (!LAYERS.includes(layerName)) {
+      return;
+    }
+
+    this.layerVisibility = {
+      ...this.layerVisibility,
+      [layerName]: Boolean(isVisible),
+    };
+    this.saveLayerVisibility();
+
+    const level = getCurrentLevel(this.project);
+    const visibleObjects = getPlacedObjects(level, this.getVisibleLayerNames());
+    const visibleIds = new Set(visibleObjects.map((placedObject) => placedObject.id));
+    const retainedIds = Array.from(this.selectedPlacedObjectIds).filter((id) =>
+      visibleIds.has(id),
+    );
+    const previousPrimaryId = this.selectedPlacedObjectId;
+
+    this.selectedPlacedObjectIds = new Set(retainedIds);
+    this.selectedPlacedObjectId = visibleIds.has(previousPrimaryId)
+      ? previousPrimaryId
+      : retainedIds[0] || null;
+
+    if (previousPrimaryId && !visibleIds.has(previousPrimaryId)) {
+      this.closePlacedPropertiesDialog();
+    }
+
+    if (
+      this.copiedPlacedObject &&
+      !this.isLayerVisible(this.copiedPlacedObject.layer)
+    ) {
+      this.cancelCopyPlacement();
+    }
+
+    this.gridEditor.setLayerVisibility(this.layerVisibility);
+    this.gridEditor.syncPlacedObjectSelection(
+      this.selectedPlacedObjectId,
+      Array.from(this.selectedPlacedObjectIds),
+    );
+    this.syncLayerVisibilityControls();
+    this.syncAssetMenu();
+    this.setStatus(
+      `${layerName} layer ${isVisible ? "shown" : "hidden"} in the editor.`,
+    );
+  }
+
+  showAllLayers() {
+    this.layerVisibility = Object.fromEntries(
+      LAYERS.map((layerName) => [layerName, true]),
+    );
+    this.saveLayerVisibility();
+    this.gridEditor.setLayerVisibility(this.layerVisibility);
+    this.syncLayerVisibilityControls();
+    this.setStatus("All editor layers shown.");
+  }
+
+  syncLayerVisibilityControls() {
+    this.ui.layerVisibilityInputs.forEach((input) => {
+      input.checked = this.layerVisibility[input.dataset.layer] !== false;
+    });
+  }
+
+  createOverlapWarningMessage(message, overlappingObjects) {
+    const hiddenCount = overlappingObjects.filter(
+      (placedObject) => !this.isLayerVisible(placedObject.layer),
+    ).length;
+
+    if (hiddenCount === 0) {
+      return message;
+    }
+
+    const assetLabel = hiddenCount === 1 ? "asset is" : "assets are";
+    return `${message} ${hiddenCount} overlapping hidden-layer ${assetLabel} included.`;
   }
 
   syncCoordinateStatus() {

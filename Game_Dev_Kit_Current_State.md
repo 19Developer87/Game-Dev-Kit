@@ -6,9 +6,11 @@ This project is a reusable browser-based Game Dev Kit / Level Editor. It is curr
 
 The editor is intended to remain reusable so it can later sit on top of different game projects and save data those projects can consume.
 
-Normal Chrome is the main supported test browser. The editor uses browser file and folder functionality, including the File System Access API, which works in normal Chrome but may be unavailable or restricted in the Codex browser preview.
+The Codex built-in browser is supported for normal UI and editor testing, including layout, menus, tools, layer visibility, placed properties, selection, movement, deletion, grid selection, group movement, and placement workflows that use assets already loaded in the editor.
 
-The Codex browser preview may not support all browser APIs and behaviours this editor depends on. Verify folder picker, file saving, localStorage persistence, drag/drop, and confirmation-dialog behaviour in normal Chrome. Do not treat Codex browser preview failures as final unless the same issue happens in Chrome.
+Normal Chrome is the source of truth for file and folder workflows: Choose Project Folder, File > Save, Save As, direct JSON writing, folder picker permissions, importing files from disk, browser file handles, and final persistence checks.
+
+The editor uses browser file and folder functionality, including the File System Access API, which may be unavailable or restricted in the Codex browser. If a file/folder workflow works in Chrome but fails only in the Codex browser because of permissions or unsupported browser APIs, treat that as a Codex browser limitation rather than an app bug. Do not remove Codex browser support for ordinary UI/editor testing.
 
 Even though Chrome remains the supported development test browser for file/folder APIs, normal editor workflows should use Game Dev Kit UI rather than Chrome-native `alert`, `confirm`, or `prompt` dialogs. This keeps the editor suitable for later `.exe` or WebView packaging.
 
@@ -35,6 +37,7 @@ Update this current-state file whenever working behaviour changes.
 - Phase 4 currently adds placed instance inspection and editing only; full trigger gameplay behaviour and gameplay collision runtime are not implemented.
 - Phase 5A has started with placed-asset layer metadata inside Placed Asset Properties only; full Phase 5 layer controls are not implemented yet.
 - Phase 5B layer assignment integrity is working: applying a layer change relocates the selected placed asset into the matching known `level.layers` array while preserving the same object data.
+- Phase 5C editor-only layer visibility is working through the top `View` menu. Visibility is an editor preference and does not remove or alter saved placed assets.
 - Safe stopping point: existing tools, save/load, asset import/categories, placed-asset properties, and optimised grid rendering are working well enough to pause before continuing Phase 5 later.
 
 ## 4. Current Working Features
@@ -50,7 +53,9 @@ The editor currently supports:
 - Level reordering by drag within the level selector.
 - File menu with Choose Project Folder, Save, and Save As.
 - Edit menu with Copy Level and Paste Level.
-- Asset menu beside File/Edit, enabled only for one placed asset selected in Select/Move mode.
+- Top editor menu order is `File`, `Edit`, `View`, `Asset`.
+- The `View` menu contains editor-only checkboxes for all ten known layers plus `Show All Layers`.
+- Asset menu is enabled only for one visible placed asset selected in Select/Move mode.
 - Automatic browser persistence plus project-folder JSON saving.
 - Separate project JSON, level JSON, and asset registry JSON output.
 - Asset import from local image files.
@@ -95,14 +100,15 @@ The editor currently supports:
 - Browser-native alert/confirm/prompt dialogs have been replaced with in-app Game Dev Kit modals so the editor can later be packaged in an `.exe` or WebView shell without depending on Chrome-native dialog behaviour.
 - In-app modals are used for Create New Level, Rename Level, Delete Level, Clear Level, Create Category, Delete Category, Delete Palette Asset, grid resize warnings, paste warnings, placement overwrite warnings, and other editor warnings that previously used browser-native dialogs.
 - Placed Asset Properties includes a Layer / Behaviour section with `terrain`, `decorations`, `objects`, `collisions`, `spawns`, `items`, `npcs`, `enemies`, `triggers`, and `overlay`.
-- The selected layer controls only the selected placed asset and its `layerOptions` metadata. There is no standalone sidebar Layer Panel, active placement layer, hide/show, lock, solo, or layer visibility control yet.
+- The selected layer controls only the selected placed asset and its `layerOptions` metadata. There is no standalone sidebar Layer Panel or active placement layer.
+- Hidden editor layers keep their placed assets in saved data but hide their markers and exclude them from selection, movement, resizing, Properties, copy, and deletion.
 - Browser refresh restoration of project data, levels, categories, imported image data, and placed objects.
 - No visible default placeholder asset library.
 
 Current limitations:
 
 - This is still an editor only; it does not run player movement, NPC logic, battles, doors, or game integration.
-- Full Phase 5 layer behaviour is not implemented yet. Show/hide layers, lock/unlock layers, solo layer, move-to-layer actions, and layer-aware placement are not implemented yet.
+- Full Phase 5 layer behaviour is not implemented yet. Lock/unlock layers, solo layer, layer reordering, active placement layers, and runtime visibility are not implemented yet.
 - Play Mode, runtime collision, trigger execution, doors/exits, spawn runtime, NPC/enemy/item gameplay systems, chunked maps, animated character import, audio/music systems, and multilayer/parallax background tools are not implemented yet.
 - Palette asset deletion is blocked while that asset is placed on any level. Remove placed copies first.
 - A category that contains assets is not deleted automatically; its assets must be removed or reorganised first.
@@ -196,6 +202,7 @@ Storage constants currently visible in `EditorTypes.js`:
 | Left asset panel width preference | localStorage: `game-dev-kit-sidebar-width` |
 | Left asset panel collapsed preference | localStorage: `game-dev-kit-sidebar-collapsed` |
 | Placed Asset Properties panel bounds preference | localStorage: `game-dev-kit-properties-dialog-bounds` |
+| Editor-only known-layer visibility | localStorage: `game-dev-kit-layer-visibility` |
 | Imported image store database | IndexedDB database: `game-dev-kit-assets` |
 | Imported image object store | IndexedDB store: `imported-images` |
 
@@ -410,6 +417,15 @@ For one imported file while a grid range is already selected, the editor may off
 - A layer-only Properties change does not run overlap replacement or remove overlapping placed assets; overlap handling remains limited to actual position or size changes.
 - Missing or invalid submitted layer names fall back to the selected asset's current known containing array. Legacy `Trigger` is normalised to `triggers` only when that selected asset is updated.
 - Phase 5B does not run broad load-time layer relocation. Unknown layer arrays and their contents remain untouched.
+- The top menu order is `File`, `Edit`, `View`, `Asset`. `View > Layer Visibility` provides checkboxes for `terrain`, `decorations`, `objects`, `collisions`, `spawns`, `items`, `npcs`, `enemies`, `triggers`, and `overlay`, plus `Show All Layers`.
+- Layer visibility is stored only as the browser-wide editor preference `game-dev-kit-layer-visibility`. It is not stored in project state, level JSON, copied levels, folder exports, or backups, and changing visibility does not trigger project autosave.
+- Missing, malformed, or newly introduced known-layer preference values default to visible.
+- Hiding a layer updates existing placed-marker visibility without rebuilding the grid, coordinate headers, or placed-marker collection.
+- Hidden-layer assets remain unchanged in their original `level.layers` arrays and remain included in browser persistence, File saves, placed-asset copies, Copy Level / Paste Level, placement overlap checks, and overwrite handling.
+- Hidden-layer assets are excluded from Select/Move clicking, drag selection, group movement/resizing, Properties, Delete click/drag/keyboard deletion, and copied placement source selection.
+- Hiding a layer clears selected assets from that layer and cancels copied placement when its source asset belongs to the newly hidden layer. Visible-layer selections are retained where possible.
+- Moving an asset into a hidden layer through Properties still applies and autosaves through the Phase 5B relocation path, then clears its selection and hides its marker.
+- Overlap warnings explicitly report when hidden-layer assets are included in the overlap or replacement operation.
 - Tested persistence behavior: property changes persist after Chrome refresh, File > Save writes updated placed asset properties to level JSON, `Ctrl+C` copied placed assets preserve properties, and Copy Level / Paste Level preserves properties.
 - Identity / Info shows Source asset name and Category name only. It deliberately hides internal `id` and `assetId` values while keeping them on placed asset data for saving and loading.
 - Placed Asset Properties updates the current-level object only and preserves unknown/custom fields.
@@ -419,7 +435,7 @@ For one imported file while a grid range is already selected, the editor may off
 - Layer is a per-instance choice with the existing layer names: `terrain`, `decorations`, `objects`, `collisions`, `spawns`, `items`, `npcs`, `enemies`, `triggers`, and `overlay`.
 - Layer-specific sections are metadata only: terrain tag, decorative-only flag, object note/type, collision type/note, spawn name/direction, item ID/quantity, NPC name/dialogue ID, enemy type/spawn chance, trigger type/targets, and overlay render/note fields.
 - Terrain, decoration, object, collision, spawn, item, NPC, enemy, trigger, and overlay options are editor data only for now. They do not implement runtime collision, spawning, pickup behaviour, NPC runtime, enemy runtime, trigger/door/exit behaviour, or runtime draw-order/player layering yet.
-- Full trigger actions, runtime collision, spawn behaviour, item pickup behaviour, NPC logic, enemy logic, Play Mode, and hide/lock/solo layer controls remain future work.
+- Full trigger actions, runtime collision, spawn behaviour, item pickup behaviour, NPC logic, enemy logic, Play Mode, and lock/solo/runtime layer controls remain future work.
 - There is no standalone Layer Panel or active placement layer yet; layer changes happen only through the selected placed asset's Properties dialog.
 - A temporary left-sidebar Layer Panel was tested during Phase 5A and worked as UI state, but the chosen direction is not to keep layers as a permanent left-sidebar panel.
 - Moving or resizing into another object's rectangle warns first with an in-app modal, then uses the existing replacement policy if confirmed.
@@ -619,7 +635,7 @@ These issues occurred during earlier development and must not return:
 - Delete Level previously confirmed but did not remove the selected level in Chrome; it must keep removing the selected level from project state and refreshing the UI immediately.
 - Browser-native prompt/confirm/alert dialogs were replaced with app-owned modals for future `.exe`/WebView compatibility; do not bring native browser dialogs back for editor workflows.
 - Drag performance optimisations should remain in place: do not reintroduce full grid renders, repeated DOM queries for selected group markers, or autosave/localStorage writes inside mousemove/pointermove loops.
-- Phase 5A layer metadata belongs in the selected placed asset's Properties modal. Do not reintroduce a standalone sidebar Layer Panel, active placement layer, hide/show, lock, solo, or layer visibility controls until explicitly requested.
+- Layer selection belongs in the selected placed asset's Properties modal, while editor-only visibility belongs in the top `View` menu. Do not reintroduce a standalone sidebar Layer Panel or expand visibility into lock, solo, active placement, or runtime behavior without permission.
 
 ## 17. Do Not Change Without Permission
 
@@ -695,7 +711,18 @@ Before accepting changes to existing editor behaviour, verify:
 - [ ] Copy Level and Paste Level and confirm placed asset properties are preserved.
 - [ ] Confirm trigger layer options remain metadata only and full trigger behavior is not implemented.
 - [ ] Confirm no standalone sidebar Layer Panel is present.
-- [ ] Confirm full Phase 5 layer controls such as show/hide, lock, solo, active placement layer, Play Mode, runtime collision, spawns, items, NPCs, enemies, and trigger systems are not present.
+- [ ] Confirm the top menu order is `File`, `Edit`, `View`, `Asset`.
+- [ ] Open View and confirm all ten known layer checkboxes and `Show All Layers` are present.
+- [ ] Hide each layer and confirm only its marker elements disappear while IDs, bounds, array membership, and saved JSON remain unchanged.
+- [ ] Confirm the View menu remains open while toggling multiple layer checkboxes.
+- [ ] Refresh and confirm editor-only visibility preferences persist, then use `Show All Layers` to restore every known layer.
+- [ ] Confirm hidden-layer assets cannot be selected, moved, resized, copied, opened in Properties, or deleted by click, drag-area, Delete, or Backspace.
+- [ ] Hide a layer containing selected assets and confirm only those selections are cleared; hide the source layer during copied placement and confirm the preview is cancelled.
+- [ ] Confirm placement and move/resize overlap checks still include hidden-layer assets and the warning identifies their inclusion.
+- [ ] Move an asset into a hidden layer through Properties and confirm it saves, disappears, survives refresh, and returns unchanged when shown.
+- [ ] Confirm File Save and Copy Level / Paste Level preserve hidden assets without adding visibility metadata.
+- [ ] Confirm visibility toggles do not rebuild the grid or trigger project autosave on `50x50`, `100x100`, and `200x200` grids.
+- [ ] Confirm full Phase 5 controls such as lock, solo, active placement layer, Play Mode, runtime collision, spawns, items, NPCs, enemies, and trigger systems are not present.
 - [ ] Press Delete or Backspace with multiple placed assets selected and confirm all selected placed copies are removed without deleting palette assets.
 - [ ] Select a grid area in Select/Move mode, press Delete or Backspace with no placed object selected, and confirm every intersecting placed copy is removed without a confirmation prompt.
 - [ ] Type Delete/Backspace inside an editable input and confirm editor object deletion is not triggered.

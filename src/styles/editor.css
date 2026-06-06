@@ -523,6 +523,37 @@ body.is-sidebar-resizing * {
   white-space: nowrap;
 }
 
+.layer-visibility-menu {
+  min-width: 210px;
+}
+
+.menu-panel-heading {
+  margin: 2px 8px 4px;
+  color: #9eadb7;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.layer-visibility-option {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  color: #d5dde2;
+  cursor: pointer;
+}
+
+.layer-visibility-option:hover,
+.layer-visibility-option:focus-within {
+  background: #26323a;
+}
+
+.layer-visibility-option input {
+  margin: 0;
+}
+
 .status-bar {
   display: flex;
   align-items: center;
@@ -724,6 +755,11 @@ body.is-sidebar-resizing * {
   box-shadow: inset 0 0 0 1px #101316;
   z-index: 1;
   will-change: left, top, width, height;
+}
+
+.placed-asset.is-layer-hidden {
+  display: none;
+  pointer-events: none;
 }
 
 .placed-asset.is-primary-selected {

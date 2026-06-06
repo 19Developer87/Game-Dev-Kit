@@ -95,6 +95,14 @@ export function createEditorLayout(root) {
                   <button type="button" data-action="edit-placed-asset-properties">Properties</button>
                 </div>
               </details>
+              <details class="menu" data-menu data-role="view-menu">
+                <summary>View</summary>
+                <div class="menu-panel layer-visibility-menu">
+                  <p class="menu-panel-heading">Layer Visibility</p>
+                  ${createLayerVisibilityControls()}
+                  <button type="button" data-action="show-all-layers">Show All Layers</button>
+                </div>
+              </details>
               <details class="menu is-disabled" data-menu data-role="asset-menu">
                 <summary aria-disabled="true">Asset</summary>
                 <div class="menu-panel">
@@ -124,6 +132,9 @@ export function createEditorLayout(root) {
     editPropertiesButton: root.querySelector('[data-action="edit-placed-asset-properties"]'),
     gridSize: root.querySelector('[data-role="grid-size"]'),
     gridStage: root.querySelector('[data-role="grid-stage"]'),
+    layerVisibilityInputs: Array.from(
+      root.querySelectorAll('[data-role="layer-visibility-toggle"]'),
+    ),
     levelPicker: root.querySelector('[data-role="level-picker"]'),
     levelPickerButton: root.querySelector('[data-role="level-picker-button"]'),
     levelPickerPanel: root.querySelector('[data-role="level-picker-panel"]'),
@@ -137,4 +148,31 @@ export function createEditorLayout(root) {
     statusMessage: root.querySelector('[data-role="status-message"]'),
     workspace: root.querySelector(".workspace"),
   };
+}
+
+function createLayerVisibilityControls() {
+  return [
+    "terrain",
+    "decorations",
+    "objects",
+    "collisions",
+    "spawns",
+    "items",
+    "npcs",
+    "enemies",
+    "triggers",
+    "overlay",
+  ].map(
+    (layerName) => `
+      <label class="layer-visibility-option">
+        <input
+          type="checkbox"
+          data-role="layer-visibility-toggle"
+          data-layer="${layerName}"
+          checked
+        />
+        <span>${layerName}</span>
+      </label>
+    `,
+  ).join("");
 }

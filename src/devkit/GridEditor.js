@@ -43,6 +43,8 @@ export class GridEditor {
     this.lastHoveredCellKey = null;
     this.pendingCopyCell = null;
     this.copyAnimationFrame = null;
+    this.layerVisibility = {};
+    this.placedObjectsById = new Map();
   }
 
   setInteractionMode(mode) {
@@ -52,6 +54,51 @@ export class GridEditor {
   setCopyModeActive(isActive) {
     this.copyModeActive = Boolean(isActive);
     this.surface?.classList.toggle("is-copy-mode", this.copyModeActive);
+  }
+
+  setLayerVisibility(layerVisibility) {
+    this.layerVisibility = { ...layerVisibility };
+    this.surface?.querySelectorAll(".placed-asset").forEach((marker) => {
+      marker.classList.toggle(
+        "is-layer-hidden",
+        !this.isLayerVisible(marker.dataset.layer),
+      );
+    });
+    this.syncPlacedObjectSelection(
+      this.selectedPlacedObjectId,
+      Array.from(this.selectedPlacedObjectIds),
+    );
+  }
+
+  syncPlacedObjectSelection(selectedPlacedObjectId, selectedPlacedObjectIds = []) {
+    this.selectedPlacedObjectId = selectedPlacedObjectId;
+    this.selectedPlacedObjectIds = new Set(selectedPlacedObjectIds);
+
+    this.surface?.querySelectorAll(".placed-asset").forEach((marker) => {
+      marker.classList.remove("is-selected", "is-primary-selected");
+      marker.querySelectorAll(".resize-handle").forEach((handle) => handle.remove());
+
+      const placedObjectId = marker.dataset.placedObjectId;
+      const isSelected =
+        this.interactionMode === "move" &&
+        this.selectedPlacedObjectIds.has(placedObjectId) &&
+        this.isLayerVisible(marker.dataset.layer);
+      if (!isSelected) {
+        return;
+      }
+
+      marker.classList.add("is-selected");
+      marker.classList.toggle(
+        "is-primary-selected",
+        placedObjectId === this.selectedPlacedObjectId,
+      );
+      if (this.selectedPlacedObjectIds.size <= 1) {
+        const placedObject = this.placedObjectsById.get(placedObjectId);
+        if (placedObject) {
+          this.appendResizeHandles(marker, placedObject);
+        }
+      }
+    });
   }
 
   render(
@@ -66,6 +113,7 @@ export class GridEditor {
     this.level = level;
     this.selectedPlacedObjectId = selectedPlacedObjectId;
     this.selectedPlacedObjectIds = new Set(selectedPlacedObjectIds);
+    this.placedObjectsById = new Map();
     this.cancelPendingSelectionFrame();
     this.cancelPendingCopyFrame();
     this.root.innerHTML = "";
@@ -441,10 +489,12 @@ export class GridEditor {
     const assetLookup = new Map(assets.map((asset) => [asset.id, asset]));
 
     getPlacedObjects(level).forEach((placedObject) => {
+      this.placedObjectsById.set(placedObject.id, placedObject);
       const asset = assetLookup.get(placedObject.assetId);
       const marker = document.createElement("div");
       marker.className = "placed-asset";
       marker.dataset.placedObjectId = placedObject.id;
+      marker.dataset.layer = normalizePlacedLayer(placedObject.layer);
       marker.title = `${asset?.name || placedObject.name || placedObject.assetId} ${placedObject.rangeRef || ""}`.trim();
       marker.style.left = `${(Number(placedObject.x) - 1) * level.tileSize}px`;
       marker.style.top = `${(Number(placedObject.y) - 1) * level.tileSize}px`;
@@ -453,6 +503,7 @@ export class GridEditor {
       marker.style.zIndex = String(getPlacedAssetLayerOrder(placedObject.layer));
       const isSelected =
         this.interactionMode === "move" &&
+        this.isLayerVisible(placedObject.layer) &&
         (placedObject.id === selectedPlacedObjectId || this.selectedPlacedObjectIds.has(placedObject.id));
       const isPrimarySelected = placedObject.id === selectedPlacedObjectId;
       const isVisible = placedObject.visible !== false;
@@ -461,6 +512,10 @@ export class GridEditor {
       marker.classList.toggle("is-primary-selected", isPrimarySelected);
       marker.classList.toggle("is-hidden", !isVisible);
       marker.classList.toggle("is-zero-opacity", isVisible && opacity === 0);
+      marker.classList.toggle(
+        "is-layer-hidden",
+        !this.isLayerVisible(marker.dataset.layer),
+      );
 
       if (asset?.src) {
         const image = document.createElement("img");
@@ -527,6 +582,10 @@ export class GridEditor {
 
       layer.append(marker);
     });
+  }
+
+  isLayerVisible(layerName) {
+    return this.layerVisibility[normalizePlacedLayer(layerName)] !== false;
   }
 
   appendResizeHandles(marker, placedObject) {
@@ -646,8 +705,10 @@ export class GridEditor {
 
   startPlacedObjectGroupTransform(event, activePlacedObject) {
     const selectedIds = Array.from(this.selectedPlacedObjectIds);
-    const selectedObjects = getPlacedObjects(this.level).filter((placedObject) =>
-      this.selectedPlacedObjectIds.has(placedObject.id),
+    const selectedObjects = getPlacedObjects(this.level).filter(
+      (placedObject) =>
+        this.isLayerVisible(placedObject.layer) &&
+        this.selectedPlacedObjectIds.has(placedObject.id),
     );
 
     if (selectedObjects.length <= 1) {
@@ -904,4 +965,8 @@ function getPlacedAssetLayerOrder(layer) {
     triggers: 30,
     Trigger: 30,
   }[layer] ?? 10;
+}
+
+function normalizePlacedLayer(layer) {
+  return layer === "Trigger" ? "triggers" : layer || "objects";
 }

@@ -6,6 +6,7 @@ export const COPIED_LEVEL_STORAGE_KEY = "game-dev-kit-copied-level";
 export const SIDEBAR_WIDTH_STORAGE_KEY = "game-dev-kit-sidebar-width";
 export const SIDEBAR_COLLAPSED_STORAGE_KEY = "game-dev-kit-sidebar-collapsed";
 export const PLACED_PROPERTIES_DIALOG_STORAGE_KEY = "game-dev-kit-properties-dialog-bounds";
+export const LAYER_VISIBILITY_STORAGE_KEY = "game-dev-kit-layer-visibility";
 export const ASSET_IMAGE_DATABASE_NAME = "game-dev-kit-assets";
 export const ASSET_IMAGE_STORE_NAME = "imported-images";
 export const DEFAULT_CATEGORY_ID = "custom-imported-assets";
