@@ -479,7 +479,7 @@ export function updatePlacedAssetProperties(level, placedObjectId, properties) {
   let selectedObject = null;
   let currentLayerName = null;
 
-  LAYERS.forEach((layerName) => {
+  for (const layerName of LAYERS) {
     const foundObject = (level.layers[layerName] || []).find(
       (placedObject) => placedObject.id === placedObjectId,
     );
@@ -487,33 +487,51 @@ export function updatePlacedAssetProperties(level, placedObjectId, properties) {
     if (foundObject) {
       selectedObject = foundObject;
       currentLayerName = layerName;
+      break;
     }
-  });
+  }
 
   if (!selectedObject) {
     return null;
   }
 
-  const storedLayer = properties.layer || selectedObject.layer || currentLayerName || "objects";
-  const targetLayerName = getLayerArrayName(storedLayer);
-  removeObjectsInRangeExcept(
-    level,
-    properties.x,
-    properties.y,
-    properties.width,
-    properties.height,
-    placedObjectId,
-  );
+  const targetLayerName = normalizeKnownLayerName(properties.layer) || currentLayerName;
+  const boundsChanged =
+    Number(selectedObject.x) !== Number(properties.x) ||
+    Number(selectedObject.y) !== Number(properties.y) ||
+    Number(selectedObject.width) !== Number(properties.width) ||
+    Number(selectedObject.height) !== Number(properties.height);
+  if (boundsChanged) {
+    removeObjectsInRangeExcept(
+      level,
+      properties.x,
+      properties.y,
+      properties.width,
+      properties.height,
+      placedObjectId,
+    );
+  }
   Object.assign(selectedObject, properties, {
     gridRef: toGridRef(properties.x, properties.y),
     rangeRef: toRangeRef(properties.x, properties.y, properties.width, properties.height),
-    layer: storedLayer,
+    layer: targetLayerName,
   });
 
-  if (targetLayerName !== currentLayerName) {
-    level.layers[currentLayerName] = level.layers[currentLayerName].filter(
-      (placedObject) => placedObject.id !== placedObjectId,
-    );
+  const knownLayerMatches = LAYERS.reduce(
+    (count, layerName) =>
+      count +
+      (level.layers[layerName] || []).filter(
+        (placedObject) => placedObject.id === placedObjectId,
+      ).length,
+    0,
+  );
+
+  if (targetLayerName !== currentLayerName || knownLayerMatches !== 1) {
+    LAYERS.forEach((layerName) => {
+      level.layers[layerName] = (level.layers[layerName] || []).filter(
+        (placedObject) => placedObject.id !== placedObjectId,
+      );
+    });
     level.layers[targetLayerName] = Array.isArray(level.layers[targetLayerName])
       ? level.layers[targetLayerName]
       : [];
@@ -524,7 +542,12 @@ export function updatePlacedAssetProperties(level, placedObjectId, properties) {
 }
 
 function getLayerArrayName(layer) {
-  return layer === "Trigger" ? "triggers" : layer;
+  return normalizeKnownLayerName(layer) || "objects";
+}
+
+function normalizeKnownLayerName(layer) {
+  const normalizedLayer = layer === "Trigger" ? "triggers" : layer;
+  return LAYERS.includes(normalizedLayer) ? normalizedLayer : null;
 }
 
 export function resizeCurrentLevel(project, width, height) {

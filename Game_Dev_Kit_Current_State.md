@@ -34,6 +34,7 @@ Update this current-state file whenever working behaviour changes.
 - Phase 4 basic placed asset properties are tested and working for placed instance inspection, editing, browser persistence, Chrome refresh restoration, folder save output, placed-asset copy, and Copy Level / Paste Level preservation.
 - Phase 4 currently adds placed instance inspection and editing only; full trigger gameplay behaviour and gameplay collision runtime are not implemented.
 - Phase 5A has started with placed-asset layer metadata inside Placed Asset Properties only; full Phase 5 layer controls are not implemented yet.
+- Phase 5B layer assignment integrity is working: applying a layer change relocates the selected placed asset into the matching known `level.layers` array while preserving the same object data.
 - Safe stopping point: existing tools, save/load, asset import/categories, placed-asset properties, and optimised grid rendering are working well enough to pause before continuing Phase 5 later.
 
 ## 4. Current Working Features
@@ -405,6 +406,10 @@ For one imported file while a grid range is already selected, the editor may off
 - Placed Asset Properties uses `Grid Ref` as its user-facing position field. `x` and `y` remain stored internally and are recalculated from the submitted Grid Ref; `rangeRef` is recalculated after position or size edits.
 - Tested property behavior: Grid Ref changes move the asset correctly, Width/Height changes resize the asset correctly, Visible toggles display, Opacity changes display transparency, Layer saves, Blocks Movement saves, and Notes save.
 - Layer-specific metadata is saved on the placed asset under `layerOptions` and unknown/custom fields are preserved.
+- Applying a layer change moves the original placed asset object into the matching known `level.layers` array, writes the same canonical lowercase layer name, and ensures that selected asset ID exists only once across known layer arrays.
+- A layer-only Properties change does not run overlap replacement or remove overlapping placed assets; overlap handling remains limited to actual position or size changes.
+- Missing or invalid submitted layer names fall back to the selected asset's current known containing array. Legacy `Trigger` is normalised to `triggers` only when that selected asset is updated.
+- Phase 5B does not run broad load-time layer relocation. Unknown layer arrays and their contents remain untouched.
 - Tested persistence behavior: property changes persist after Chrome refresh, File > Save writes updated placed asset properties to level JSON, `Ctrl+C` copied placed assets preserve properties, and Copy Level / Paste Level preserves properties.
 - Identity / Info shows Source asset name and Category name only. It deliberately hides internal `id` and `assetId` values while keeping them on placed asset data for saving and loading.
 - Placed Asset Properties updates the current-level object only and preserves unknown/custom fields.
@@ -681,6 +686,9 @@ Before accepting changes to existing editor behaviour, verify:
 - [ ] Edit Width/Height and confirm the asset resizes correctly.
 - [ ] Edit Visible, Opacity, Layer, Blocks Movement, Notes, and layer-specific `layerOptions` fields and confirm each value applies only after submit and saves.
 - [ ] Cancel or close Placed Asset Properties after changing fields and confirm no property changes are applied.
+- [ ] Change one placed asset from `objects` to `overlay`, confirm it remains exactly once with the same ID and bounds, then refresh and confirm Properties still shows `overlay`.
+- [ ] Change the same placed asset from `overlay` back to `objects`, confirm it remains exactly once with the same ID and bounds, then refresh and confirm Properties still shows `objects`.
+- [ ] Confirm layer relocation preserves unknown placed-asset fields, `layerOptions`, and unknown layer arrays without deleting or duplicating unrelated assets.
 - [ ] Refresh Chrome and confirm placed asset property changes are restored.
 - [ ] Use File > Save and confirm updated placed asset properties are written to the level JSON.
 - [ ] Copy a placed asset with `Ctrl+C` and confirm the copied placed asset preserves the edited properties.

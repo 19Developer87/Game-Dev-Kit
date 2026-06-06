@@ -649,13 +649,20 @@ class DevEditor {
         return;
       }
 
-      const overlaps = findObjectsInRange(
-        level,
-        result.values.x,
-        result.values.y,
-        result.values.width,
-        result.values.height,
-      ).filter((candidate) => candidate.id !== placedObject.id);
+      const boundsChanged =
+        Number(placedObject.x) !== result.values.x ||
+        Number(placedObject.y) !== result.values.y ||
+        Number(placedObject.width) !== result.values.width ||
+        Number(placedObject.height) !== result.values.height;
+      const overlaps = boundsChanged
+        ? findObjectsInRange(
+            level,
+            result.values.x,
+            result.values.y,
+            result.values.width,
+            result.values.height,
+          ).filter((candidate) => candidate.id !== placedObject.id)
+        : [];
 
       if (overlaps.length > 0) {
         const confirmed = await this.showConfirmModal({
