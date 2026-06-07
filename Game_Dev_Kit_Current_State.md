@@ -6,9 +6,13 @@ This project is a reusable browser-based Game Dev Kit / Level Editor. It is curr
 
 The editor is intended to remain reusable so it can later sit on top of different game projects and save data those projects can consume.
 
-Normal Chrome is the main supported test browser. The editor uses browser file and folder functionality, including the File System Access API, which works in normal Chrome but may be unavailable or restricted in the Codex browser preview.
+The Codex built-in browser is supported for normal UI and editor testing, including layout, menus, tools, layer visibility, placed properties, selection, movement, deletion, grid selection, group movement, and placement workflows that use assets already loaded in the editor.
 
-The Codex browser preview may not support all browser APIs and behaviours this editor depends on. Verify folder picker, file saving, localStorage persistence, drag/drop, and confirmation-dialog behaviour in normal Chrome. Do not treat Codex browser preview failures as final unless the same issue happens in Chrome.
+Normal Chrome is the source of truth for file and folder workflows: Choose Project Folder, File > Save, Save As, direct JSON writing, folder picker permissions, importing files from disk, browser file handles, and final persistence checks.
+
+The editor uses browser file and folder functionality, including the File System Access API, which may be unavailable or restricted in the Codex browser. If a file/folder workflow works in Chrome but fails only in the Codex browser because of permissions or unsupported browser APIs, treat that as a Codex browser limitation rather than an app bug. Do not remove Codex browser support for ordinary UI/editor testing.
+
+Even though Chrome remains the supported development test browser for file/folder APIs, normal editor workflows should use Game Dev Kit UI rather than Chrome-native `alert`, `confirm`, or `prompt` dialogs. This keeps the editor suitable for later `.exe` or WebView packaging.
 
 ## 2. Relationship To `GAME_DEV_KIT_PLAN.md`
 
@@ -25,12 +29,18 @@ Update this current-state file whenever working behaviour changes.
 
 ## 3. Current Phase Status
 
+- Current working branch: `codex/phase-5-layer-system`.
 - The project has begun Phase 4 with a focused placed-asset properties implementation.
 - Phase 1 and Phase 2 functionality is working.
 - Phase 3 has a solid asset import, categorisation, grid selection, and placement base and is being polished.
 - Phase 4 basic placed asset properties are tested and working for placed instance inspection, editing, browser persistence, Chrome refresh restoration, folder save output, placed-asset copy, and Copy Level / Paste Level preservation.
 - Phase 4 currently adds placed instance inspection and editing only; full trigger gameplay behaviour and gameplay collision runtime are not implemented.
-- Phase 5 full layer controls have not started.
+- Phase 5A has started with placed-asset layer metadata inside Placed Asset Properties only; full Phase 5 layer controls are not implemented yet.
+- Phase 5B layer assignment integrity is working: applying a layer change relocates the selected placed asset into the matching known `level.layers` array while preserving the same object data.
+- Phase 5C editor-only layer visibility is working through the top `View` menu. Visibility is an editor preference and does not remove or alter saved placed assets.
+- Phase 5D editor-only layer locking is working through the top `View` menu. Locked layers protect placed assets from editor mutations without changing saved level data.
+- The focused Phase 5D follow-up adds per-instance `editorLocked` state in Placed Asset Properties and tidies View with nested visibility and locking flyouts.
+- Safe stopping point: existing tools, save/load, asset import/categories, placed-asset properties, and optimised grid rendering are working well enough to pause before continuing Phase 5 later.
 
 ## 4. Current Working Features
 
@@ -38,14 +48,16 @@ The editor currently supports:
 
 - A standalone browser editor served locally by `dev-server.mjs`.
 - Grid display and fixed coordinate headers.
-- Grid size selection for `10x10`, `20x20`, `30x30`, `40x40`, `50x50`, and custom sizes up to `100x100`.
+- Grid size selection for `10x10`, `20x20`, `30x30`, `40x40`, `50x50`, `75x75`, `100x100`, `150x150`, `200x200`, and custom sizes up to `500x500`.
 - Level selector with current-level display.
 - Create New Level, Rename Level, Delete Level, and Clear Level.
 - Delete Level is working: it confirms first, removes only the selected level from the project, selects another level, rerenders the grid/level selector, and persists to browser storage.
 - Level reordering by drag within the level selector.
 - File menu with Choose Project Folder, Save, and Save As.
 - Edit menu with Copy Level and Paste Level.
-- Asset menu beside File/Edit, enabled only for one placed asset selected in Select/Move mode.
+- Top editor menu order is `File`, `Edit`, `View`, `Asset`.
+- The `View` menu contains compact `Layer Visibility` and `Layer Locking` flyouts for all ten known layers, plus `Show All Layers` and `Unlock All Layers and Assets`.
+- Asset menu is enabled only for one visible placed asset selected in Select/Move mode.
 - Automatic browser persistence plus project-folder JSON saving.
 - Separate project JSON, level JSON, and asset registry JSON output.
 - Asset import from local image files.
@@ -69,28 +81,41 @@ The editor currently supports:
 - Delete and Backspace remove the currently selected placed object or selected placed-object group in Select/Move mode when focus is not in editable UI.
 - Delete and Backspace bulk delete placed assets intersecting the selected grid area immediately when no placed asset is selected.
 - The separate Paint toolbar button has been removed; placement now happens through Select/Move grid selections or asset drag/drop.
-- A compact Placed Asset Properties modal opened with `Asset > Properties` or by double-clicking a placed asset in Select/Move mode.
-- Placed instance properties for Grid Ref, Width/Height, Visible, Opacity, Layer, Blocks Movement, and Notes.
+- A compact Placed Asset Properties modal opened with `Asset > Properties`, `Edit > Properties`, or by double-clicking a placed asset in Select/Move mode.
+- Placed instance properties for Grid Ref, Width/Height, Visible, Opacity, Layer, Blocks Movement, Notes, and layer-specific metadata stored under `layerOptions`.
 - Phase 4 basic placed asset property edits have been tested as working, including Chrome refresh persistence and File > Save level JSON output.
 - Identity / Info shows the source asset name and category only; internal placed/source IDs are kept in saved data but hidden from normal editing UI.
 - A movable and resizable Placed Asset Properties modal whose last panel bounds persist as a browser UI preference.
+- Placed Asset Properties keeps Cancel / Close and Apply / Save Changes in a persistent footer while the property fields scroll inside the panel.
 - A dedicated grid viewport with its own accessible horizontal and vertical scrolling for large maps.
 - A horizontally resizable left asset/category panel whose width persists in the browser.
+- Left asset/category panel resizing is requestAnimationFrame-throttled while dragging and writes the final width preference only after pointer release.
 - A minimisable left asset/category panel; when collapsed, only a restore button remains, the grid uses the freed space, and restoring returns the previous expanded width.
 - Drag/drop of imported assets from a category onto the grid.
 - Multi-cell placement as one stretched/fitted asset object, not one repeated asset per cell.
 - Delete mode that immediately removes a placed copy by clicking any covered grid cell, including a stretched object.
 - Delete mode supports click-and-drag area deletion for placed grid assets.
+- Grid drag selection and delete-area highlighting use a single live overlay rectangle and requestAnimationFrame-throttled pointer updates for smoother large-grid performance.
+- Placed asset move, group move, and resize previews are requestAnimationFrame-throttled during dragging and commit level data once on release.
 - Select/Move supports multi-selecting placed assets by dragging a grid area across them.
 - Multi-selected placed assets can be moved together as a snapped group while preserving relative spacing.
+- Every selected asset in a multi-selection uses a yellow outline; the primary selection may use a stronger yellow accent, but secondary selections do not use blue.
 - Overwrite confirmation before a new placement removes overlapping objects.
-- Confirmation prompts remain for Delete Level, Clear Level, Delete Category, and Delete Palette Asset.
+- Browser-native alert/confirm/prompt dialogs have been replaced with in-app Game Dev Kit modals so the editor can later be packaged in an `.exe` or WebView shell without depending on Chrome-native dialog behaviour.
+- In-app modals are used for Create New Level, Rename Level, Delete Level, Clear Level, Create Category, Delete Category, Delete Palette Asset, grid resize warnings, paste warnings, placement overwrite warnings, and other editor warnings that previously used browser-native dialogs.
+- Placed Asset Properties includes a Layer / Behaviour section with `terrain`, `decorations`, `objects`, `collisions`, `spawns`, `items`, `npcs`, `enemies`, `triggers`, and `overlay`.
+- The selected layer controls only the selected placed asset and its `layerOptions` metadata. There is no standalone sidebar Layer Panel or active placement layer.
+- Hidden editor layers keep their placed assets in saved data but hide their markers and exclude them from selection, movement, resizing, Properties, copy, and deletion.
+- Locked editor layers remain visible when visibility is on, but their placed assets are excluded from selection, movement, resizing, Properties, copy, group movement, deletion, and overlap replacement.
+- Individually locked placed assets remain visible and saved, cannot be selected, moved, resized, copied, group-moved, deleted, or replaced, and can be double-clicked to open Properties for unlocking in Chrome and the Codex in-app browser.
 - Browser refresh restoration of project data, levels, categories, imported image data, and placed objects.
 - No visible default placeholder asset library.
 
 Current limitations:
 
 - This is still an editor only; it does not run player movement, NPC logic, battles, doors, or game integration.
+- Full Phase 5 layer behaviour is not implemented yet. Solo layer, layer reordering, active placement layers, and runtime visibility are not implemented yet.
+- Play Mode, runtime collision, trigger execution, doors/exits, spawn runtime, NPC/enemy/item gameplay systems, chunked maps, animated character import, audio/music systems, and multilayer/parallax background tools are not implemented yet.
 - Palette asset deletion is blocked while that asset is placed on any level. Remove placed copies first.
 - A category that contains assets is not deleted automatically; its assets must be removed or reorganised first.
 
@@ -109,6 +134,8 @@ Current limitations:
 - Do not wipe browser storage, categories, assets, levels, or placed objects.
 - Do not overwrite project JSON files unless the user chooses Save or Save As.
 - Do not implement later phases unless explicitly requested.
+- Do not reintroduce browser-native `alert`, `confirm`, or `prompt` workflows for editor actions. Use app-owned Game Dev Kit modals instead.
+- Editor hotkeys must remain disabled while modal dialogs are open.
 
 ## 6. Current File / Folder Structure
 
@@ -181,6 +208,8 @@ Storage constants currently visible in `EditorTypes.js`:
 | Left asset panel width preference | localStorage: `game-dev-kit-sidebar-width` |
 | Left asset panel collapsed preference | localStorage: `game-dev-kit-sidebar-collapsed` |
 | Placed Asset Properties panel bounds preference | localStorage: `game-dev-kit-properties-dialog-bounds` |
+| Editor-only known-layer visibility | localStorage: `game-dev-kit-layer-visibility` |
+| Editor-only known-layer locks | localStorage: `game-dev-kit-layer-locks` |
 | Imported image store database | IndexedDB database: `game-dev-kit-assets` |
 | Imported image object store | IndexedDB store: `imported-images` |
 
@@ -226,14 +255,20 @@ Deleting a level removes it from browser project state and from the active proje
 - Dragging a level entry reorders the level array and autosaves that order.
 - Create New Level creates and immediately selects a new empty level.
 - Rename Level changes the current level display name. The existing filename is retained.
-- Delete Level uses an in-app confirmation dialog, refuses to delete the final remaining level, attempts a browser backup without blocking deletion if backup storage fails, removes only the selected level from project state, and selects the next level when available or the previous level otherwise.
+- Create New Level and Rename Level use in-app prompt modals. Empty names are rejected and cancelling leaves the current project unchanged.
+- Delete Level uses an in-app confirmation modal, refuses to delete the final remaining level, attempts a browser backup without blocking deletion if backup storage fails, removes only the selected level from project state, and selects the next level when available or the previous level otherwise.
 - Delete Level updates `lastOpenedLevelId`, refreshes the level picker/grid, clears selected placed assets/properties for the deleted level, and saves the updated browser state immediately.
-- Clear Level requires confirmation and clears placed content from the current level layers only.
+- Clear Level uses an in-app confirmation modal and clears placed content from the current level layers only after confirmation.
 - Copy Level stores full copied level data in localStorage under `game-dev-kit-copied-level`.
-- Paste Level pastes copied grid size and content into the current level while preserving that destination level's ID, name, and filename. It warns before replacing existing current-level content.
+- Paste Level pastes copied grid size and content into the current level while preserving that destination level's ID, name, and filename. It uses an in-app warning modal before replacing existing current-level content.
 - Duplicate Level is not exposed in the UI. Copy Level and Paste Level are the supported workflow for copying level content.
-- Grid resizing supports presets and a custom width/height, capped at `100`.
-- If shrinking a grid would remove any wholly or partly out-of-bounds placed objects, the editor warns first and creates a browser backup before proceeding.
+- Grid resizing supports presets and a custom width/height, capped at `500`.
+- Grid sizes larger than `100x100` show an in-app large-grid performance warning before resizing.
+- Grid sizes larger than `250x250` show a stronger in-app warning about scrolling, saving, and future Play Mode performance before resizing.
+- Grid sizes above `500x500` are blocked with an in-app message. Massive worlds such as `1000x1000` should not be one giant level grid yet.
+- Future very large worlds should use chunked or region-based maps, such as editable `50x50` or `100x100` chunks that can load nearby regions for seamless Play Mode while keeping editor scrolling, collision, triggers, and asset rendering manageable.
+- A `1000x1000` world should still be treated carefully and should not be built as one giant editor level grid until chunked or region-based maps are designed.
+- If shrinking a grid would remove any wholly or partly out-of-bounds placed objects, the editor warns first with an in-app modal and creates a browser backup before proceeding.
 
 ## 9. Grid System
 
@@ -246,8 +281,11 @@ Deleting a level removes it from browser project state and from the active proje
 - Rows after `Z` use Excel-style labels: `AA`, `AB`, `AC`, and so on.
 - The status bar shows a compact hover reference such as `Hover: 12.F`.
 - The status bar shows an active selection such as `Selected: 3.B to 8.E`.
-- Dragging with the left mouse button across cells creates a rectangular range.
+- Dragging with the left mouse button across the grid surface creates a rectangular range.
+- Drag selection is rendered as one live overlay rectangle rather than by updating individual grid cells.
+- During drag, the live selection overlay updates through a requestAnimationFrame-throttled path so pointer movement does not trigger full grid rerenders or per-cell style changes.
 - Releasing the mouse keeps the selected area active in a ready state.
+- Final selected range calculation, placed-asset intersection, and delete-area deletion happen on pointer release.
 - Pressing Escape clears the selection.
 - Changing to Delete mode clears active placement selection and deletes objects rather than extending selection.
 - Select/Move owns grid-area selection on empty cells; mouse down on a placed asset selects/moves that placed asset instead.
@@ -255,23 +293,33 @@ Deleting a level removes it from browser project state and from the active proje
 - The selected range can also drive bulk deletion: with no placed asset selected, Delete or Backspace immediately deletes all placed assets intersecting the selected range.
 - When a Select/Move selection range intersects placed assets, those placed assets become selected/highlighted for group operations.
 - Select/Move drag selection is calculated from grid-surface coordinates so the selection rectangle draws continuously above placed assets and selects any placed asset it intersects.
+- Select/Move drag selection remains visible in real time while dragging, but selected placed-asset borders are updated only after the final range is released.
 - Selected placed-asset borders remain visible during single and group movement; when group dragging begins, the grid-area selection rectangle clears.
 - The grid viewport owns its scrollbars, so horizontal scrolling is available at the bottom of the visible grid panel instead of only after scrolling the browser page to the bottom.
 
 Grid implementation notes:
 
 - Coordinate headers occupy separate grid layout regions.
-- Editable cells occupy `grid-surface`.
-- Placed objects render in an absolutely positioned `asset-overlay-layer` above cells.
+- The editable grid background occupies `grid-surface` and is drawn by one lightweight `editor-grid-cells` background layer, not one DOM element per tile.
+- The grid background uses CSS repeating grid lines sized from `--tile-size`, so `30x30`, `50x50`, and larger supported grids avoid creating hundreds or thousands of individual cell elements.
+- The old per-cell DOM/button grid has been replaced with a lightweight grid background approach. Large empty grids are much smoother, and `50x50`, `100x100`, and larger supported grids perform better than the old button-per-cell model.
+- Hit testing no longer depends on per-cell buttons. Pointer, hover, drop, selection, placement, delete, move, and resize coordinates are calculated from the grid surface bounding rectangle and tile size.
+- A single hover overlay provides the visible current-cell outline.
+- Placed objects render in an absolutely positioned `asset-overlay-layer` above the grid background.
 - Selection/drop feedback renders in a separate absolute overlay.
 - The Select/Move selection rectangle sits above the placed asset overlay and is not interrupted by placed assets under the pointer.
+- The selection overlay is one absolutely positioned rectangle whose left/top/width/height are updated from the latest pointer cell once per animation frame when needed.
+- Selection overlays remain live and visible during drag without rebuilding the whole grid.
 - Placed images therefore do not push or move the number or letter headers.
 - Row and column headers remain aligned using sticky header regions inside the scrolling grid viewport.
 - The top-left alignment spacer is hidden and non-interactive; it must not paint over row labels while the grid scrolls.
 - Axis bands sit flush against the scrollable grid viewport and directly beside/above the editable cell surface.
 - Pointer/drop coordinate calculations continue to use the scrolled grid surface bounds, so asset placement, movement, and resizing remain mapped to grid cells after scrolling.
-- Resizing the asset panel changes available viewport width only; grid-cell coordinate calculations remain based on the grid surface and tile size.
+- Selection and delete-area pointer calculations use the grid surface bounding rectangle and tile size, so the internal grid viewport scroll position is naturally accounted for after horizontal or vertical scrolling.
+- Resizing the asset panel changes available viewport width only; grid coordinate calculations remain based on the grid surface and tile size.
 - Grid coordinate headers remain aligned with cells while scrolling, placing, moving, resizing, deleting, and collapsing/restoring the left asset panel.
+- Grid-size changes still rebuild headers, overlays, the lightweight grid background, and placed assets once for the new dimensions, then save once after the resize action completes.
+- Autosave/localStorage writes are avoided during pointer-move drag loops. Drag operations update visual previews live and save only after a completed action such as move, resize, grid resize, delete, placement, or panel resize.
 
 ## 10. Asset System
 
@@ -312,10 +360,11 @@ The asset registry contains assets available to place. Individual level JSON fil
 - A new category entered during import takes priority over a dropdown selection.
 - Category names are trimmed and matched without case differences to avoid duplicates.
 - Empty category names are rejected.
+- Create Category uses an in-app prompt modal. Duplicate category names are rejected with an in-app message modal.
 - Categories appear immediately in the left panel after creation.
 - Categories persist in browser project state and are written to `assets/assetRegistry.json` during folder save.
-- Empty categories can be deleted after confirmation.
-- Categories containing assets cannot currently be deleted from the panel; the editor asks the user to remove or move assets first.
+- Empty categories can be deleted after in-app confirmation.
+- Categories containing assets cannot currently be deleted from the panel; the editor uses an in-app message modal asking the user to remove or move assets first.
 - `Clean Empty Categories` removes empty categories only and does not delete assets.
 - Category deletion does not delete placed grid assets.
 
@@ -354,42 +403,74 @@ For one imported file while a grid range is already selected, the editor may off
 - The placed image fills the selected rectangular grid area using the asset overlay layer.
 - Dragging an asset onto an active selected range places one stretched asset over that range.
 - Dragging an asset onto an unselected cell places one `1x1` object.
-- Placement warns before removing any object overlapping the target rectangle.
+- Placement uses an in-app warning modal before removing any object overlapping the target rectangle.
 - Select/Move mode selects one placed object without changing its registry asset, lets it be dragged to a snapped grid position, and lets its eight handles resize it within grid bounds.
 - Select/Move mode can select multiple placed objects by dragging a grid range that intersects them.
 - The Select/Move selection rectangle draws above placed assets and uses rectangle intersection, so stretched assets are selected when any part intersects the drag area.
 - Dragging any asset in a multi-selected group moves the whole group together, clamps the group inside the grid, and preserves each asset's width, height, source asset, and relative offset.
+- Single placed asset move/resize previews update only the selected marker during pointer movement, then commit `x`, `y`, `width`, `height`, `gridRef`, and `rangeRef` once on release.
+- Group move previews cache selected markers and update the selected group together during pointer movement, then commit all moved object bounds once on release.
 - When group dragging begins, the original grid-area selection rectangle is cleared while the selected asset borders remain visible.
 - Group move updates each moved asset's `x`, `y`, `gridRef`, and `rangeRef` in the current level only.
 - Group resize is not implemented; resize handles are shown only when a single placed asset is selected.
 - Moving or resizing updates only that current-level object's `x`, `y`, `width`, `height`, `gridRef`, and `rangeRef`; its `id` and `assetId` remain stable.
-- Placed Asset Properties opens from `Asset > Properties` for a single selected placed asset and from double-clicking a placed asset in Select/Move mode.
-- Placed Asset Properties shows Source asset name, Category name, Grid Ref, Width, Height, Visible, Opacity, Layer, Blocks Movement, and Notes.
+- Placed Asset Properties opens from `Asset > Properties`, `Edit > Properties`, and double-clicking a placed asset in Select/Move mode for a single selected placed asset.
+- Placed Asset Properties shows Source asset name, Category name, Grid Ref, Width, Height, Visible, Opacity, Layer, Blocks Movement, Notes, and a conditional layer-specific metadata section.
+- Placed Asset Properties includes a per-instance Locked field stored as `editorLocked`. It changes only the placed copy and never the source palette asset or `assetRegistry.json`.
 - Placed Asset Properties hides Placed Asset ID, Source Asset ID, X, and Y from the user-facing panel while keeping `id`, `assetId`, `x`, and `y` stored internally.
 - Placed Asset Properties uses `Grid Ref` as its user-facing position field. `x` and `y` remain stored internally and are recalculated from the submitted Grid Ref; `rangeRef` is recalculated after position or size edits.
 - Tested property behavior: Grid Ref changes move the asset correctly, Width/Height changes resize the asset correctly, Visible toggles display, Opacity changes display transparency, Layer saves, Blocks Movement saves, and Notes save.
+- Layer-specific metadata is saved on the placed asset under `layerOptions` and unknown/custom fields are preserved.
+- Applying a layer change moves the original placed asset object into the matching known `level.layers` array, writes the same canonical lowercase layer name, and ensures that selected asset ID exists only once across known layer arrays.
+- A layer-only Properties change does not run overlap replacement or remove overlapping placed assets; overlap handling remains limited to actual position or size changes.
+- Missing or invalid submitted layer names fall back to the selected asset's current known containing array. Legacy `Trigger` is normalised to `triggers` only when that selected asset is updated.
+- Phase 5B does not run broad load-time layer relocation. Unknown layer arrays and their contents remain untouched.
+- The top menu order is `File`, `Edit`, `View`, `Asset`. `View > Layer Visibility` provides checkboxes for `terrain`, `decorations`, `objects`, `collisions`, `spawns`, `items`, `npcs`, `enemies`, `triggers`, and `overlay`, plus `Show All Layers`.
+- Layer visibility is stored only as the browser-wide editor preference `game-dev-kit-layer-visibility`. It is not stored in project state, level JSON, copied levels, folder exports, or backups, and changing visibility does not trigger project autosave.
+- Missing, malformed, or newly introduced known-layer preference values default to visible.
+- Hiding a layer updates existing placed-marker visibility without rebuilding the grid, coordinate headers, or placed-marker collection.
+- Hidden-layer assets remain unchanged in their original `level.layers` arrays and remain included in browser persistence, File saves, placed-asset copies, Copy Level / Paste Level, placement overlap checks, and overwrite handling.
+- Hidden-layer assets are excluded from Select/Move clicking, drag selection, group movement/resizing, Properties, Delete click/drag/keyboard deletion, and copied placement source selection.
+- Hiding a layer clears selected assets from that layer and cancels copied placement when its source asset belongs to the newly hidden layer. Visible-layer selections are retained where possible.
+- Moving an asset into a hidden layer through Properties still applies and autosaves through the Phase 5B relocation path, then clears its selection and hides its marker.
+- Overlap warnings explicitly report when hidden-layer assets are included in the overlap or replacement operation.
+- `View > Layer Visibility` and `View > Layer Locking` are nested side flyouts. Hovering or clicking opens one flyout at a time, checkbox changes keep View usable, and flyouts shift left when needed to stay inside the viewport.
+- The top-level View commands are `Show All Layers` and `Unlock All Layers and Assets`.
+- Layer locks are stored only in `game-dev-kit-layer-locks`; missing, malformed, and newly introduced known-layer values default to unlocked. Lock changes do not trigger project autosave.
+- Locked-layer markers remain visible when their visibility checkbox is on, with a lightweight locked cursor, but cannot be selected, moved, resized, copied, opened in Properties, included in group selection/movement, or deleted through click, drag-area, Delete, or Backspace.
+- Locking a layer clears selected assets from that layer, closes their Properties panel if open, and cancels copied placement sourced from that layer.
+- Placement, copied placement, Properties bounds changes, single move/resize, and group move are blocked before mutation when their destination overlaps any locked-layer asset. Locked assets are never passed into replacement removal.
+- Hidden and locked are independent editor states. `Show All Layers` changes visibility only. `Unlock All Layers and Assets` clears every layer lock preference and every placed asset `editorLocked` value across all project levels, then autosaves once.
+- Layer lock state is not written to project JSON, level JSON, copied levels, backups, folder exports, or `assetRegistry.json`. Locked placed assets remain fully preserved in all of those data paths.
+- Individual `editorLocked` state is part of placed level data, survives browser refresh and File saves, and is preserved by Copy Level / Paste Level, placed-object cloning, and unknown-field-preserving save paths.
+- Layer locks and individual asset locks are cumulative: either one protects the asset. Layer lock status takes priority in blocked-action messages.
+- Individually locked assets cannot enter normal selection, but double-clicking one opens its Properties panel without selecting it so Locked can be changed back to No. A guarded pointer-timing fallback supports environments where native `dblclick` delivery is inconsistent and prevents duplicate panels when both paths fire. The normal locked-click status message waits until the double-click window expires so it cannot shift the grid between clicks.
+- The first pointer click outside an open View menu/flyout is captured and consumed to close the menu. That same click does not reach grid selection, movement, deletion, or placement handlers underneath.
 - Tested persistence behavior: property changes persist after Chrome refresh, File > Save writes updated placed asset properties to level JSON, `Ctrl+C` copied placed assets preserve properties, and Copy Level / Paste Level preserves properties.
 - Identity / Info shows Source asset name and Category name only. It deliberately hides internal `id` and `assetId` values while keeping them on placed asset data for saving and loading.
 - Placed Asset Properties updates the current-level object only and preserves unknown/custom fields.
-- The properties modal exposes `visible`, `opacity`, `layer`, `blocksMovement`, and `notes`; Collision/Solid/Walkable are not separate UI fields.
+- The properties modal exposes `visible`, `opacity`, `layer`, `blocksMovement`, `editorLocked`, `notes`, and layer-specific `layerOptions`; Collision/Solid/Walkable are not separate UI fields.
 - The properties modal can be dragged by its header and resized from its bottom-right corner; its position and size are kept in browser UI preferences rather than level JSON.
 - Hidden or zero-opacity placed assets render as faint editor-only markers so they can remain selected and edited.
-- Layer is a per-instance choice (`Terrain`, `Objects`, `Overlay`, or `Trigger`) with basic draw ordering only; selecting Trigger saves `layer: "Trigger"` as a marker for future gameplay trigger zones.
-- Full trigger actions and a hide/lock layer panel remain future work; Trigger Type, target level/spawn, dialogue, battle, cutscene, door, and exit behavior are not implemented.
-- The Layer value exists on placed assets, but full Phase 5 layer controls are not implemented yet.
-- Moving or resizing into another object's rectangle warns first, then uses the existing replacement policy if confirmed.
+- Layer is a per-instance choice with the existing layer names: `terrain`, `decorations`, `objects`, `collisions`, `spawns`, `items`, `npcs`, `enemies`, `triggers`, and `overlay`.
+- Layer-specific sections are metadata only: terrain tag, decorative-only flag, object note/type, collision type/note, spawn name/direction, item ID/quantity, NPC name/dialogue ID, enemy type/spawn chance, trigger type/targets, and overlay render/note fields.
+- Terrain, decoration, object, collision, spawn, item, NPC, enemy, trigger, and overlay options are editor data only for now. They do not implement runtime collision, spawning, pickup behaviour, NPC runtime, enemy runtime, trigger/door/exit behaviour, or runtime draw-order/player layering yet.
+- Full trigger actions, runtime collision, spawn behaviour, item pickup behaviour, NPC logic, enemy logic, Play Mode, and solo/runtime layer controls remain future work.
+- There is no standalone Layer Panel or active placement layer yet; layer changes happen only through the selected placed asset's Properties dialog.
+- A temporary left-sidebar Layer Panel was tested during Phase 5A and worked as UI state, but the chosen direction is not to keep layers as a permanent left-sidebar panel.
+- Moving or resizing into another object's rectangle warns first with an in-app modal, then uses the existing replacement policy if confirmed.
 - In Select/Move mode, `Ctrl+C` copies the selected placed object into a floating placement preview with a yellow outline; clicking a grid cell commits a new placed object with a new ID and the same asset/size fields.
 - `Ctrl+C` group copy is not implemented; with multiple placed assets selected, the editor reports that group copy is not implemented yet.
 - The floating copy preview snaps to valid grid positions, is not saved before placement, and is cancelled with Escape or by switching away from Select/Move mode.
 - In Select/Move mode, Delete or Backspace removes the selected placed copy from the current level only, clears its selection, and does not ask for confirmation.
 - In Select/Move mode, Delete or Backspace removes all multi-selected placed copies from the current level only when a group is selected.
 - In Select/Move mode, if no placed copy is selected but a grid area is selected, Delete or Backspace immediately deletes every current-level placed copy that intersects that area.
-- Asset menu Properties opens the same placed-asset properties panel for a single selected placed asset only; multi-asset properties are not implemented.
+- Asset menu Properties and Edit menu Properties open the same placed-asset properties panel for a single selected placed asset only; multi-asset properties are not implemented.
 - Delete mode removes placed copies from the current level only without confirmation. Clicking any covered cell removes the whole stretched object.
 - Delete mode click-and-drag shows the selected delete area and immediately removes every current-level placed copy intersecting that area on mouse release.
 - Delete mode drag-delete remains unchanged by Select/Move multi-selection behaviour.
-- Deleting an imported asset from the palette is separate: it removes registry availability only when that asset is not currently placed on any level.
-- Confirmation prompts still remain for Delete Level, Clear Level, Delete Category, and Delete Palette Asset.
+- Deleting an imported asset from the palette is separate: it uses an in-app confirmation modal and removes registry availability only when that asset is not currently placed on any level.
+- Placed grid asset deletion still has no confirmation and remains immediate. This includes Delete mode click delete, Delete mode drag-area delete, and Delete/Backspace deletion of selected placed grid assets.
 
 Example placed asset JSON:
 
@@ -451,13 +532,108 @@ The current editor UI includes:
 - Top toolbar containing level controls, grid size controls, Select/Move, Delete, and Place Selected Asset, with `Q` and `E` shortcut hints in tooltips.
 - Level controls for selecting, creating, renaming, deleting, clearing, and drag-reordering levels.
 - A File menu for Choose Project Folder, Save, and Save As.
-- An Edit menu for Copy Level and Paste Level.
+- An Edit menu for Copy Level, Paste Level, and Properties for the selected placed asset.
+- A compact View menu with nested Layer Visibility and Layer Locking side flyouts, Show All Layers, and Unlock All Layers and Assets.
 - An Asset menu for Properties that is inactive until a placed asset is selected with Select/Move.
-- A movable/resizable Placed Asset Properties modal; Grid Ref is the visible position editor while X/Y remain internal data.
+- Reusable in-app Game Dev Kit modals for message, confirmation, and text-input workflows. These replace browser-native `alert`, `confirm`, and `prompt` UI for normal editor actions.
+- A movable/resizable Placed Asset Properties modal; Grid Ref is the visible position editor while X/Y remain internal data, and layer-specific metadata is edited in the same modal.
 - A left asset panel containing Create Category, Import Asset, Clean Empty Categories, search, category sections, thumbnails, delete controls, and drag sources; its divider can be dragged horizontally and the width persists after refresh.
 - The left asset panel has a collapse/restore button. Collapsed state persists in browser UI preferences, restoring returns the previous expanded width, and this does not affect project, level, or asset registry JSON.
+- Dragging the left asset panel divider updates the panel width live through a throttled visual path and saves the final width to browser preferences only after release.
 - A status bar containing general feedback, hover/selected coordinate display, and current level/grid summary.
-- The main grid viewport with its own scrollbars, sticky coordinate headers, editable cells, the placed asset overlay, and selection/drop overlays.
+- There is no standalone sidebar Layer Panel in the current editor. Layer selection lives inside the selected placed asset's Properties modal.
+- The main grid viewport with its own scrollbars, sticky coordinate headers, lightweight CSS grid background, the placed asset overlay, and selection/drop overlays.
+- While any app-owned modal is open, editor hotkeys such as `Q`, `E`, Delete, and Backspace do not trigger grid tools or placed-asset deletion.
+
+## Rendering, Performance and App-Owned UI Rules
+
+Future Codex sessions must treat this section as a standing rule for all current and future editor work.
+
+### Rendering / Performance Rules
+
+All current and future editor features must follow these rendering rules:
+
+1. Do not re-render the whole grid unless absolutely necessary.
+2. Do not rebuild all grid cells during mousemove, drag, resize, move, selection, or panel resizing.
+3. During drag operations, update lightweight visual previews only.
+4. Commit actual data changes once on mouseup/release.
+5. Do not save to localStorage on every mousemove.
+6. Use requestAnimationFrame or throttling for high-frequency mouse updates where needed.
+7. Keep grid cells, coordinate headers, asset overlay, selection overlay, and move/resize overlays separated.
+8. Coordinate headers must remain aligned with the grid.
+9. Placed assets must not push, move, or resize coordinate headers.
+10. Selection overlays must render above assets where needed.
+11. Moving/resizing assets must remain aligned after scrolling.
+12. Mouse coordinate calculations must account for:
+    - grid viewport position
+    - scrollLeft
+    - scrollTop
+    - tile size
+    - header offsets
+13. The grid viewport should remain self-contained with its own scrollbars.
+14. Avoid using full browser page scrolling as the main way to navigate the grid.
+15. Large grids such as `50x50`, `100x100`, and `200x200` should remain usable.
+16. The grid background should stay lightweight and should not return to thousands of per-cell DOM elements unless there is a clear, user-approved reason.
+17. Very large worlds such as `1000x1000` should be deferred until chunked or region-based maps are designed and explicitly requested.
+
+### App-Owned UI Rules
+
+All current and future editor workflows must use Game Dev Kit in-app UI.
+
+Do not rely on browser-native dialogs such as:
+
+- `window.alert()`
+- `window.confirm()`
+- `window.prompt()`
+
+Do not rely on Chrome-native popup behaviour.
+
+Reason: the editor may later be packaged as a desktop `.exe`, Electron app, Tauri app, WebView app, or other wrapper. The app should feel self-contained and not depend on Chrome prompt/confirm/alert UI.
+
+All future confirmations, prompts and messages should use internal Game Dev Kit modals, including:
+
+- create level
+- rename level
+- delete level
+- clear level
+- create category
+- delete category
+- delete imported palette asset
+- grid resize warnings
+- paste/overwrite warnings
+- future layer warnings
+- future trigger warnings
+- future import/export warnings
+
+Placed grid asset deletion is the exception:
+
+- deleting placed grid copies remains immediate with no confirmation.
+
+### Future Feature Rules
+
+When adding future features, Codex must preserve these rules:
+
+1. New tools must not cause full-grid re-rendering during drag.
+2. New panels must not block grid mouse events unless intentionally modal.
+3. New modals must disable editor hotkeys while typing.
+4. New layers must not break asset overlay alignment.
+5. New playable assets must not force the editor grid to re-render every frame.
+6. Play Mode should hide editor overlays and run separately from editor selection/rendering systems.
+7. Animated assets should update only their own visual elements, not the whole grid.
+8. Audio features must not affect grid rendering performance.
+9. Background layers must be rendered efficiently and must not disturb grid coordinate layout.
+10. Any new data structure changes must preserve existing saved projects and include migration if needed.
+
+### Do-Not-Break Baseline
+
+Future Codex sessions must treat this section as a standing rule.
+
+Before making any code changes, Codex should:
+
+1. Read this file.
+2. Check this Rendering, Performance and App-Owned UI section.
+3. Preserve these rules unless the user explicitly says otherwise.
+4. If a requested change conflicts with these rules, explain the conflict before coding.
 
 ## 16. Known Past Bugs / Regression Warnings
 
@@ -478,6 +654,10 @@ These issues occurred during earlier development and must not return:
 - The sticky top-left header spacer must remain visually hidden and must not obscure the left letter axis while scrolling.
 - Select/Move multi-selection previously stopped when dragging across placed assets; selection must continue using grid-surface coordinates and draw above placed assets.
 - Delete Level previously confirmed but did not remove the selected level in Chrome; it must keep removing the selected level from project state and refreshing the UI immediately.
+- Browser-native prompt/confirm/alert dialogs were replaced with app-owned modals for future `.exe`/WebView compatibility; do not bring native browser dialogs back for editor workflows.
+- Drag performance optimisations should remain in place: do not reintroduce full grid renders, repeated DOM queries for selected group markers, or autosave/localStorage writes inside mousemove/pointermove loops.
+- Layer selection belongs in the selected placed asset's Properties modal, while editor-only visibility and locking belong in the top `View` menu. Do not reintroduce a standalone sidebar Layer Panel or expand these controls into solo, active placement, or runtime behavior without permission.
+- Do not let View-menu dismissal clicks fall through to the grid; the first outside click must close View only.
 
 ## 17. Do Not Change Without Permission
 
@@ -494,21 +674,23 @@ These issues occurred during earlier development and must not return:
 - Do not remove project-folder saving.
 - Do not remove localStorage/IndexedDB persistence.
 - Do not expand the focused Phase 4 placed-properties work into later Phase 4 systems or Phase 5 without permission.
+- Do not reintroduce Chrome-native prompt/confirm/alert behaviour for editor workflows.
+- Do not save full project state or panel preferences on every drag mousemove; commit and persist completed actions on release.
 
 ## 18. Testing Checklist
 
 Before accepting changes to existing editor behaviour, verify:
 
 - [ ] Open the editor in normal Chrome.
-- [ ] Create a level and confirm it becomes the selected level.
-- [ ] Rename a level.
-- [ ] Delete a non-final level and confirm a remaining level becomes active.
-- [ ] Clear a level after placing content.
+- [ ] Create a level using the in-app prompt modal and confirm it becomes the selected level.
+- [ ] Rename a level using the in-app prompt modal.
+- [ ] Delete a non-final level using the in-app confirmation modal and confirm a remaining level becomes active.
+- [ ] Clear a level after placing content, confirming the in-app modal cancel path does nothing and the confirm path clears.
 - [ ] Drag-reorder levels and refresh to confirm order persists.
 - [ ] Resize a grid larger.
-- [ ] Resize a grid smaller when a placed object would be removed and confirm the warning appears.
+- [ ] Resize a grid smaller when a placed object would be removed and confirm the in-app warning appears.
 - [ ] Confirm there is no automatic `Custom Imported Assets` category.
-- [ ] Create a category and confirm it appears immediately.
+- [ ] Create a category using the in-app prompt modal and confirm it appears immediately.
 - [ ] Import one PNG/JPG/JPEG/WEBP image into a category.
 - [ ] Import multiple supported images into one category.
 - [ ] Confirm category counts and asset thumbnails appear immediately.
@@ -519,36 +701,79 @@ Before accepting changes to existing editor behaviour, verify:
 - [ ] Confirm only one stretched/fitted placed object is created.
 - [ ] Drag an asset from a category to a single cell.
 - [ ] Drag an asset from a category onto an active selected area.
-- [ ] Confirm overwrite warning appears when placement overlaps an existing object.
+- [ ] Confirm an in-app overwrite warning appears when placement overlaps an existing object.
 - [ ] Activate Select/Move with its toolbar button and with `Q`; press `W` and confirm it remains in Select/Move; activate Delete with `E`.
 - [ ] Focus an editable input or import modal field and confirm typing `Q`, `W`, or `E` does not switch tools.
+- [ ] Focus an app-owned modal input and confirm typing `Q`, `E`, Delete, or Backspace does not switch tools or delete placed grid assets.
 - [ ] Select a placed asset in Select/Move mode and confirm its outline and eight resize handles appear.
 - [ ] Drag a selected placed asset, confirm it snaps within bounds, then refresh and confirm the new position persists.
 - [ ] Resize a selected asset from corner and side handles, confirm it cannot leave the grid or shrink below `1x1`, then refresh and confirm the size persists.
 - [ ] In Select/Move mode, select a placed asset, press `Ctrl+C`, confirm a yellow floating preview appears, click a new grid position, and confirm the new placed copy survives refresh.
 - [ ] Start floating copy placement and press Escape; confirm no copied placed asset is added.
-- [ ] Move or resize over another asset and confirm the overlap replacement warning appears before removal.
+- [ ] Move or resize over another asset and confirm the in-app overlap replacement warning appears before removal.
 - [ ] Select a placed object in Select/Move mode, press Delete and Backspace in separate tests, and confirm each removes only the selected grid copy.
 - [ ] Drag-select multiple placed assets in Select/Move mode and confirm every intersecting placed copy is highlighted.
+- [ ] Confirm every asset in a multi-selection uses a yellow selection outline, with no blue secondary outlines.
 - [ ] Drag one selected asset in a multi-selection and confirm the whole group moves together, snaps to grid, and remains inside grid bounds.
+- [ ] Confirm single asset move/resize and group move remain smooth on `30x30`, `50x50`, `100x100`, and `200x200` grids and persist after refresh.
 - [ ] Confirm resize handles and Asset Properties remain single-asset only and are not shown for multi-selected groups.
-- [ ] Open Asset > Properties for one selected placed asset and confirm Source asset name, Category name, Grid Ref, Width, Height, Visible, Opacity, Layer, Blocks Movement, and Notes are shown.
+- [ ] Open Asset > Properties for one selected placed asset and confirm Source asset name, Category name, Grid Ref, Width, Height, Visible, Opacity, Layer, Blocks Movement, Notes, and layer-specific options are shown.
+- [ ] Open Edit > Properties for one selected placed asset and confirm the same Placed Asset Properties panel opens.
 - [ ] Double-click a placed asset and confirm the same Placed Asset Properties panel opens.
+- [ ] Resize Placed Asset Properties so its fields scroll and confirm Cancel / Close and Apply / Save Changes remain visible without covering the final fields.
 - [ ] Confirm Placed Asset ID, Source Asset ID, X, and Y are hidden from the user-facing properties panel but remain stored in saved placed asset data.
 - [ ] Edit Grid Ref and confirm the asset moves correctly.
 - [ ] Edit Width/Height and confirm the asset resizes correctly.
-- [ ] Edit Visible, Opacity, Layer, Blocks Movement, and Notes and confirm each value applies and saves.
+- [ ] Edit Visible, Opacity, Layer, Blocks Movement, Notes, and layer-specific `layerOptions` fields and confirm each value applies only after submit and saves.
+- [ ] Cancel or close Placed Asset Properties after changing fields and confirm no property changes are applied.
+- [ ] Change one placed asset from `objects` to `overlay`, confirm it remains exactly once with the same ID and bounds, then refresh and confirm Properties still shows `overlay`.
+- [ ] Change the same placed asset from `overlay` back to `objects`, confirm it remains exactly once with the same ID and bounds, then refresh and confirm Properties still shows `objects`.
+- [ ] Confirm layer relocation preserves unknown placed-asset fields, `layerOptions`, and unknown layer arrays without deleting or duplicating unrelated assets.
 - [ ] Refresh Chrome and confirm placed asset property changes are restored.
 - [ ] Use File > Save and confirm updated placed asset properties are written to the level JSON.
 - [ ] Copy a placed asset with `Ctrl+C` and confirm the copied placed asset preserves the edited properties.
 - [ ] Copy Level and Paste Level and confirm placed asset properties are preserved.
-- [ ] Confirm Trigger remains only a saved layer value and full trigger behavior is not implemented.
-- [ ] Confirm full Phase 5 layer controls are not present.
+- [ ] Confirm trigger layer options remain metadata only and full trigger behavior is not implemented.
+- [ ] Confirm no standalone sidebar Layer Panel is present.
+- [ ] Confirm the top menu order is `File`, `Edit`, `View`, `Asset`.
+- [ ] Open View and confirm all ten known layer checkboxes and `Show All Layers` are present.
+- [ ] Hide each layer and confirm only its marker elements disappear while IDs, bounds, array membership, and saved JSON remain unchanged.
+- [ ] Confirm the View menu remains open while toggling multiple layer checkboxes.
+- [ ] Refresh and confirm editor-only visibility preferences persist, then use `Show All Layers` to restore every known layer.
+- [ ] Confirm hidden-layer assets cannot be selected, moved, resized, copied, opened in Properties, or deleted by click, drag-area, Delete, or Backspace.
+- [ ] Hide a layer containing selected assets and confirm only those selections are cleared; hide the source layer during copied placement and confirm the preview is cancelled.
+- [ ] Confirm placement and move/resize overlap checks still include hidden-layer assets and the warning identifies their inclusion.
+- [ ] Move an asset into a hidden layer through Properties and confirm it saves, disappears, survives refresh, and returns unchanged when shown.
+- [ ] Confirm File Save and Copy Level / Paste Level preserve hidden assets without adding visibility metadata.
+- [ ] Confirm visibility toggles do not rebuild the grid or trigger project autosave on `50x50`, `100x100`, and `200x200` grids.
+- [ ] Confirm the Layer Locking flyout contains all ten layer lock checkboxes and View contains `Unlock All Layers and Assets`.
+- [ ] Confirm View initially shows only Layer Visibility, Layer Locking, Show All Layers, and Unlock All Layers and Assets.
+- [ ] Hover and click each View flyout trigger, confirm only one side panel is open, and confirm it stays within the viewport.
+- [ ] Click outside an open View flyout and confirm the menu closes without selecting, moving, deleting, or placing on the grid underneath.
+- [ ] Lock a visible layer and confirm its assets remain visible but cannot be selected, moved, resized, copied, opened in Properties, group-moved, or deleted.
+- [ ] Lock a currently selected layer and confirm its selection and resize handles clear and Properties closes.
+- [ ] Confirm Delete click, Delete drag-area, and Delete/Backspace skip locked-layer assets while unlocked assets remain editable.
+- [ ] Confirm placement, copied placement, move/resize, group move, and Properties bounds changes cannot replace assets on locked layers.
+- [ ] Refresh and confirm lock preferences persist, then use `Unlock All Layers and Assets` and confirm all known layers unlock.
+- [ ] Confirm `Show All Layers` does not unlock layers or assets and `Unlock All Layers and Assets` does not show hidden layers.
+- [ ] Confirm lock toggles update marker interaction state without rebuilding grid cells or triggering project autosave.
+- [ ] Confirm lock metadata is absent from project JSON, level JSON, copied levels, backups, folder exports, and `assetRegistry.json`.
+- [ ] Set one placed asset's Properties Locked field to Yes and confirm `editorLocked: true` is saved only on that placed instance.
+- [ ] Confirm an individually locked asset cannot be selected, moved, resized, copied, group-moved, deleted, or replaced.
+- [ ] Double-click an individually locked asset in Chrome and the Codex in-app browser, confirm one Properties panel opens without selecting it, then set Locked to No and confirm normal editing returns.
+- [ ] Refresh and confirm `editorLocked` persists; confirm File Save, Copy Level / Paste Level, and placed-object copy data preserve the field.
+- [ ] Lock both an asset and its layer, then unlock only the layer and confirm the individual lock remains.
+- [ ] Use Unlock All Layers and Assets and confirm layer preferences and individual locks across all project levels are cleared with one autosave.
+- [ ] Confirm full Phase 5 controls such as solo, active placement layer, Play Mode, runtime collision, spawns, items, NPCs, enemies, and trigger systems are not present.
 - [ ] Press Delete or Backspace with multiple placed assets selected and confirm all selected placed copies are removed without deleting palette assets.
 - [ ] Select a grid area in Select/Move mode, press Delete or Backspace with no placed object selected, and confirm every intersecting placed copy is removed without a confirmation prompt.
 - [ ] Type Delete/Backspace inside an editable input and confirm editor object deletion is not triggered.
-- [ ] Open a `50x50` grid and confirm horizontal and vertical grid viewport scrollbars are accessible in the visible panel.
+- [ ] Open a `50x50`, `100x100`, and `200x200` grid and confirm horizontal and vertical grid viewport scrollbars are accessible in the visible panel.
+- [ ] Try a custom grid larger than `100x100` and confirm an in-app large-grid warning appears.
+- [ ] Try a custom grid larger than `250x250` and confirm the stronger in-app very-large-grid warning appears.
+- [ ] Try a custom grid larger than `500x500` and confirm it is blocked with an in-app message.
 - [ ] Drag the asset panel divider wider/narrower, refresh, and confirm the saved width returns without disrupting grid scrollbars or alignment.
+- [ ] Confirm dragging the asset panel divider feels smooth and saves the final width only after release.
 - [ ] Collapse and restore the asset panel, then refresh and confirm the collapsed/restored state and previous expanded width return.
 - [ ] Confirm coordinate axes sit flush beside the grid and the hidden top-left spacer never covers row labels during scrolling.
 - [ ] Scroll the grid horizontally and vertically, then place, move, and resize an asset and confirm grid alignment remains correct.
@@ -564,6 +789,7 @@ Before accepting changes to existing editor behaviour, verify:
 - [ ] Confirm `assets/assetRegistry.json` is saved.
 - [ ] Confirm imported files are written under `assets/imported` where supported.
 - [ ] Confirm Copy Level and Paste Level still work.
+- [ ] Confirm no Chrome-native `alert`, `confirm`, or `prompt` boxes appear during normal editor workflows.
 
 ## 19. Instructions For Future Codex Sessions
 

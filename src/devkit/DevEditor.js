@@ -1,6 +1,9 @@
 import { AssetPalette } from "./AssetPalette.js";
 import {
   COPIED_LEVEL_STORAGE_KEY,
+  LAYER_LOCKS_STORAGE_KEY,
+  LAYER_VISIBILITY_STORAGE_KEY,
+  LAYERS,
   PLACED_PROPERTIES_DIALOG_STORAGE_KEY,
   SIDEBAR_COLLAPSED_STORAGE_KEY,
   SIDEBAR_WIDTH_STORAGE_KEY,
@@ -49,6 +52,11 @@ import {
 } from "./LevelManager.js";
 import { createProjectBackup, loadProject, saveProject } from "./SaveManager.js";
 
+const GRID_SIZE_PRESETS = ["10", "20", "30", "40", "50", "75", "100", "150", "200"];
+const LARGE_GRID_WARNING_SIZE = 100;
+const VERY_LARGE_GRID_WARNING_SIZE = 250;
+const MAX_GRID_SIZE = 500;
+
 class DevEditor {
   constructor(root, loaded) {
     this.root = root;
@@ -68,6 +76,8 @@ class DevEditor {
     this.selectedPlacedObjectIds = new Set();
     this.copiedPlacedObject = null;
     this.copyPreviewRange = null;
+    this.layerVisibility = this.loadLayerVisibility();
+    this.layerLocks = this.loadLayerLocks();
     this.ui = createEditorLayout(root);
     this.sidebarWidth = this.loadSidebarWidth();
     this.isSidebarCollapsed = this.loadSidebarCollapsed();
@@ -85,12 +95,20 @@ class DevEditor {
       onPlacedObjectTransform: (transform) => this.transformPlacedObject(transform),
       onPlacedObjectGroupMoveStart: () => this.clearGridAreaSelection(),
       onCopyPreviewMove: (cell) => this.moveCopyPreview(cell),
+      onLockedLayerInteraction: (layerName) => {
+        this.setStatus(`Layer "${layerName}" is locked.`);
+      },
+      onLockedAssetInteraction: () => {
+        this.setStatus("This asset is locked. Double-click it to open Properties and unlock it.");
+      },
       onAssetRenderError: (placedObject, asset) => {
         this.setStatus(
           `Unable to render asset "${asset?.name || placedObject.assetId}" at ${placedObject.rangeRef}.`,
         );
       },
     });
+    this.gridEditor.setLayerVisibility(this.layerVisibility);
+    this.gridEditor.setLayerLocks(this.layerLocks);
 
     this.assetPalette = new AssetPalette({
       root: this.ui.assetPalette,
@@ -125,12 +143,32 @@ class DevEditor {
       });
     });
 
-    this.root.querySelector('[data-action="place-selected-asset"]').addEventListener("click", () => {
-      this.placeSelectedAssetInRange();
+    this.root.querySelector('[data-action="place-selected-asset"]').addEventListener("click", async () => {
+      await this.placeSelectedAssetInRange();
     });
 
     this.ui.sidebarToggle.addEventListener("click", () => {
       this.toggleSidebarCollapsed();
+    });
+
+    this.ui.layerVisibilityInputs.forEach((input) => {
+      input.addEventListener("change", () => {
+        this.setLayerVisibility(input.dataset.layer, input.checked);
+      });
+    });
+
+    this.ui.layerLockInputs.forEach((input) => {
+      input.addEventListener("change", () => {
+        this.setLayerLocked(input.dataset.layer, input.checked);
+      });
+    });
+
+    this.root.querySelector('[data-action="show-all-layers"]').addEventListener("click", () => {
+      this.showAllLayers();
+    });
+
+    this.root.querySelector('[data-action="unlock-all-layers"]').addEventListener("click", () => {
+      this.unlockAllLayers();
     });
 
     document.addEventListener("keydown", (event) => {
@@ -224,8 +262,8 @@ class DevEditor {
       this.closeMenus();
     });
 
-    this.root.querySelector('[data-action="paste-level"]').addEventListener("click", () => {
-      this.pasteCopiedLevel();
+    this.root.querySelector('[data-action="paste-level"]').addEventListener("click", async () => {
+      await this.pasteCopiedLevel();
       this.closeMenus();
     });
 
@@ -236,12 +274,24 @@ class DevEditor {
         this.closeMenus();
       });
 
+    this.root
+      .querySelector('[data-action="edit-placed-asset-properties"]')
+      .addEventListener("click", () => {
+        this.openPlacedAssetProperties();
+        this.closeMenus();
+      });
+
     this.ui.levelPickerButton.addEventListener("click", () => {
       this.ui.levelPicker.classList.toggle("is-open");
     });
 
-    this.root.querySelector('[data-action="create-level"]').addEventListener("click", () => {
-      const name = window.prompt("New level name", "New Level");
+    this.root.querySelector('[data-action="create-level"]').addEventListener("click", async () => {
+      const name = await this.showPromptModal({
+        title: "Create New Level",
+        label: "Level name",
+        value: "New Level",
+        confirmLabel: "Create Level",
+      });
 
       if (!name?.trim()) {
         this.setStatus("Create level cancelled.");
@@ -255,9 +305,14 @@ class DevEditor {
       this.render();
     });
 
-    this.root.querySelector('[data-action="rename-level"]').addEventListener("click", () => {
+    this.root.querySelector('[data-action="rename-level"]').addEventListener("click", async () => {
       const level = getCurrentLevel(this.project);
-      const name = window.prompt("Rename level", level.name);
+      const name = await this.showPromptModal({
+        title: "Rename Level",
+        label: "Level name",
+        value: level.name,
+        confirmLabel: "Rename Level",
+      });
 
       if (!name?.trim()) {
         this.setStatus("Rename cancelled.");
@@ -269,12 +324,19 @@ class DevEditor {
       this.render();
     });
 
-    this.root.querySelector('[data-action="delete-level"]').addEventListener("click", () => {
-      this.openDeleteLevelConfirmation();
+    this.root.querySelector('[data-action="delete-level"]').addEventListener("click", async () => {
+      await this.openDeleteLevelConfirmation();
     });
 
-    this.root.querySelector('[data-action="clear"]').addEventListener("click", () => {
-      if (!window.confirm("Clear every placed asset from the current level?")) {
+    this.root.querySelector('[data-action="clear"]').addEventListener("click", async () => {
+      const confirmed = await this.showConfirmModal({
+        title: "Clear Level?",
+        message: "Clear every placed asset from the current level? This cannot be undone.",
+        confirmLabel: "Clear Level",
+        danger: true,
+      });
+
+      if (!confirmed) {
         return;
       }
       clearCurrentLevel(this.project);
@@ -287,19 +349,19 @@ class DevEditor {
     this.bindMenuBehavior();
     this.bindSidebarResize();
 
-    this.ui.gridSize.addEventListener("change", () => {
+    this.ui.gridSize.addEventListener("change", async () => {
       const value = this.ui.gridSize.value;
       this.ui.customSize.classList.toggle("is-visible", value === "custom");
 
       if (value !== "custom") {
         const size = Number(value);
-        this.resizeGrid(size, size);
+        await this.resizeGrid(size, size);
       }
     });
 
     this.root
       .querySelector('[data-action="apply-custom-size"]')
-      .addEventListener("click", () => {
+      .addEventListener("click", async () => {
         const width = Number(this.ui.customWidth.value);
         const height = Number(this.ui.customHeight.value);
 
@@ -308,16 +370,16 @@ class DevEditor {
           return;
         }
 
-        this.resizeGrid(Math.min(width, 100), Math.min(height, 100));
+        await this.resizeGrid(width, height);
       });
   }
 
-  handleCellClick({ x, y }) {
+  async handleCellClick({ x, y }) {
     const level = getCurrentLevel(this.project);
 
     if (this.activeTool === "move") {
       if (this.copiedPlacedObject) {
-        this.pasteCopiedPlacedAssetAt(x, y);
+        await this.pasteCopiedPlacedAssetAt(x, y);
         return;
       }
 
@@ -331,9 +393,24 @@ class DevEditor {
     }
 
     if (this.activeTool === "delete") {
-      const removedObjects = removeObjectsAtCell(level, x, y);
+      const removedObjects = removeObjectsAtCell(
+        level,
+        x,
+        y,
+        this.getEditableLayerNames(),
+        (placedObject) => placedObject.editorLocked !== true,
+      );
       if (removedObjects.length === 0) {
-        this.setStatus(`No placed asset at ${toGridRef(x, y)}.`);
+        const protectedObject = findObjectsInRange(level, x, y, 1, 1).find(
+          (placedObject) =>
+            this.isLayerLocked(placedObject.layer) ||
+            placedObject.editorLocked === true,
+        );
+        this.setStatus(
+          protectedObject
+            ? this.getPlacedObjectLockMessage(protectedObject)
+            : `No placed asset at ${toGridRef(x, y)}.`,
+        );
         this.render();
         return;
       }
@@ -357,7 +434,7 @@ class DevEditor {
         return;
       }
 
-      this.placeAssetInRange(this.selectedAsset, this.selectedRange, "selection");
+      await this.placeAssetInRange(this.selectedAsset, this.selectedRange, "selection");
       return;
     }
 
@@ -366,7 +443,7 @@ class DevEditor {
       return;
     }
 
-    this.placeAssetInRange(this.selectedAsset, { x, y, width: 1, height: 1 }, "cell");
+    await this.placeAssetInRange(this.selectedAsset, { x, y, width: 1, height: 1 }, "cell");
   }
 
   handleHoverCell({ x, y, gridRef, isDropTarget = false }) {
@@ -388,20 +465,26 @@ class DevEditor {
       this.clearPlacedObjectSelection();
     }
     this.syncCoordinateStatus();
-    this.syncPlacementButton();
-    this.gridEditor.updateSelection(this.selectedRange);
-    this.gridEditor.updateDropPreview(null);
 
     if (this.selectionConfirmationTimer) {
       window.clearTimeout(this.selectionConfirmationTimer);
       this.selectionConfirmationTimer = null;
     }
 
+    if (state === "draggingSelection") {
+      if (this.activeTool === "delete") {
+        this.setStatus(`Delete area: ${formatRange(range)}.`);
+      }
+      return;
+    }
+
+    this.syncPlacementButton();
+    this.gridEditor.updateSelection(this.selectedRange);
+    this.gridEditor.updateDropPreview(null);
+
     if (this.activeTool === "delete") {
       if (state === "selectionReady") {
         this.deleteAssetsInRange(range, { clearSelection: true });
-      } else if (state === "draggingSelection") {
-        this.setStatus(`Delete area: ${formatRange(range)}.`);
       }
       return;
     }
@@ -413,7 +496,8 @@ class DevEditor {
         range.y,
         range.width,
         range.height,
-      );
+        this.getEditableLayerNames(),
+      ).filter((placedObject) => placedObject.editorLocked !== true);
       if (selectedObjects.length > 0) {
         this.setPlacedObjectSelection(
           selectedObjects.map((placedObject) => placedObject.id),
@@ -428,21 +512,10 @@ class DevEditor {
         this.render();
       }
       this.setSelectionReadyStatus();
-    } else if (state === "draggingSelection") {
-      const pendingRange = { ...range };
-      this.selectionConfirmationTimer = window.setTimeout(() => {
-        if (
-          this.selectionState === "draggingSelection" &&
-          rangesMatch(this.selectedRange, pendingRange)
-        ) {
-          this.selectionState = "selectionReady";
-          this.setSelectionReadyStatus();
-        }
-      }, 0);
     }
   }
 
-  handleAssetDrop({ assetId, x, y }) {
+  async handleAssetDrop({ assetId, x, y }) {
     const asset = this.project.assets.find((candidate) => candidate.id === assetId);
 
     if (!asset) {
@@ -456,7 +529,7 @@ class DevEditor {
     }
     const range = this.getPlacementRangeForCell(x, y);
     this.dropPreviewRange = null;
-    this.placeAssetInRange(asset, range, "drop");
+    await this.placeAssetInRange(asset, range, "drop");
   }
 
   activateTool(tool) {
@@ -482,6 +555,26 @@ class DevEditor {
       return;
     }
 
+    const placedObject = getPlacedObjects(
+      getCurrentLevel(this.project),
+      this.getEditableLayerNames(),
+    ).find(
+      (candidate) =>
+        candidate.id === placedObjectId &&
+        candidate.editorLocked !== true,
+    );
+    if (!placedObject) {
+      const unavailableObject = getPlacedObjects(getCurrentLevel(this.project)).find(
+        (candidate) => candidate.id === placedObjectId,
+      );
+      this.setStatus(
+        unavailableObject
+          ? this.getPlacedObjectLockMessage(unavailableObject)
+          : "That asset is on a hidden editor layer.",
+      );
+      return;
+    }
+
     this.cancelCopyPlacement();
     this.clearSelection();
     this.setPlacedObjectSelection([placedObjectId], placedObjectId);
@@ -502,20 +595,31 @@ class DevEditor {
     }
 
     const level = getCurrentLevel(this.project);
-    const placedObject = getPlacedObjects(level).find(
+    const placedObject = getPlacedObjects(level, this.getEditableLayerNames()).find(
       (candidate) => candidate.id === placedObjectId,
     );
 
     if (!placedObject) {
+      const unavailableObject = getPlacedObjects(level).find(
+        (candidate) => candidate.id === placedObjectId,
+      );
       this.clearPlacedObjectSelection();
       this.render();
-      this.setStatus("Select an asset first.");
+      this.setStatus(
+        unavailableObject
+          ? this.getPlacedObjectLockMessage(unavailableObject)
+          : "Select an asset first.",
+      );
       return;
     }
 
     this.cancelCopyPlacement();
     this.clearSelection();
-    this.setPlacedObjectSelection([placedObjectId], placedObjectId);
+    if (placedObject.editorLocked === true) {
+      this.clearPlacedObjectSelection();
+    } else {
+      this.setPlacedObjectSelection([placedObjectId], placedObjectId);
+    }
     this.render();
     this.showPlacedAssetPropertiesDialog(level, placedObject);
   }
@@ -529,6 +633,7 @@ class DevEditor {
     const height = Math.max(1, Number(placedObject.height) || 1);
     const opacity = normalizeOpacity(placedObject.opacity);
     const layer = normalizePlacedLayer(placedObject.layer);
+    const layerOptions = normalizeLayerOptions(placedObject.layerOptions);
     const titleName = sourceAsset?.name || placedObject.name || placedObject.assetId;
 
     dialog.className = "placed-properties-dialog";
@@ -537,56 +642,68 @@ class DevEditor {
         <header class="properties-dialog-header">
           <h2>Placed Asset Properties &mdash; ${escapeHtml(titleName)}</h2>
         </header>
-        <fieldset class="properties-info">
-          <legend>Identity / Info</legend>
-          <dl>
-            <div><dt>Source asset name</dt><dd>${escapeHtml(sourceAsset?.name || placedObject.name || "-")}</dd></div>
-            <div><dt>Category name</dt><dd>${escapeHtml(sourceAsset?.category || "-")}</dd></div>
-          </dl>
-        </fieldset>
-        <div class="properties-fields">
-          <fieldset class="properties-position">
-            <legend>Position</legend>
-            <label>Grid Ref <input name="gridRef" value="${escapeAttribute(toGridRef(x, y))}" required /></label>
-            <p class="properties-hint">Position on the grid, for example 3.B or 10.F.</p>
+        <div class="properties-scroll-content">
+          <fieldset class="properties-info">
+            <legend>Identity / Info</legend>
+            <dl>
+              <div><dt>Source asset name</dt><dd>${escapeHtml(sourceAsset?.name || placedObject.name || "-")}</dd></div>
+              <div><dt>Category name</dt><dd>${escapeHtml(sourceAsset?.category || "-")}</dd></div>
+            </dl>
           </fieldset>
-          <fieldset>
-            <legend>Size</legend>
-            <label>Width <input name="width" type="number" min="1" max="${level.gridWidth}" value="${width}" required /></label>
-            <label>Height <input name="height" type="number" min="1" max="${level.gridHeight}" value="${height}" required /></label>
-            <p class="properties-hint">Measured in grid squares.</p>
-          </fieldset>
-          <fieldset>
-            <legend>Display</legend>
-            <label>Visible
-              <select name="visible">
-                <option value="true" ${placedObject.visible !== false ? "selected" : ""}>Yes</option>
-                <option value="false" ${placedObject.visible === false ? "selected" : ""}>No</option>
-              </select>
-            </label>
-            <label>Opacity (0 to 100) <input name="opacity" type="number" min="0" max="100" value="${opacity}" required /></label>
-            <label>Layer
-              <select name="layer">
-                ${createLayerOptions(layer)}
-              </select>
-            </label>
-            <p class="properties-hint">Trigger layer is for future gameplay trigger zones. Full trigger actions are not implemented yet.</p>
-          </fieldset>
-          <fieldset>
-            <legend>Movement / Blocking</legend>
-            <label>Blocks Movement
-              <select name="blocksMovement">
-                <option value="false" ${!placedObject.blocksMovement ? "selected" : ""}>No</option>
-                <option value="true" ${placedObject.blocksMovement ? "selected" : ""}>Yes</option>
-              </select>
-            </label>
-            <label class="properties-notes">Notes
-              <textarea name="notes" rows="4">${escapeHtml(placedObject.notes || "")}</textarea>
-            </label>
-          </fieldset>
+          <div class="properties-fields">
+            <fieldset class="properties-position">
+              <legend>Position</legend>
+              <label>Grid Ref <input name="gridRef" value="${escapeAttribute(toGridRef(x, y))}" required /></label>
+              <p class="properties-hint">Position on the grid, for example 3.B or 10.F.</p>
+            </fieldset>
+            <fieldset>
+              <legend>Size</legend>
+              <label>Width <input name="width" type="number" min="1" max="${level.gridWidth}" value="${width}" required /></label>
+              <label>Height <input name="height" type="number" min="1" max="${level.gridHeight}" value="${height}" required /></label>
+              <p class="properties-hint">Measured in grid squares.</p>
+            </fieldset>
+            <fieldset>
+              <legend>Display</legend>
+              <label>Visible
+                <select name="visible">
+                  <option value="true" ${placedObject.visible !== false ? "selected" : ""}>Yes</option>
+                  <option value="false" ${placedObject.visible === false ? "selected" : ""}>No</option>
+                </select>
+              </label>
+              <label>Opacity (0 to 100) <input name="opacity" type="number" min="0" max="100" value="${opacity}" required /></label>
+              <p class="properties-hint">Visibility and opacity are editor display settings for this placed copy.</p>
+            </fieldset>
+            <fieldset>
+              <legend>Layer / Behaviour</legend>
+              <label>Layer
+                <select name="layer" data-role="placed-layer-select">
+                  ${createLayerOptions(layer)}
+                </select>
+              </label>
+              <label>Blocks Movement
+                <select name="blocksMovement">
+                  <option value="false" ${!placedObject.blocksMovement ? "selected" : ""}>No</option>
+                  <option value="true" ${placedObject.blocksMovement ? "selected" : ""}>Yes</option>
+                </select>
+              </label>
+              <label>Locked
+                <select name="editorLocked">
+                  <option value="false" ${placedObject.editorLocked !== true ? "selected" : ""}>No</option>
+                  <option value="true" ${placedObject.editorLocked === true ? "selected" : ""}>Yes</option>
+                </select>
+              </label>
+              <label class="properties-notes">Notes
+                <textarea name="notes" rows="4">${escapeHtml(placedObject.notes || "")}</textarea>
+              </label>
+              <p class="properties-hint">Layer locks are controlled from View. Locked here protects only this placed copy; double-click it later to unlock it.</p>
+            </fieldset>
+            <fieldset class="properties-layer-options" data-role="layer-options-container">
+              ${createLayerOptionsFields(layer, layerOptions)}
+            </fieldset>
+          </div>
+          <p class="form-error" role="alert" hidden></p>
         </div>
-        <p class="form-error" role="alert" hidden></p>
-        <div class="dialog-actions">
+        <div class="dialog-actions properties-dialog-actions">
           <button type="button" data-action="cancel-properties">Cancel / Close</button>
           <button type="submit">Apply / Save Changes</button>
         </div>
@@ -596,13 +713,19 @@ class DevEditor {
     document.body.append(dialog);
     const form = dialog.querySelector("form");
     const error = dialog.querySelector(".form-error");
+    const layerSelect = dialog.querySelector('[data-role="placed-layer-select"]');
+    const layerOptionsContainer = dialog.querySelector('[data-role="layer-options-container"]');
     const releaseDialogBehavior = this.bindPlacedPropertiesDialogBehavior(dialog);
+
+    layerSelect.addEventListener("change", () => {
+      layerOptionsContainer.innerHTML = createLayerOptionsFields(layerSelect.value, layerOptions);
+    });
 
     dialog.querySelector('[data-action="cancel-properties"]').addEventListener("click", () => {
       dialog.close();
     });
 
-    form.addEventListener("submit", (event) => {
+    form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const data = new FormData(form);
       const result = this.readPlacedAssetPropertyValues(data, level, placedObject);
@@ -613,20 +736,67 @@ class DevEditor {
         return;
       }
 
-      const overlaps = findObjectsInRange(
-        level,
-        result.values.x,
-        result.values.y,
-        result.values.width,
-        result.values.height,
-      ).filter((candidate) => candidate.id !== placedObject.id);
-
-      if (
-        overlaps.length > 0 &&
-        !window.confirm("Applying these properties will overlap existing assets. Continue?")
-      ) {
+      const lockedPropertiesLayer = this.isLayerLocked(result.values.layer)
+        ? result.values.layer
+        : this.isLayerLocked(placedObject.layer)
+          ? placedObject.layer
+          : null;
+      if (lockedPropertiesLayer) {
         error.hidden = false;
-        error.textContent = "Changes were not applied because the new bounds overlap another asset.";
+        error.textContent = `Layer "${normalizePlacedLayer(
+          lockedPropertiesLayer,
+        )}" is locked. Unlock it before applying Properties changes.`;
+        return;
+      }
+
+      const boundsChanged =
+        Number(placedObject.x) !== result.values.x ||
+        Number(placedObject.y) !== result.values.y ||
+        Number(placedObject.width) !== result.values.width ||
+        Number(placedObject.height) !== result.values.height;
+      const overlaps = boundsChanged
+        ? findObjectsInRange(
+            level,
+            result.values.x,
+            result.values.y,
+            result.values.width,
+            result.values.height,
+          ).filter((candidate) => candidate.id !== placedObject.id)
+        : [];
+
+      const lockedOverlap = overlaps.find((candidate) =>
+        this.isPlacedObjectProtected(candidate),
+      );
+      if (lockedOverlap) {
+        error.hidden = false;
+        error.textContent = `Changes were not applied because the new bounds overlap ${
+          this.isLayerLocked(lockedOverlap.layer)
+            ? `locked layer "${normalizePlacedLayer(lockedOverlap.layer)}"`
+            : "an individually locked asset"
+        }.`;
+        return;
+      }
+
+      if (overlaps.length > 0) {
+        const confirmed = await this.showConfirmModal({
+          title: "Overlap Existing Assets?",
+          message: this.createOverlapWarningMessage(
+            "Applying these properties will overlap existing assets. Continue?",
+            overlaps,
+          ),
+          confirmLabel: "Apply Changes",
+        });
+
+        if (!confirmed) {
+          error.hidden = false;
+          error.textContent = "Changes were not applied because the new bounds overlap another asset.";
+          return;
+        }
+      }
+
+      if (!dialog.isConnected) {
+        error.hidden = false;
+        error.textContent = "The properties panel was closed before changes were applied.";
         return;
       }
 
@@ -637,10 +807,21 @@ class DevEditor {
         return;
       }
 
-      this.setPlacedObjectSelection([updatedObject.id], updatedObject.id);
+      const movedToHiddenLayer = !this.isLayerVisible(updatedObject.layer);
+      if (movedToHiddenLayer || updatedObject.editorLocked === true) {
+        this.clearPlacedObjectSelection();
+      } else {
+        this.setPlacedObjectSelection([updatedObject.id], updatedObject.id);
+      }
       dialog.close();
       this.render();
-      this.autosave(`Saved properties for ${sourceAsset?.name || updatedObject.name || "placed asset"}.`);
+      this.autosave(
+        movedToHiddenLayer
+          ? `Saved properties and moved ${sourceAsset?.name || updatedObject.name || "placed asset"} to hidden editor layer ${updatedObject.layer}.`
+          : updatedObject.editorLocked === true
+            ? `Saved properties and locked ${sourceAsset?.name || updatedObject.name || "placed asset"}. Double-click it to unlock it.`
+          : `Saved properties for ${sourceAsset?.name || updatedObject.name || "placed asset"}.`,
+      );
     });
 
     dialog.addEventListener("close", () => {
@@ -677,10 +858,13 @@ class DevEditor {
       return { error: "Opacity must be a whole number from 0 to 100." };
     }
 
-    const layer = String(data.get("layer") || "");
-    if (!PLACED_LAYER_OPTIONS.some((option) => option.value === layer)) {
-      return { error: "Choose a valid layer: Terrain, Objects, Overlay, or Trigger." };
+    const rawLayer = String(data.get("layer") || "");
+    const layer = rawLayer === "Trigger" ? "triggers" : rawLayer;
+    if (!LAYERS.includes(layer)) {
+      return { error: "Choose a valid layer." };
     }
+    const previousLayerOptions = normalizeLayerOptions(placedObject.layerOptions);
+    const layerSpecificOptions = readLayerSpecificOptions(data, layer);
 
     return {
       values: {
@@ -692,6 +876,11 @@ class DevEditor {
         visible: data.get("visible") === "true",
         opacity,
         blocksMovement: data.get("blocksMovement") === "true",
+        editorLocked: data.get("editorLocked") === "true",
+        layerOptions: {
+          ...previousLayerOptions,
+          ...layerSpecificOptions,
+        },
         notes: String(data.get("notes") || ""),
       },
     };
@@ -850,7 +1039,14 @@ class DevEditor {
       ? Array.from(this.selectedPlacedObjectIds)
       : [this.selectedPlacedObjectId].filter(Boolean);
     const removedObjects = selectedIds
-      .map((placedObjectId) => removePlacedObjectById(level, placedObjectId))
+      .map((placedObjectId) =>
+        removePlacedObjectById(
+          level,
+          placedObjectId,
+          this.getEditableLayerNames(),
+          (placedObject) => placedObject.editorLocked !== true,
+        ),
+      )
       .filter(Boolean);
 
     this.clearPlacedObjectSelection();
@@ -876,18 +1072,45 @@ class DevEditor {
 
   deleteAssetsInRange(range, { clearSelection = false } = {}) {
     const level = getCurrentLevel(this.project);
-    const matchingObjects = findObjectsInRange(level, range.x, range.y, range.width, range.height);
+    const editableLayerNames = this.getEditableLayerNames();
+    const matchingObjects = findObjectsInRange(
+      level,
+      range.x,
+      range.y,
+      range.width,
+      range.height,
+      editableLayerNames,
+    ).filter((placedObject) => placedObject.editorLocked !== true);
 
     if (matchingObjects.length === 0) {
       if (clearSelection) {
         this.clearSelection();
         this.render();
       }
-      this.setStatus("No placed assets found in the selected area.");
+      const protectedObject = findObjectsInRange(
+        level,
+        range.x,
+        range.y,
+        range.width,
+        range.height,
+      ).find((placedObject) => this.isPlacedObjectProtected(placedObject));
+      this.setStatus(
+        protectedObject
+          ? `${this.getPlacedObjectLockMessage(protectedObject)} It was protected from deletion.`
+          : "No placed assets found in the selected area.",
+      );
       return false;
     }
 
-    const removedObjects = removeObjectsInRange(level, range.x, range.y, range.width, range.height);
+    const removedObjects = removeObjectsInRange(
+      level,
+      range.x,
+      range.y,
+      range.width,
+      range.height,
+      editableLayerNames,
+      (placedObject) => placedObject.editorLocked !== true,
+    );
     this.clearPlacedObjectSelection();
     this.closePlacedPropertiesDialog();
     if (clearSelection) {
@@ -898,13 +1121,25 @@ class DevEditor {
     return true;
   }
 
-  transformPlacedObject(transform) {
+  async transformPlacedObject(transform) {
     const { placedObjectId, x, y, width, height, action } = transform;
     if (this.activeTool !== "move") {
       return false;
     }
 
     const level = getCurrentLevel(this.project);
+    const sourceObject = getPlacedObjects(level).find(
+      (placedObject) => placedObject.id === placedObjectId,
+    );
+    if (!sourceObject || this.isPlacedObjectProtected(sourceObject)) {
+      this.setStatus(
+        sourceObject
+          ? this.getPlacedObjectLockMessage(sourceObject)
+          : "Unable to update the selected asset.",
+      );
+      this.render();
+      return false;
+    }
 
     if (action === "group-move") {
       return this.transformPlacedObjectGroup(transform);
@@ -914,13 +1149,26 @@ class DevEditor {
       (placedObject) => placedObject.id !== placedObjectId,
     );
 
-    if (
-      existing.length > 0 &&
-      !window.confirm("Moving/resizing this asset will overlap existing assets. Continue?")
-    ) {
+    if (this.blockActionForLockedOverlaps(existing, "Move/resize")) {
       this.render();
-      this.setStatus(`${action === "resize" ? "Resize" : "Move"} cancelled.`);
       return false;
+    }
+
+    if (existing.length > 0) {
+      const confirmed = await this.showConfirmModal({
+        title: "Overlap Existing Assets?",
+        message: this.createOverlapWarningMessage(
+          "Moving/resizing this asset will overlap existing assets. Continue?",
+          existing,
+        ),
+        confirmLabel: action === "resize" ? "Resize Asset" : "Move Asset",
+      });
+
+      if (!confirmed) {
+        this.render();
+        this.setStatus(`${action === "resize" ? "Resize" : "Move"} cancelled.`);
+        return false;
+      }
     }
 
     const updatedObject = updatePlacedAssetBounds(level, placedObjectId, x, y, width, height);
@@ -938,7 +1186,7 @@ class DevEditor {
     return true;
   }
 
-  transformPlacedObjectGroup({ placedObjectId, placedObjectIds, boundsById }) {
+  async transformPlacedObjectGroup({ placedObjectId, placedObjectIds, boundsById }) {
     const level = getCurrentLevel(this.project);
     const selectedIds = placedObjectIds?.length
       ? placedObjectIds
@@ -947,6 +1195,22 @@ class DevEditor {
     const updates = new Map(boundsById || []);
 
     if (selectedIds.length <= 1 || updates.size === 0) {
+      return false;
+    }
+
+    const selectedObjects = getPlacedObjects(level).filter((placedObject) =>
+      selectedIdSet.has(placedObject.id),
+    );
+    const lockedSelectedObject = selectedObjects.find((placedObject) =>
+      this.isPlacedObjectProtected(placedObject),
+    );
+    if (lockedSelectedObject || selectedObjects.length !== selectedIds.length) {
+      this.setStatus(
+        lockedSelectedObject
+          ? this.getPlacedObjectLockMessage(lockedSelectedObject)
+          : "Unable to move the selected assets.",
+      );
+      this.render();
       return false;
     }
 
@@ -961,13 +1225,26 @@ class DevEditor {
       );
     });
 
-    if (
-      overlappingObjects.length > 0 &&
-      !window.confirm("Moving this group will overlap existing assets. Continue?")
-    ) {
-      this.render();
-      this.setStatus("Group move cancelled.");
-      return false;
+    if (overlappingObjects.length > 0) {
+      if (this.blockActionForLockedOverlaps(overlappingObjects, "Group move")) {
+        this.render();
+        return false;
+      }
+
+      const confirmed = await this.showConfirmModal({
+        title: "Overlap Existing Assets?",
+        message: this.createOverlapWarningMessage(
+          "Moving this group will overlap existing assets. Continue?",
+          overlappingObjects,
+        ),
+        confirmLabel: "Move Group",
+      });
+
+      if (!confirmed) {
+        this.render();
+        this.setStatus("Group move cancelled.");
+        return false;
+      }
     }
 
     const updatedObjects = updatePlacedAssetGroupBounds(level, updates);
@@ -985,8 +1262,10 @@ class DevEditor {
 
   startCopyPlacement() {
     const level = getCurrentLevel(this.project);
-    const selectedObject = getPlacedObjects(level).find(
-      (placedObject) => placedObject.id === this.selectedPlacedObjectId,
+    const selectedObject = getPlacedObjects(level, this.getEditableLayerNames()).find(
+      (placedObject) =>
+        placedObject.id === this.selectedPlacedObjectId &&
+        placedObject.editorLocked !== true,
     );
 
     if (!selectedObject) {
@@ -1010,7 +1289,7 @@ class DevEditor {
     this.gridEditor.updateCopyPreview(this.createCopyPreview());
   }
 
-  pasteCopiedPlacedAssetAt(x, y) {
+  async pasteCopiedPlacedAssetAt(x, y) {
     if (!this.copiedPlacedObject) {
       return false;
     }
@@ -1019,12 +1298,24 @@ class DevEditor {
     const range = this.getCopiedPlacementRange(x, y);
     const existing = findObjectsInRange(level, range.x, range.y, range.width, range.height);
 
-    if (
-      existing.length > 0 &&
-      !window.confirm("Placing this copied asset will overlap existing assets. Continue?")
-    ) {
-      this.setStatus("Copy placement cancelled. Click another grid cell or press Escape.");
+    if (this.blockActionForLockedOverlaps(existing, "Copied asset placement")) {
       return false;
+    }
+
+    if (existing.length > 0) {
+      const confirmed = await this.showConfirmModal({
+        title: "Overlap Existing Assets?",
+        message: this.createOverlapWarningMessage(
+          "Placing this copied asset will overlap existing assets. Continue?",
+          existing,
+        ),
+        confirmLabel: "Place Copy",
+      });
+
+      if (!confirmed) {
+        this.setStatus("Copy placement cancelled. Click another grid cell or press Escape.");
+        return false;
+      }
     }
 
     const placedObject = duplicatePlacedAsset(
@@ -1044,7 +1335,152 @@ class DevEditor {
     return true;
   }
 
-  openDeleteLevelConfirmation() {
+  showAlertModal(message, options = {}) {
+    return this.showEditorModal({
+      type: "alert",
+      title: options.title || "Message",
+      message,
+      confirmLabel: options.confirmLabel || "OK",
+    });
+  }
+
+  showConfirmModal(options) {
+    return this.showEditorModal({
+      type: "confirm",
+      title: options.title || "Confirm",
+      message: options.message || "",
+      confirmLabel: options.confirmLabel || "Confirm",
+      cancelLabel: options.cancelLabel || "Cancel",
+      danger: Boolean(options.danger),
+    });
+  }
+
+  showPromptModal(options) {
+    return this.showEditorModal({
+      type: "prompt",
+      title: options.title || "Input Required",
+      message: options.message || "",
+      label: options.label || "Value",
+      value: options.value || "",
+      placeholder: options.placeholder || "",
+      confirmLabel: options.confirmLabel || "OK",
+      cancelLabel: options.cancelLabel || "Cancel",
+    });
+  }
+
+  showEditorModal(options) {
+    return new Promise((resolve) => {
+      const dialog = document.createElement("dialog");
+      const type = options.type || "alert";
+      const isPrompt = type === "prompt";
+      const isConfirm = type === "confirm";
+      const isAlert = type === "alert";
+      let resolved = false;
+
+      dialog.className = `editor-modal-dialog editor-modal-${type}`;
+      dialog.innerHTML = `
+        <form class="editor-modal-form" method="dialog">
+          <h2>${escapeHtml(options.title || "")}</h2>
+          ${options.message ? `<p>${escapeHtml(options.message)}</p>` : ""}
+          ${
+            isPrompt
+              ? `<label>${escapeHtml(options.label || "Value")}
+                  <input name="modalValue" value="${escapeAttribute(options.value || "")}" placeholder="${escapeAttribute(options.placeholder || "")}" required />
+                </label>
+                <p class="form-error" role="alert" hidden></p>`
+              : ""
+          }
+          <div class="dialog-actions">
+            ${
+              isAlert
+                ? ""
+                : `<button type="button" data-action="cancel-modal">${escapeHtml(options.cancelLabel || "Cancel")}</button>`
+            }
+            <button type="submit" class="${options.danger ? "danger" : ""}">${escapeHtml(options.confirmLabel || "OK")}</button>
+          </div>
+        </form>
+      `;
+
+      const finish = (value) => {
+        if (resolved) {
+          return;
+        }
+        resolved = true;
+        resolve(value);
+        if (dialog.open) {
+          dialog.close();
+        } else {
+          dialog.remove();
+        }
+      };
+
+      document.body.append(dialog);
+
+      const form = dialog.querySelector("form");
+      const input = dialog.querySelector("input[name='modalValue']");
+      const error = dialog.querySelector(".form-error");
+      const cancelButton = dialog.querySelector('[data-action="cancel-modal"]');
+
+      cancelButton?.addEventListener("click", () => {
+        finish(isPrompt ? null : false);
+      });
+
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+
+        if (isConfirm) {
+          finish(true);
+          return;
+        }
+
+        if (isPrompt) {
+          const value = input.value.trim();
+          if (!value) {
+            error.hidden = false;
+            error.textContent = "Enter a value before continuing.";
+            input.focus();
+            return;
+          }
+          finish(value);
+          return;
+        }
+
+        finish(true);
+      });
+
+      form.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && isConfirm) {
+          event.preventDefault();
+        }
+      });
+
+      dialog.addEventListener("cancel", (event) => {
+        event.preventDefault();
+        finish(isPrompt ? null : false);
+      });
+
+      dialog.addEventListener("close", () => {
+        if (!resolved) {
+          resolved = true;
+          resolve(isPrompt ? null : false);
+        }
+        dialog.remove();
+      });
+
+      dialog.showModal();
+
+      if (input) {
+        input.focus();
+        input.select();
+      } else if (isConfirm && cancelButton) {
+        cancelButton.focus();
+      } else {
+        dialog.querySelector("button[type='submit']")?.focus();
+      }
+    });
+  }
+
+  async openDeleteLevelConfirmation() {
     const level = getCurrentLevel(this.project);
     const selectedLevelId = level?.id || this.project.lastOpenedLevelId || null;
 
@@ -1070,48 +1506,21 @@ class DevEditor {
       return;
     }
 
-    this.showDeleteLevelDialog(level);
-  }
+    const confirmed = await this.showConfirmModal({
+      title: `Delete "${level.name}"?`,
+      message:
+        "This removes the level from the current editor project. Existing JSON files on disk are left untouched for safety.",
+      confirmLabel: "Delete Level",
+      danger: true,
+    });
 
-  showDeleteLevelDialog(level) {
-    const dialog = document.createElement("dialog");
-    dialog.className = "delete-level-dialog";
-    dialog.innerHTML = `
-      <form class="delete-level-form" method="dialog">
-        <h2>Delete "${escapeHtml(level.name)}"?</h2>
-        <p>This removes the level from the current editor project. Existing JSON files on disk are left untouched for safety.</p>
-        <div class="dialog-actions">
-          <button type="button" data-action="cancel-delete-level">Cancel</button>
-          <button type="submit" class="danger">Delete Level</button>
-        </div>
-      </form>
-    `;
-
-    document.body.append(dialog);
-
-    dialog.querySelector('[data-action="cancel-delete-level"]').addEventListener("click", () => {
-      console.log("[Delete Level] confirmed:", false);
+    console.log("[Delete Level] confirmed:", confirmed);
+    if (!confirmed) {
       this.setStatus("Delete level cancelled.");
-      dialog.close();
-    });
+      return;
+    }
 
-    dialog.querySelector("form").addEventListener("submit", (event) => {
-      event.preventDefault();
-      console.log("[Delete Level] confirmed:", true);
-      dialog.close();
-      this.deleteSelectedLevel(level.id);
-    });
-
-    dialog.addEventListener("cancel", () => {
-      console.log("[Delete Level] confirmed:", false);
-      this.setStatus("Delete level cancelled.");
-    });
-
-    dialog.addEventListener("close", () => {
-      dialog.remove();
-    });
-
-    dialog.showModal();
+    this.deleteSelectedLevel(level.id);
   }
 
   deleteSelectedLevel(selectedLevelId) {
@@ -1197,7 +1606,7 @@ class DevEditor {
     this.gridEditor?.updateCopyPreview(null);
   }
 
-  placeSelectedAssetInRange(asset = this.selectedAsset, range = this.selectedRange) {
+  async placeSelectedAssetInRange(asset = this.selectedAsset, range = this.selectedRange) {
     if (!asset) {
       this.setStatus("No asset selected.");
       return;
@@ -1208,10 +1617,10 @@ class DevEditor {
       return;
     }
 
-    this.placeAssetInRange(asset, range, "button");
+    await this.placeAssetInRange(asset, range, "button");
   }
 
-  placeAssetInRange(asset, range, source) {
+  async placeAssetInRange(asset, range, source) {
     if (!asset) {
       this.setStatus("No asset selected.");
       return false;
@@ -1227,16 +1636,37 @@ class DevEditor {
       return false;
     }
 
+    if (this.isLayerLocked(asset.defaultLayer || "objects")) {
+      this.setStatus(
+        `Asset placement blocked: layer "${normalizePlacedLayer(
+          asset.defaultLayer || "objects",
+        )}" is locked.`,
+      );
+      return false;
+    }
+
     const level = getCurrentLevel(this.project);
     const existing = findObjectsInRange(level, range.x, range.y, range.width, range.height);
 
-    if (
-      existing.length > 0 &&
-      !window.confirm("Placing this asset will replace existing assets in the selected area. Continue?")
-    ) {
-      this.setStatus("Placement cancelled.");
-      this.render();
+    if (this.blockActionForLockedOverlaps(existing, "Asset placement")) {
       return false;
+    }
+
+    if (existing.length > 0) {
+      const confirmed = await this.showConfirmModal({
+        title: "Replace Existing Assets?",
+        message: this.createOverlapWarningMessage(
+          "Placing this asset will replace existing assets in the selected area. Continue?",
+          existing,
+        ),
+        confirmLabel: "Place Asset",
+      });
+
+      if (!confirmed) {
+        this.setStatus("Placement cancelled.");
+        this.render();
+        return false;
+      }
     }
 
     const placedObject = placeAsset(level, asset, range.x, range.y, range.width, range.height);
@@ -1305,8 +1735,13 @@ class DevEditor {
     this.syncPlacementButton();
   }
 
-  createCategory() {
-    const name = window.prompt("Category name", "New Category");
+  async createCategory() {
+    const name = await this.showPromptModal({
+      title: "Create Category",
+      label: "Category name",
+      value: "New Category",
+      confirmLabel: "Create Category",
+    });
 
     if (!name?.trim()) {
       this.setStatus("Create category cancelled.");
@@ -1315,6 +1750,9 @@ class DevEditor {
 
     if (findAssetCategoryByName(this.project, name.trim())) {
       this.setStatus("Category already exists.");
+      await this.showAlertModal("Category already exists.", {
+        title: "Category Already Exists",
+      });
       this.render();
       return;
     }
@@ -1339,13 +1777,20 @@ class DevEditor {
     );
   }
 
-  deleteCategory(category) {
+  async deleteCategory(category) {
     const assetCount = this.project.assetRegistry.assets.filter(
       (asset) => asset.categoryId === category.id,
     ).length;
 
     if (assetCount === 0) {
-      if (!window.confirm(`Delete category "${category.name}"?`)) {
+      const confirmed = await this.showConfirmModal({
+        title: `Delete "${category.name}"?`,
+        message: "Delete this empty category? Placed grid assets are not affected.",
+        confirmLabel: "Delete Category",
+        danger: true,
+      });
+
+      if (!confirmed) {
         return;
       }
 
@@ -1356,17 +1801,31 @@ class DevEditor {
     }
 
     this.setStatus("This category contains assets. Delete or move the assets first.");
+    await this.showAlertModal("This category contains assets. Delete or move the assets first.", {
+      title: "Category Not Empty",
+    });
   }
 
-  deleteAsset(asset) {
+  async deleteAsset(asset) {
     if (isAssetUsedOnAnyLevel(this.project, asset.id)) {
       this.setStatus(
         "This asset is currently used on a level. Remove placed copies first before deleting the asset.",
       );
+      await this.showAlertModal(
+        "This asset is currently used on a level. Remove placed copies first before deleting the asset.",
+        { title: "Asset Is In Use" },
+      );
       return;
     }
 
-    if (!window.confirm(`Delete asset "${asset.name}"?`)) {
+    const confirmed = await this.showConfirmModal({
+      title: `Delete "${asset.name}"?`,
+      message: "Delete this imported palette asset? Placed grid copies are not deleted by this action.",
+      confirmLabel: "Delete Asset",
+      danger: true,
+    });
+
+    if (!confirmed) {
       return;
     }
 
@@ -1422,8 +1881,14 @@ class DevEditor {
 
     if (pendingPlacementRange && importedAssets.length === 1) {
       const [importedAsset] = importedAssets;
-      if (window.confirm("Place this asset into the selected grid area?")) {
-        this.placeAssetInRange(importedAsset, pendingPlacementRange, "import");
+      const confirmed = await this.showConfirmModal({
+        title: "Place Imported Asset?",
+        message: "Place this asset into the selected grid area?",
+        confirmLabel: "Place Asset",
+      });
+
+      if (confirmed) {
+        await this.placeAssetInRange(importedAsset, pendingPlacementRange, "import");
       } else {
         this.setStatus(
           `Asset added to ${importedAsset.category}. Click Place Selected Asset or drag the asset onto the grid to place it.`,
@@ -1581,28 +2046,92 @@ class DevEditor {
     });
   }
 
-  resizeGrid(width, height) {
-    const level = getCurrentLevel(this.project);
-    const outsideCount = countObjectsOutsideBounds(level, width, height);
+  async resizeGrid(width, height) {
+    const requestedWidth = Math.round(Number(width));
+    const requestedHeight = Math.round(Number(height));
 
     if (
-      outsideCount > 0 &&
-      !window.confirm(
-        `${outsideCount} placed asset(s) are outside the new grid size and will be removed. Continue?`,
-      )
+      !Number.isInteger(requestedWidth) ||
+      !Number.isInteger(requestedHeight) ||
+      requestedWidth < 1 ||
+      requestedHeight < 1
     ) {
+      this.setStatus("Enter a grid width and height of at least 1.");
       this.render();
       return;
     }
 
-    if (outsideCount > 0) {
-      createProjectBackup(this.project, `Before resizing ${level.name} to ${width}x${height}`);
+    if (requestedWidth > MAX_GRID_SIZE || requestedHeight > MAX_GRID_SIZE) {
+      await this.showAlertModal(
+        "Grid sizes above 500x500 are not supported yet. Future chunked maps will be better for very large worlds.",
+        {
+          title: "Grid Too Large",
+        },
+      );
+      this.setStatus(`Grid size must be ${MAX_GRID_SIZE}x${MAX_GRID_SIZE} or smaller.`);
+      this.render();
+      return;
     }
-    resizeCurrentLevel(this.project, width, height);
+
+    const warning = this.getLargeGridWarning(requestedWidth, requestedHeight);
+    if (warning) {
+      const confirmed = await this.showConfirmModal(warning);
+
+      if (!confirmed) {
+        this.render();
+        return;
+      }
+    }
+
+    const level = getCurrentLevel(this.project);
+    const outsideCount = countObjectsOutsideBounds(level, requestedWidth, requestedHeight);
+
+    if (outsideCount > 0) {
+      const confirmed = await this.showConfirmModal({
+        title: "Resize Grid?",
+        message: `${outsideCount} placed asset(s) are outside the new grid size and will be removed. Continue?`,
+        confirmLabel: "Resize Grid",
+        danger: true,
+      });
+
+      if (!confirmed) {
+        this.render();
+        return;
+      }
+    }
+
+    if (outsideCount > 0) {
+      createProjectBackup(this.project, `Before resizing ${level.name} to ${requestedWidth}x${requestedHeight}`);
+    }
+    resizeCurrentLevel(this.project, requestedWidth, requestedHeight);
     this.clearSelection();
     this.clearPlacedObjectSelection();
-    this.autosave(`Grid resized to ${width}x${height}.`);
+    this.autosave(`Grid resized to ${requestedWidth}x${requestedHeight}.`);
     this.render();
+  }
+
+  getLargeGridWarning(width, height) {
+    const largestDimension = Math.max(width, height);
+
+    if (largestDimension > VERY_LARGE_GRID_WARNING_SIZE) {
+      return {
+        title: "Very Large Grid",
+        message:
+          "Very large grids may affect scrolling, saving, and future Play Mode performance. Consider using multiple levels or future chunked maps. Continue?",
+        confirmLabel: "Create Very Large Grid",
+        danger: true,
+      };
+    }
+
+    if (largestDimension > LARGE_GRID_WARNING_SIZE) {
+      return {
+        title: "Large Grid",
+        message: "Large grids may affect editor performance. Continue?",
+        confirmLabel: "Create Large Grid",
+      };
+    }
+
+    return null;
   }
 
   autosave(message, onSaveResult = null) {
@@ -1627,7 +2156,7 @@ class DevEditor {
     this.setStatus("Copied current level.");
   }
 
-  pasteCopiedLevel() {
+  async pasteCopiedLevel() {
     if (!this.copiedLevel) {
       this.setStatus("No copied level available.");
       return;
@@ -1635,14 +2164,19 @@ class DevEditor {
 
     const currentLevel = getCurrentLevel(this.project);
 
-    if (
-      hasLevelContent(currentLevel) &&
-      !window.confirm(
-        "Pasting this level will replace the current level's grid size and all placed assets/objects on this level. Existing assets on this level may be lost. Continue?",
-      )
-    ) {
-      this.setStatus("Paste level cancelled.");
-      return;
+    if (hasLevelContent(currentLevel)) {
+      const confirmed = await this.showConfirmModal({
+        title: "Paste Over Current Level?",
+        message:
+          "Pasting this level will replace the current level's grid size and all placed assets/objects on this level. Existing assets on this level may be lost. Continue?",
+        confirmLabel: "Paste Level",
+        danger: true,
+      });
+
+      if (!confirmed) {
+        this.setStatus("Paste level cancelled.");
+        return;
+      }
     }
 
     pasteLevelContent(this.project, this.copiedLevel);
@@ -1740,9 +2274,17 @@ class DevEditor {
       Array.from(this.selectedPlacedObjectIds),
       this.createCopyPreview(),
     );
+    this.gridEditor.setLayerVisibility(this.layerVisibility);
+    this.gridEditor.setLayerLocks(this.layerLocks);
+    this.gridEditor.syncPlacedObjectSelection(
+      this.selectedPlacedObjectId,
+      Array.from(this.selectedPlacedObjectIds),
+    );
     this.syncLevelSelector(level);
     this.syncGridControls(level);
     this.syncToolButtons();
+    this.syncLayerVisibilityControls();
+    this.syncLayerLockControls();
     this.syncCoordinateStatus();
     this.syncPlacementButton();
     this.syncAssetMenu();
@@ -1812,8 +2354,7 @@ class DevEditor {
 
   syncGridControls(level) {
     const sameSize = level.gridWidth === level.gridHeight;
-    const presetValues = ["10", "20", "30", "40", "50"];
-    const preset = sameSize && presetValues.includes(String(level.gridWidth))
+    const preset = sameSize && GRID_SIZE_PRESETS.includes(String(level.gridWidth))
       ? String(level.gridWidth)
       : "custom";
 
@@ -1827,6 +2368,336 @@ class DevEditor {
     this.root.querySelectorAll("[data-tool]").forEach((button) => {
       button.classList.toggle("is-active", button.dataset.tool === this.activeTool);
     });
+  }
+
+  loadLayerVisibility() {
+    const defaults = Object.fromEntries(LAYERS.map((layerName) => [layerName, true]));
+    const storedVisibility = localStorage.getItem(LAYER_VISIBILITY_STORAGE_KEY);
+
+    if (!storedVisibility) {
+      return defaults;
+    }
+
+    try {
+      const parsedVisibility = JSON.parse(storedVisibility);
+      if (
+        !parsedVisibility ||
+        typeof parsedVisibility !== "object" ||
+        Array.isArray(parsedVisibility)
+      ) {
+        return defaults;
+      }
+
+      return Object.fromEntries(
+        LAYERS.map((layerName) => [layerName, parsedVisibility[layerName] !== false]),
+      );
+    } catch (error) {
+      console.warn("Layer visibility preferences could not be loaded.", error);
+      return defaults;
+    }
+  }
+
+  saveLayerVisibility() {
+    try {
+      localStorage.setItem(
+        LAYER_VISIBILITY_STORAGE_KEY,
+        JSON.stringify(this.layerVisibility),
+      );
+    } catch (error) {
+      console.warn("Layer visibility preferences could not be saved.", error);
+    }
+  }
+
+  loadLayerLocks() {
+    const defaults = Object.fromEntries(LAYERS.map((layerName) => [layerName, false]));
+    const storedLocks = localStorage.getItem(LAYER_LOCKS_STORAGE_KEY);
+
+    if (!storedLocks) {
+      return defaults;
+    }
+
+    try {
+      const parsedLocks = JSON.parse(storedLocks);
+      if (!parsedLocks || typeof parsedLocks !== "object" || Array.isArray(parsedLocks)) {
+        return defaults;
+      }
+
+      return Object.fromEntries(
+        LAYERS.map((layerName) => [layerName, parsedLocks[layerName] === true]),
+      );
+    } catch (error) {
+      console.warn("Layer lock preferences could not be loaded.", error);
+      return defaults;
+    }
+  }
+
+  saveLayerLocks() {
+    try {
+      localStorage.setItem(LAYER_LOCKS_STORAGE_KEY, JSON.stringify(this.layerLocks));
+    } catch (error) {
+      console.warn("Layer lock preferences could not be saved.", error);
+    }
+  }
+
+  getEditableLayerNames() {
+    return LAYERS.filter(
+      (layerName) =>
+        this.layerVisibility[layerName] !== false &&
+        this.layerLocks[layerName] !== true,
+    );
+  }
+
+  isLayerVisible(layerName) {
+    const normalizedLayer = layerName === "Trigger" ? "triggers" : layerName || "objects";
+    return !LAYERS.includes(normalizedLayer) || this.layerVisibility[normalizedLayer] !== false;
+  }
+
+  isLayerLocked(layerName) {
+    const normalizedLayer = normalizePlacedLayer(layerName);
+    return LAYERS.includes(normalizedLayer) && this.layerLocks[normalizedLayer] === true;
+  }
+
+  isPlacedObjectProtected(placedObject) {
+    return Boolean(
+      placedObject &&
+      (
+        this.isLayerLocked(placedObject.layer) ||
+        placedObject.editorLocked === true
+      ),
+    );
+  }
+
+  getPlacedObjectLockMessage(placedObject) {
+    if (this.isLayerLocked(placedObject?.layer)) {
+      return `Layer "${normalizePlacedLayer(placedObject.layer)}" is locked.`;
+    }
+    if (placedObject?.editorLocked === true) {
+      return "This asset is locked.";
+    }
+    return "That asset is on a hidden editor layer.";
+  }
+
+  setLayerVisibility(layerName, isVisible) {
+    if (!LAYERS.includes(layerName)) {
+      return;
+    }
+
+    this.layerVisibility = {
+      ...this.layerVisibility,
+      [layerName]: Boolean(isVisible),
+    };
+    this.saveLayerVisibility();
+
+    const level = getCurrentLevel(this.project);
+    const editableObjects = getPlacedObjects(level, this.getEditableLayerNames()).filter(
+      (placedObject) => placedObject.editorLocked !== true,
+    );
+    const editableIds = new Set(editableObjects.map((placedObject) => placedObject.id));
+    const retainedIds = Array.from(this.selectedPlacedObjectIds).filter((id) =>
+      editableIds.has(id),
+    );
+    const previousPrimaryId = this.selectedPlacedObjectId;
+
+    this.selectedPlacedObjectIds = new Set(retainedIds);
+    this.selectedPlacedObjectId = editableIds.has(previousPrimaryId)
+      ? previousPrimaryId
+      : retainedIds[0] || null;
+
+    if (previousPrimaryId && !editableIds.has(previousPrimaryId)) {
+      this.closePlacedPropertiesDialog();
+    }
+
+    if (
+      this.copiedPlacedObject &&
+      (
+        !this.isLayerVisible(this.copiedPlacedObject.layer) ||
+        this.isLayerLocked(this.copiedPlacedObject.layer) ||
+        this.copiedPlacedObject.editorLocked === true
+      )
+    ) {
+      this.cancelCopyPlacement();
+    }
+
+    this.gridEditor.setLayerVisibility(this.layerVisibility);
+    this.gridEditor.syncPlacedObjectSelection(
+      this.selectedPlacedObjectId,
+      Array.from(this.selectedPlacedObjectIds),
+    );
+    this.syncLayerVisibilityControls();
+    this.syncAssetMenu();
+    this.setStatus(
+      `${layerName} layer ${isVisible ? "shown" : "hidden"} in the editor.`,
+    );
+  }
+
+  showAllLayers() {
+    this.layerVisibility = Object.fromEntries(
+      LAYERS.map((layerName) => [layerName, true]),
+    );
+    this.saveLayerVisibility();
+    this.gridEditor.setLayerVisibility(this.layerVisibility);
+    this.syncLayerVisibilityControls();
+    this.setStatus("All editor layers shown.");
+  }
+
+  syncLayerVisibilityControls() {
+    this.ui.layerVisibilityInputs.forEach((input) => {
+      input.checked = this.layerVisibility[input.dataset.layer] !== false;
+    });
+  }
+
+  setLayerLocked(layerName, isLocked) {
+    if (!LAYERS.includes(layerName)) {
+      return;
+    }
+
+    this.layerLocks = {
+      ...this.layerLocks,
+      [layerName]: Boolean(isLocked),
+    };
+    this.saveLayerLocks();
+
+    const level = getCurrentLevel(this.project);
+    const editableIds = new Set(
+      getPlacedObjects(level, this.getEditableLayerNames()).map(
+        (placedObject) =>
+          placedObject.editorLocked === true ? null : placedObject.id,
+      ),
+    );
+    editableIds.delete(null);
+    const retainedIds = Array.from(this.selectedPlacedObjectIds).filter((id) =>
+      editableIds.has(id),
+    );
+    const previousPrimaryId = this.selectedPlacedObjectId;
+    this.selectedPlacedObjectIds = new Set(retainedIds);
+    this.selectedPlacedObjectId = editableIds.has(previousPrimaryId)
+      ? previousPrimaryId
+      : retainedIds[0] || null;
+
+    if (previousPrimaryId && !editableIds.has(previousPrimaryId)) {
+      this.closePlacedPropertiesDialog();
+    }
+
+    if (
+      this.copiedPlacedObject &&
+      (
+        this.isLayerLocked(this.copiedPlacedObject.layer) ||
+        this.copiedPlacedObject.editorLocked === true
+      )
+    ) {
+      this.cancelCopyPlacement();
+    }
+
+    this.gridEditor.setLayerLocks(this.layerLocks);
+    this.gridEditor.syncPlacedObjectSelection(
+      this.selectedPlacedObjectId,
+      Array.from(this.selectedPlacedObjectIds),
+    );
+    this.syncLayerLockControls();
+    this.syncAssetMenu();
+    this.setStatus(
+      `${layerName} layer ${isLocked ? "locked" : "unlocked"} for editing.`,
+    );
+  }
+
+  unlockAllLayers() {
+    this.layerLocks = Object.fromEntries(
+      LAYERS.map((layerName) => [layerName, false]),
+    );
+    this.saveLayerLocks();
+
+    let unlockedAssetCount = 0;
+    this.project.levels.forEach((level) => {
+      Object.values(level.layers || {}).forEach((layerEntries) => {
+        if (!Array.isArray(layerEntries)) {
+          return;
+        }
+
+        layerEntries.forEach((placedObject) => {
+          if (placedObject?.editorLocked === true) {
+            placedObject.editorLocked = false;
+            unlockedAssetCount += 1;
+          }
+        });
+      });
+    });
+
+    this.gridEditor.setLayerLocks(this.layerLocks);
+    this.syncLayerLockControls();
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    this.render();
+    this.autosave(
+      `All layers and individually locked assets unlocked${
+        unlockedAssetCount > 0 ? ` (${unlockedAssetCount} asset${unlockedAssetCount === 1 ? "" : "s"})` : ""
+      }.`,
+    );
+  }
+
+  syncLayerLockControls() {
+    this.ui.layerLockInputs.forEach((input) => {
+      input.checked = this.layerLocks[input.dataset.layer] === true;
+    });
+  }
+
+  blockActionForLockedOverlaps(overlappingObjects, actionLabel) {
+    const lockedLayers = Array.from(
+      new Set(
+        overlappingObjects
+          .filter((placedObject) => this.isLayerLocked(placedObject.layer))
+          .map((placedObject) => normalizePlacedLayer(placedObject.layer)),
+      ),
+    );
+    const lockedAssetCount = overlappingObjects.filter(
+      (placedObject) =>
+        placedObject.editorLocked === true &&
+        !this.isLayerLocked(placedObject.layer),
+    ).length;
+
+    if (lockedLayers.length === 0 && lockedAssetCount === 0) {
+      return false;
+    }
+
+    const reasons = [];
+    if (lockedLayers.length > 0) {
+      reasons.push(
+        `locked layer${lockedLayers.length === 1 ? "" : "s"} ${lockedLayers.join(", ")}`,
+      );
+    }
+    if (lockedAssetCount > 0) {
+      reasons.push(
+        `${lockedAssetCount} individually locked asset${lockedAssetCount === 1 ? "" : "s"}`,
+      );
+    }
+    this.setStatus(`${actionLabel} blocked: ${reasons.join(" and ")} cannot be replaced.`);
+    return true;
+  }
+
+  createOverlapWarningMessage(message, overlappingObjects) {
+    const hiddenCount = overlappingObjects.filter(
+      (placedObject) => !this.isLayerVisible(placedObject.layer),
+    ).length;
+
+    const lockedCount = overlappingObjects.filter(
+      (placedObject) => this.isPlacedObjectProtected(placedObject),
+    ).length;
+
+    if (hiddenCount === 0 && lockedCount === 0) {
+      return message;
+    }
+
+    const details = [];
+    if (hiddenCount > 0) {
+      details.push(
+        `${hiddenCount} overlapping hidden-layer asset${hiddenCount === 1 ? " is" : "s are"} included`,
+      );
+    }
+    if (lockedCount > 0) {
+      details.push(
+        `${lockedCount} locked-layer asset${lockedCount === 1 ? " is" : "s are"} protected from replacement`,
+      );
+    }
+    return `${message} ${details.join(". ")}.`;
   }
 
   syncCoordinateStatus() {
@@ -1858,12 +2729,76 @@ class DevEditor {
     this.ui.assetMenu.classList.toggle("is-disabled", !isEnabled);
     this.ui.assetMenu.querySelector("summary").setAttribute("aria-disabled", String(!isEnabled));
     this.ui.assetMenu.querySelector("button").disabled = !isEnabled;
+    this.ui.editPropertiesButton.disabled = !isEnabled;
     if (!isEnabled) {
       this.ui.assetMenu.removeAttribute("open");
     }
   }
 
   bindMenuBehavior() {
+    const viewMenu = this.root.querySelector('[data-role="view-menu"]');
+    const flyoutItems = Array.from(
+      viewMenu.querySelectorAll(".menu-flyout-item"),
+    );
+
+    const closeViewFlyouts = (exceptItem = null) => {
+      flyoutItems.forEach((item) => {
+        if (item === exceptItem) {
+          return;
+        }
+        item.classList.remove("is-open", "opens-left");
+        item.querySelector("[data-flyout-trigger]")?.setAttribute("aria-expanded", "false");
+        const panel = item.querySelector("[data-flyout-panel]");
+        if (panel) {
+          panel.style.top = "";
+        }
+      });
+    };
+
+    const openViewFlyout = (item) => {
+      closeViewFlyouts(item);
+      item.classList.add("is-open");
+      const trigger = item.querySelector("[data-flyout-trigger]");
+      const panel = item.querySelector("[data-flyout-panel]");
+      trigger?.setAttribute("aria-expanded", "true");
+
+      window.requestAnimationFrame(() => {
+        if (!panel || !item.classList.contains("is-open")) {
+          return;
+        }
+        item.classList.remove("opens-left");
+        panel.style.top = "-6px";
+        let panelRect = panel.getBoundingClientRect();
+        if (panelRect.right > window.innerWidth - 8) {
+          item.classList.add("opens-left");
+          panelRect = panel.getBoundingClientRect();
+        }
+        const itemRect = item.getBoundingClientRect();
+        let panelTop = -6;
+        if (panelRect.bottom > window.innerHeight - 8) {
+          panelTop -= panelRect.bottom - window.innerHeight + 8;
+        }
+        panelTop = Math.max(8 - itemRect.top, panelTop);
+        panel.style.top = `${panelTop}px`;
+      });
+    };
+
+    flyoutItems.forEach((item) => {
+      const trigger = item.querySelector("[data-flyout-trigger]");
+      item.addEventListener("mouseenter", () => openViewFlyout(item));
+      item.addEventListener("focusin", () => openViewFlyout(item));
+      item.addEventListener("mouseleave", (event) => {
+        if (!item.contains(event.relatedTarget)) {
+          closeViewFlyouts();
+        }
+      });
+      trigger.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openViewFlyout(item);
+      });
+    });
+
     this.root.querySelectorAll("[data-menu]").forEach((menu) => {
       menu.querySelector("summary").addEventListener("click", (event) => {
         if (menu.classList.contains("is-disabled")) {
@@ -1873,6 +2808,9 @@ class DevEditor {
       });
       menu.addEventListener("toggle", () => {
         if (!menu.open) {
+          if (menu === viewMenu) {
+            closeViewFlyouts();
+          }
           return;
         }
 
@@ -1884,11 +2822,55 @@ class DevEditor {
       });
     });
 
-    this.root.querySelectorAll(".menu-panel button").forEach((button) => {
+    this.root.querySelectorAll(".menu-panel button:not([data-flyout-trigger])").forEach((button) => {
       button.addEventListener("click", () => {
         this.closeMenus();
       });
     });
+
+    let suppressOutsideMenuClick = false;
+    document.addEventListener(
+      "pointerdown",
+      (event) => {
+        if (!viewMenu.open || viewMenu.contains(event.target)) {
+          return;
+        }
+
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        suppressOutsideMenuClick = true;
+        this.closeMenus();
+        window.setTimeout(() => {
+          suppressOutsideMenuClick = false;
+        }, 0);
+      },
+      true,
+    );
+
+    document.addEventListener(
+      "click",
+      (event) => {
+        if (!suppressOutsideMenuClick) {
+          return;
+        }
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        suppressOutsideMenuClick = false;
+      },
+      true,
+    );
+
+    document.addEventListener(
+      "keydown",
+      (event) => {
+        if (event.key === "Escape" && viewMenu.open) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          this.closeMenus();
+        }
+      },
+      true,
+    );
 
     document.addEventListener("click", (event) => {
       if (!this.root.contains(event.target) || !event.target.closest("[data-menu]")) {
@@ -1916,18 +2898,59 @@ class DevEditor {
       event.preventDefault();
       const startX = event.clientX;
       const startWidth = this.sidebarWidth;
+      const minimumWidth = 180;
+      const maximumWidth = this.getSidebarMaximumWidth();
+      let pendingWidth = this.sidebarWidth;
+      let appliedWidth = this.sidebarWidth;
+      let sidebarAnimationFrame = null;
       handle.classList.add("is-resizing");
+      this.ui.workspace.classList.add("is-sidebar-resizing");
+      document.body.classList.add("is-sidebar-resizing");
+
+      const clampResizeWidth = (width) => clamp(Math.round(width), minimumWidth, maximumWidth);
+
+      const applyResize = () => {
+        sidebarAnimationFrame = null;
+        if (pendingWidth === appliedWidth) {
+          return;
+        }
+        appliedWidth = pendingWidth;
+        this.applySidebarWidth(pendingWidth);
+      };
+
+      const scheduleResize = (width) => {
+        if (width === pendingWidth) {
+          return;
+        }
+        pendingWidth = width;
+
+        if (sidebarAnimationFrame !== null) {
+          return;
+        }
+
+        sidebarAnimationFrame = window.requestAnimationFrame(applyResize);
+      };
+
+      const flushResize = () => {
+        if (sidebarAnimationFrame !== null) {
+          window.cancelAnimationFrame(sidebarAnimationFrame);
+          applyResize();
+        }
+      };
 
       const resize = (pointerEvent) => {
-        this.sidebarWidth = this.clampSidebarWidth(startWidth + pointerEvent.clientX - startX);
-        this.applySidebarWidth(this.sidebarWidth);
+        this.sidebarWidth = clampResizeWidth(startWidth + pointerEvent.clientX - startX);
+        scheduleResize(this.sidebarWidth);
       };
 
       const finish = () => {
         document.removeEventListener("pointermove", resize);
         document.removeEventListener("pointerup", finish);
         document.removeEventListener("pointercancel", finish);
+        flushResize();
         handle.classList.remove("is-resizing");
+        this.ui.workspace.classList.remove("is-sidebar-resizing");
+        document.body.classList.remove("is-sidebar-resizing");
         localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(this.sidebarWidth));
       };
 
@@ -1977,8 +3000,12 @@ class DevEditor {
   }
 
   clampSidebarWidth(width) {
-    const maximum = Math.max(180, Math.min(420, Math.floor(window.innerWidth * 0.4)));
+    const maximum = this.getSidebarMaximumWidth();
     return clamp(Math.round(width), 180, maximum);
+  }
+
+  getSidebarMaximumWidth() {
+    return Math.max(180, Math.min(420, Math.floor(window.innerWidth * 0.4)));
   }
 
   closeMenus() {
@@ -2059,25 +3086,196 @@ function getToolLabel(tool) {
   return tool === "move" ? "Select/Move" : "Delete";
 }
 
-const PLACED_LAYER_OPTIONS = [
-  { value: "terrain", label: "Terrain" },
-  { value: "objects", label: "Objects" },
-  { value: "overlay", label: "Overlay" },
-  { value: "Trigger", label: "Trigger" },
-];
+const LAYER_LABELS = {
+  terrain: "Terrain",
+  decorations: "Decorations",
+  objects: "Objects",
+  collisions: "Collisions",
+  spawns: "Spawns",
+  items: "Items",
+  npcs: "NPCs",
+  enemies: "Enemies",
+  triggers: "Triggers",
+  overlay: "Overlay",
+};
 
 function normalizePlacedLayer(layer) {
   if (layer === "triggers" || layer === "Trigger") {
-    return "Trigger";
+    return "triggers";
   }
-  return PLACED_LAYER_OPTIONS.some((option) => option.value === layer) ? layer : "objects";
+  return LAYERS.includes(layer) ? layer : "objects";
 }
 
 function createLayerOptions(selectedLayer) {
-  return PLACED_LAYER_OPTIONS.map(
-    (option) =>
-      `<option value="${option.value}" ${option.value === selectedLayer ? "selected" : ""}>${option.label}</option>`,
+  return LAYERS.map(
+    (layerName) =>
+      `<option value="${layerName}" ${layerName === selectedLayer ? "selected" : ""}>${LAYER_LABELS[layerName] || toTitleCase(layerName)}</option>`,
   ).join("");
+}
+
+function normalizeLayerOptions(layerOptions) {
+  return layerOptions && typeof layerOptions === "object" && !Array.isArray(layerOptions)
+    ? layerOptions
+    : {};
+}
+
+function createLayerOptionsFields(layer, options) {
+  const fieldValue = (key) => escapeAttribute(options[key] ?? "");
+  const boolValue = (key, fallback = false) => Boolean(options[key] ?? fallback);
+  const yesNoOptions = (key, fallback = false) => `
+    <option value="false" ${!boolValue(key, fallback) ? "selected" : ""}>No</option>
+    <option value="true" ${boolValue(key, fallback) ? "selected" : ""}>Yes</option>
+  `;
+
+  switch (layer) {
+    case "terrain":
+      return `
+        <legend>Terrain Options</legend>
+        <label>Terrain Tag <input name="terrainTag" value="${fieldValue("terrainTag")}" /></label>
+        <p class="properties-hint">Use terrain tags to describe ground type for future movement, visuals, or rules.</p>
+      `;
+    case "decorations":
+      return `
+        <legend>Decoration Options</legend>
+        <label>Decorative Only
+          <select name="decorativeOnly">${yesNoOptions("decorativeOnly", true)}</select>
+        </label>
+        <p class="properties-hint">Decoration assets are visual dressing and should not affect movement unless future rules say otherwise.</p>
+      `;
+    case "objects":
+      return `
+        <legend>Object Options</legend>
+        <label>Object Type / Note <input name="objectType" value="${fieldValue("objectType")}" /></label>
+        <p class="properties-hint">Objects are general placed props. Use Blocks Movement above for current editor blocking intent.</p>
+      `;
+    case "collisions":
+      return `
+        <legend>Collision Options</legend>
+        <label>Collision Type / Note <input name="collisionType" value="${fieldValue("collisionType")}" /></label>
+        <p class="properties-hint">Collision entries mark future blocking or collision zones. Runtime collision is not implemented yet.</p>
+      `;
+    case "spawns":
+      return `
+        <legend>Spawn Options</legend>
+        <label>Spawn Name <input name="spawnName" value="${fieldValue("spawnName")}" /></label>
+        <label>Spawn Direction
+          <select name="spawnDirection">
+            ${createSelectOptions(["up", "down", "left", "right"], options.spawnDirection || "down")}
+          </select>
+        </label>
+        <p class="properties-hint">Spawn fields mark future player or entity spawn points. Spawn behavior is not implemented yet.</p>
+      `;
+    case "items":
+      return `
+        <legend>Item Options</legend>
+        <label>Item ID <input name="itemId" value="${fieldValue("itemId")}" /></label>
+        <label>Quantity <input name="quantity" type="number" min="0" value="${fieldValue("quantity")}" /></label>
+        <p class="properties-hint">Item fields identify future pickup data. Inventory and pickup runtime are not implemented yet.</p>
+      `;
+    case "npcs":
+      return `
+        <legend>NPC Options</legend>
+        <label>NPC Name <input name="npcName" value="${fieldValue("npcName")}" /></label>
+        <label>Dialogue ID <input name="dialogueId" value="${fieldValue("dialogueId")}" /></label>
+        <p class="properties-hint">NPC fields prepare future dialogue connections. NPC runtime is not implemented yet.</p>
+      `;
+    case "enemies":
+      return `
+        <legend>Enemy Options</legend>
+        <label>Enemy Type <input name="enemyType" value="${fieldValue("enemyType")}" /></label>
+        <label>Spawn Chance <input name="spawnChance" type="number" min="0" max="100" value="${fieldValue("spawnChance")}" /></label>
+        <p class="properties-hint">Enemy fields prepare future battle or encounter data. Enemy runtime is not implemented yet.</p>
+      `;
+    case "triggers":
+      return `
+        <legend>Trigger Options</legend>
+        <label>Trigger Type
+          <select name="triggerType">
+            ${createSelectOptions(["none", "levelExit", "dialogue", "battle", "cutscene", "custom"], options.triggerType || "none")}
+          </select>
+        </label>
+        <label>Target Level <input name="targetLevel" value="${fieldValue("targetLevel")}" /></label>
+        <label>Target Spawn <input name="targetSpawn" value="${fieldValue("targetSpawn")}" /></label>
+        <label>Dialogue ID <input name="dialogueId" value="${fieldValue("dialogueId")}" /></label>
+        <label>Battle ID <input name="battleId" value="${fieldValue("battleId")}" /></label>
+        <label>Cutscene ID <input name="cutsceneId" value="${fieldValue("cutsceneId")}" /></label>
+        <p class="properties-hint">Trigger fields are metadata only. Level exits, dialogue, battles, and cutscenes are not implemented yet.</p>
+      `;
+    case "overlay":
+      return `
+        <legend>Overlay Options</legend>
+        <label>Render Above Player
+          <select name="renderAbovePlayer">${yesNoOptions("renderAbovePlayer", true)}</select>
+        </label>
+        <label>Overlay Type / Note <input name="overlayType" value="${fieldValue("overlayType")}" /></label>
+        <p class="properties-hint">Overlay fields mark future above-player visuals. Runtime layering is not implemented yet.</p>
+      `;
+    default:
+      return `
+        <legend>Layer Options</legend>
+        <p class="properties-hint">Choose a layer to edit layer-specific metadata.</p>
+      `;
+  }
+}
+
+function createSelectOptions(values, selectedValue) {
+  return values.map((value) => {
+    const selected = value === selectedValue ? "selected" : "";
+    return `<option value="${escapeAttribute(value)}" ${selected}>${escapeHtml(toTitleCase(value))}</option>`;
+  }).join("");
+}
+
+function readLayerSpecificOptions(data, layer) {
+  switch (layer) {
+    case "terrain":
+      return { terrainTag: readFormText(data, "terrainTag") };
+    case "decorations":
+      return { decorativeOnly: data.get("decorativeOnly") === "true" };
+    case "objects":
+      return { objectType: readFormText(data, "objectType") };
+    case "collisions":
+      return { collisionType: readFormText(data, "collisionType") };
+    case "spawns":
+      return {
+        spawnName: readFormText(data, "spawnName"),
+        spawnDirection: readFormText(data, "spawnDirection"),
+      };
+    case "items":
+      return {
+        itemId: readFormText(data, "itemId"),
+        quantity: readFormText(data, "quantity"),
+      };
+    case "npcs":
+      return {
+        npcName: readFormText(data, "npcName"),
+        dialogueId: readFormText(data, "dialogueId"),
+      };
+    case "enemies":
+      return {
+        enemyType: readFormText(data, "enemyType"),
+        spawnChance: readFormText(data, "spawnChance"),
+      };
+    case "triggers":
+      return {
+        triggerType: readFormText(data, "triggerType") || "none",
+        targetLevel: readFormText(data, "targetLevel"),
+        targetSpawn: readFormText(data, "targetSpawn"),
+        dialogueId: readFormText(data, "dialogueId"),
+        battleId: readFormText(data, "battleId"),
+        cutsceneId: readFormText(data, "cutsceneId"),
+      };
+    case "overlay":
+      return {
+        renderAbovePlayer: data.get("renderAbovePlayer") === "true",
+        overlayType: readFormText(data, "overlayType"),
+      };
+    default:
+      return {};
+  }
+}
+
+function readFormText(data, key) {
+  return String(data.get(key) || "").trim();
 }
 
 function normalizeOpacity(opacity) {

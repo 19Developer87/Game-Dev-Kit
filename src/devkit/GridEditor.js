@@ -13,6 +13,8 @@ export class GridEditor {
     onPlacedObjectTransform,
     onPlacedObjectGroupMoveStart,
     onCopyPreviewMove,
+    onLockedLayerInteraction,
+    onLockedAssetInteraction,
   }) {
     this.root = root;
     this.onCellClick = onCellClick;
@@ -25,17 +27,31 @@ export class GridEditor {
     this.onPlacedObjectTransform = onPlacedObjectTransform;
     this.onPlacedObjectGroupMoveStart = onPlacedObjectGroupMoveStart;
     this.onCopyPreviewMove = onCopyPreviewMove;
+    this.onLockedLayerInteraction = onLockedLayerInteraction;
+    this.onLockedAssetInteraction = onLockedAssetInteraction;
     this.interactionMode = "move";
     this.copyModeActive = false;
     this.gesture = null;
     this.level = null;
     this.surface = null;
+    this.hoverBox = null;
     this.selectionBox = null;
     this.dropPreviewBox = null;
     this.copyPreviewBox = null;
     this.selectedPlacedObjectId = null;
     this.selectedPlacedObjectIds = new Set();
     this.lastPlacedObjectPointerDown = null;
+    this.lastPlacedObjectPropertiesOpen = null;
+    this.lockedAssetStatusTimer = null;
+    this.pendingSelectionCell = null;
+    this.selectionAnimationFrame = null;
+    this.lastLiveSelectionRange = null;
+    this.lastHoveredCellKey = null;
+    this.pendingCopyCell = null;
+    this.copyAnimationFrame = null;
+    this.layerVisibility = {};
+    this.layerLocks = {};
+    this.placedObjectsById = new Map();
   }
 
   setInteractionMode(mode) {
@@ -45,6 +61,93 @@ export class GridEditor {
   setCopyModeActive(isActive) {
     this.copyModeActive = Boolean(isActive);
     this.surface?.classList.toggle("is-copy-mode", this.copyModeActive);
+  }
+
+  requestPlacedObjectProperties(placedObjectId) {
+    const now = Date.now();
+    const recentlyOpened =
+      this.lastPlacedObjectPropertiesOpen?.id === placedObjectId &&
+      now - this.lastPlacedObjectPropertiesOpen.time < 250;
+    if (recentlyOpened) {
+      return;
+    }
+
+    this.lastPlacedObjectPropertiesOpen = { id: placedObjectId, time: now };
+    this.onPlacedObjectProperties?.(placedObjectId);
+  }
+
+  scheduleLockedAssetInteraction(placedObject) {
+    window.clearTimeout(this.lockedAssetStatusTimer);
+    this.lockedAssetStatusTimer = window.setTimeout(() => {
+      this.lockedAssetStatusTimer = null;
+      this.onLockedAssetInteraction?.(placedObject);
+    }, 475);
+  }
+
+  cancelLockedAssetInteractionStatus() {
+    window.clearTimeout(this.lockedAssetStatusTimer);
+    this.lockedAssetStatusTimer = null;
+  }
+
+  setLayerVisibility(layerVisibility) {
+    this.layerVisibility = { ...layerVisibility };
+    this.surface?.querySelectorAll(".placed-asset").forEach((marker) => {
+      marker.classList.toggle(
+        "is-layer-hidden",
+        !this.isLayerVisible(marker.dataset.layer),
+      );
+    });
+    this.syncPlacedObjectSelection(
+      this.selectedPlacedObjectId,
+      Array.from(this.selectedPlacedObjectIds),
+    );
+  }
+
+  setLayerLocks(layerLocks) {
+    this.layerLocks = { ...layerLocks };
+    this.surface?.querySelectorAll(".placed-asset").forEach((marker) => {
+      marker.classList.toggle(
+        "is-layer-locked",
+        this.isLayerLocked(marker.dataset.layer),
+      );
+    });
+    this.syncPlacedObjectSelection(
+      this.selectedPlacedObjectId,
+      Array.from(this.selectedPlacedObjectIds),
+    );
+  }
+
+  syncPlacedObjectSelection(selectedPlacedObjectId, selectedPlacedObjectIds = []) {
+    this.selectedPlacedObjectId = selectedPlacedObjectId;
+    this.selectedPlacedObjectIds = new Set(selectedPlacedObjectIds);
+
+    this.surface?.querySelectorAll(".placed-asset").forEach((marker) => {
+      marker.classList.remove("is-selected", "is-primary-selected");
+      marker.querySelectorAll(".resize-handle").forEach((handle) => handle.remove());
+
+      const placedObjectId = marker.dataset.placedObjectId;
+      const isSelected =
+        this.interactionMode === "move" &&
+        this.selectedPlacedObjectIds.has(placedObjectId) &&
+        this.isLayerVisible(marker.dataset.layer) &&
+        !this.isLayerLocked(marker.dataset.layer) &&
+        this.placedObjectsById.get(placedObjectId)?.editorLocked !== true;
+      if (!isSelected) {
+        return;
+      }
+
+      marker.classList.add("is-selected");
+      marker.classList.toggle(
+        "is-primary-selected",
+        placedObjectId === this.selectedPlacedObjectId,
+      );
+      if (this.selectedPlacedObjectIds.size <= 1) {
+        const placedObject = this.placedObjectsById.get(placedObjectId);
+        if (placedObject) {
+          this.appendResizeHandles(marker, placedObject);
+        }
+      }
+    });
   }
 
   render(
@@ -59,6 +162,9 @@ export class GridEditor {
     this.level = level;
     this.selectedPlacedObjectId = selectedPlacedObjectId;
     this.selectedPlacedObjectIds = new Set(selectedPlacedObjectIds);
+    this.placedObjectsById = new Map();
+    this.cancelPendingSelectionFrame();
+    this.cancelPendingCopyFrame();
     this.root.innerHTML = "";
 
     const wrap = document.createElement("div");
@@ -102,13 +208,7 @@ export class GridEditor {
 
     const cells = document.createElement("div");
     cells.className = "editor-grid-cells";
-    cells.style.gridTemplateColumns = `repeat(${level.gridWidth}, ${level.tileSize}px)`;
-    cells.style.gridTemplateRows = `repeat(${level.gridHeight}, ${level.tileSize}px)`;
-    for (let y = 1; y <= level.gridHeight; y += 1) {
-      for (let x = 1; x <= level.gridWidth; x += 1) {
-        cells.append(this.renderCell(level, x, y));
-      }
-    }
+    cells.setAttribute("aria-hidden", "true");
 
     const assetsLayer = document.createElement("div");
     assetsLayer.className = "asset-overlay-layer";
@@ -116,6 +216,8 @@ export class GridEditor {
 
     const selectionLayer = document.createElement("div");
     selectionLayer.className = "selection-overlay-layer";
+    this.hoverBox = document.createElement("div");
+    this.hoverBox.className = "hover-box";
     this.selectionBox = document.createElement("div");
     this.selectionBox.className = "selection-box";
     this.dropPreviewBox = document.createElement("div");
@@ -124,7 +226,7 @@ export class GridEditor {
     this.copyPreviewBox.className = "copy-preview-box";
     selectionLayer.append(this.selectionBox, this.dropPreviewBox, this.copyPreviewBox);
 
-    this.surface.append(cells, assetsLayer, selectionLayer);
+    this.surface.append(cells, this.hoverBox, assetsLayer, selectionLayer);
     this.bindSurfacePointerEvents();
     this.bindSurfaceDragEvents();
     layout.append(corner, columnHeaders, rowHeaders, this.surface);
@@ -136,20 +238,14 @@ export class GridEditor {
     this.updateCopyPreview(copyPreview);
   }
 
-  renderCell(level, x, y) {
-    const cell = document.createElement("button");
-    cell.type = "button";
-    cell.className = "grid-cell";
-    cell.dataset.x = String(x);
-    cell.dataset.y = String(y);
-    cell.setAttribute("aria-label", `Cell ${toGridRef(x, y)}`);
-
-    cell.addEventListener("pointerenter", () => {
-      this.onHoverCell({ x, y, gridRef: toGridRef(x, y) });
-    });
-
-    cell.addEventListener("pointerdown", (event) => {
+  bindSurfacePointerEvents() {
+    this.surface.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) {
+        return;
+      }
+
+      const target = this.getCellFromClientPoint(event.clientX, event.clientY);
+      if (!target) {
         return;
       }
 
@@ -157,24 +253,26 @@ export class GridEditor {
       if (this.gesture?.moved) {
         this.completeGesture();
       }
+      this.cancelPendingSelectionFrame();
       this.gesture = {
         pointerId: event.pointerId,
-        start: { x, y },
-        current: { x, y },
+        start: target,
+        current: target,
         moved: false,
       };
+      this.lastLiveSelectionRange = null;
       this.surface.setPointerCapture(event.pointerId);
     });
 
-    return cell;
-  }
-
-  bindSurfacePointerEvents() {
     this.surface.addEventListener("pointermove", (event) => {
+      const target = this.getCellFromClientPoint(event.clientX, event.clientY);
+      if (target) {
+        this.reportHoveredCell(target);
+      }
+
       if (this.copyModeActive) {
-        const target = this.getCellFromClientPoint(event.clientX, event.clientY);
         if (target) {
-          this.onCopyPreviewMove?.(target);
+          this.scheduleCopyPreviewUpdate(target);
         }
       }
 
@@ -182,11 +280,11 @@ export class GridEditor {
         return;
       }
 
-      const current = this.getCellFromClientPoint(event.clientX, event.clientY);
-      if (!current) {
+      if (!target) {
         return;
       }
 
+      const current = target;
       this.gesture.current = current;
       const moved = current.x !== this.gesture.start.x || current.y !== this.gesture.start.y;
 
@@ -196,14 +294,7 @@ export class GridEditor {
         !this.copyModeActive
       ) {
         this.gesture.moved = true;
-        const range = createRange(
-          this.gesture.start.x,
-          this.gesture.start.y,
-          current.x,
-          current.y,
-        );
-        this.updateSelection(range);
-        this.onSelectionChange(range, "draggingSelection");
+        this.scheduleSelectionUpdate(current);
       }
     });
 
@@ -220,7 +311,13 @@ export class GridEditor {
     });
 
     this.surface.addEventListener("pointercancel", () => {
+      this.cancelPendingSelectionFrame();
       this.gesture = null;
+    });
+
+    this.surface.addEventListener("pointerleave", () => {
+      this.lastHoveredCellKey = null;
+      this.positionFeedbackBox(this.hoverBox, null);
     });
   }
 
@@ -263,9 +360,21 @@ export class GridEditor {
     });
   }
 
+  reportHoveredCell(cell) {
+    const key = `${cell.x}:${cell.y}`;
+    if (key === this.lastHoveredCellKey) {
+      return;
+    }
+
+    this.lastHoveredCellKey = key;
+    this.positionFeedbackBox(this.hoverBox, { ...cell, width: 1, height: 1 });
+    this.onHoverCell({ ...cell, gridRef: toGridRef(cell.x, cell.y) });
+  }
+
   completeGesture() {
     const gesture = this.gesture;
     this.gesture = null;
+    this.cancelPendingSelectionFrame();
 
     if (!gesture) {
       return;
@@ -299,9 +408,11 @@ export class GridEditor {
 
   updateSelection(selection) {
     this.positionFeedbackBox(this.selectionBox, selection);
+    this.lastLiveSelectionRange = selection ? { ...selection } : null;
   }
 
   cancelGesture() {
+    this.cancelPendingSelectionFrame();
     this.gesture = null;
   }
 
@@ -337,6 +448,75 @@ export class GridEditor {
     this.positionFeedbackBox(this.copyPreviewBox, preview.range);
   }
 
+  scheduleSelectionUpdate(current) {
+    this.pendingSelectionCell = current;
+
+    if (this.selectionAnimationFrame !== null) {
+      return;
+    }
+
+    this.selectionAnimationFrame = window.requestAnimationFrame(() => {
+      this.selectionAnimationFrame = null;
+      this.flushSelectionUpdate();
+    });
+  }
+
+  flushSelectionUpdate() {
+    if (!this.gesture || !this.pendingSelectionCell) {
+      this.pendingSelectionCell = null;
+      return;
+    }
+
+    const current = this.pendingSelectionCell;
+    this.pendingSelectionCell = null;
+    const range = createRange(
+      this.gesture.start.x,
+      this.gesture.start.y,
+      current.x,
+      current.y,
+    );
+
+    if (rangesMatch(range, this.lastLiveSelectionRange)) {
+      return;
+    }
+
+    this.updateSelection(range);
+    this.onSelectionChange(range, "draggingSelection");
+  }
+
+  cancelPendingSelectionFrame() {
+    if (this.selectionAnimationFrame !== null) {
+      window.cancelAnimationFrame(this.selectionAnimationFrame);
+      this.selectionAnimationFrame = null;
+    }
+    this.pendingSelectionCell = null;
+  }
+
+  cancelPendingCopyFrame() {
+    if (this.copyAnimationFrame !== null) {
+      window.cancelAnimationFrame(this.copyAnimationFrame);
+      this.copyAnimationFrame = null;
+    }
+    this.pendingCopyCell = null;
+  }
+
+  scheduleCopyPreviewUpdate(target) {
+    this.pendingCopyCell = target;
+
+    if (this.copyAnimationFrame !== null) {
+      return;
+    }
+
+    this.copyAnimationFrame = window.requestAnimationFrame(() => {
+      this.copyAnimationFrame = null;
+      const pending = this.pendingCopyCell;
+      this.pendingCopyCell = null;
+      if (pending) {
+        this.onCopyPreviewMove?.(pending);
+      }
+    });
+  }
+
   positionFeedbackBox(box, range) {
     if (!box) {
       return;
@@ -358,10 +538,12 @@ export class GridEditor {
     const assetLookup = new Map(assets.map((asset) => [asset.id, asset]));
 
     getPlacedObjects(level).forEach((placedObject) => {
+      this.placedObjectsById.set(placedObject.id, placedObject);
       const asset = assetLookup.get(placedObject.assetId);
       const marker = document.createElement("div");
       marker.className = "placed-asset";
       marker.dataset.placedObjectId = placedObject.id;
+      marker.dataset.layer = normalizePlacedLayer(placedObject.layer);
       marker.title = `${asset?.name || placedObject.name || placedObject.assetId} ${placedObject.rangeRef || ""}`.trim();
       marker.style.left = `${(Number(placedObject.x) - 1) * level.tileSize}px`;
       marker.style.top = `${(Number(placedObject.y) - 1) * level.tileSize}px`;
@@ -370,14 +552,26 @@ export class GridEditor {
       marker.style.zIndex = String(getPlacedAssetLayerOrder(placedObject.layer));
       const isSelected =
         this.interactionMode === "move" &&
+        this.isLayerVisible(placedObject.layer) &&
+        !this.isLayerLocked(placedObject.layer) &&
+        placedObject.editorLocked !== true &&
         (placedObject.id === selectedPlacedObjectId || this.selectedPlacedObjectIds.has(placedObject.id));
-      const isPrimarySelected = placedObject.id === selectedPlacedObjectId;
+      const isPrimarySelected = isSelected && placedObject.id === selectedPlacedObjectId;
       const isVisible = placedObject.visible !== false;
       const opacity = normalizeOpacity(placedObject.opacity);
       marker.classList.toggle("is-selected", isSelected);
       marker.classList.toggle("is-primary-selected", isPrimarySelected);
       marker.classList.toggle("is-hidden", !isVisible);
       marker.classList.toggle("is-zero-opacity", isVisible && opacity === 0);
+      marker.classList.toggle(
+        "is-layer-hidden",
+        !this.isLayerVisible(marker.dataset.layer),
+      );
+      marker.classList.toggle(
+        "is-layer-locked",
+        this.isLayerLocked(marker.dataset.layer),
+      );
+      marker.classList.toggle("is-asset-locked", placedObject.editorLocked === true);
 
       if (asset?.src) {
         const image = document.createElement("img");
@@ -405,15 +599,25 @@ export class GridEditor {
 
           event.preventDefault();
           event.stopPropagation();
+          if (this.isLayerLocked(placedObject.layer)) {
+            this.onLockedLayerInteraction?.(normalizePlacedLayer(placedObject.layer));
+            return;
+          }
           const now = event.timeStamp;
           const isDoubleClick =
             this.lastPlacedObjectPointerDown?.id === placedObject.id &&
             now - this.lastPlacedObjectPointerDown.time < 450;
           this.lastPlacedObjectPointerDown = { id: placedObject.id, time: now };
           if (isDoubleClick) {
-            this.onPlacedObjectProperties?.(placedObject.id);
+            this.cancelLockedAssetInteractionStatus();
+            this.requestPlacedObjectProperties(placedObject.id);
             return;
           }
+          if (placedObject.editorLocked === true) {
+            this.scheduleLockedAssetInteraction(placedObject);
+            return;
+          }
+          this.cancelLockedAssetInteractionStatus();
           if (this.copyModeActive) {
             const target = this.getCellFromClientPoint(event.clientX, event.clientY);
             if (target) {
@@ -436,6 +640,21 @@ export class GridEditor {
 
           this.startPlacedObjectTransform(event, marker, placedObject, "move");
         });
+
+        marker.addEventListener("dblclick", (event) => {
+          if (event.button !== 0 || event.target.closest(".resize-handle")) {
+            return;
+          }
+
+          event.preventDefault();
+          event.stopPropagation();
+          if (this.isLayerLocked(placedObject.layer)) {
+            this.onLockedLayerInteraction?.(normalizePlacedLayer(placedObject.layer));
+            return;
+          }
+          this.cancelLockedAssetInteractionStatus();
+          this.requestPlacedObjectProperties(placedObject.id);
+        });
       }
 
       if (isSelected && this.selectedPlacedObjectIds.size <= 1) {
@@ -444,6 +663,14 @@ export class GridEditor {
 
       layer.append(marker);
     });
+  }
+
+  isLayerVisible(layerName) {
+    return this.layerVisibility[normalizePlacedLayer(layerName)] !== false;
+  }
+
+  isLayerLocked(layerName) {
+    return this.layerLocks[normalizePlacedLayer(layerName)] === true;
   }
 
   appendResizeHandles(marker, placedObject) {
@@ -475,24 +702,61 @@ export class GridEditor {
     const startClientX = event.clientX;
     const startClientY = event.clientY;
     let preview = startBounds;
+    let pendingPreview = null;
+    let transformAnimationFrame = null;
+
+    const applyPreview = () => {
+      transformAnimationFrame = null;
+      if (!pendingPreview) {
+        return;
+      }
+      preview = pendingPreview;
+      pendingPreview = null;
+      this.positionMarker(marker, preview);
+    };
+
+    const schedulePreview = (bounds) => {
+      pendingPreview = bounds;
+      if (transformAnimationFrame !== null) {
+        return;
+      }
+      transformAnimationFrame = window.requestAnimationFrame(applyPreview);
+    };
+
+    const cancelPreviewFrame = () => {
+      if (transformAnimationFrame !== null) {
+        window.cancelAnimationFrame(transformAnimationFrame);
+        transformAnimationFrame = null;
+      }
+      pendingPreview = null;
+    };
+
+    const flushPreview = () => {
+      if (transformAnimationFrame !== null) {
+        window.cancelAnimationFrame(transformAnimationFrame);
+        applyPreview();
+      }
+    };
 
     marker.setPointerCapture(event.pointerId);
 
     const movePreview = (pointerEvent) => {
-      preview = this.calculateTransformBounds(
-        startBounds,
-        pointerEvent.clientX - startClientX,
-        pointerEvent.clientY - startClientY,
-        action,
-        direction,
+      schedulePreview(
+        this.calculateTransformBounds(
+          startBounds,
+          pointerEvent.clientX - startClientX,
+          pointerEvent.clientY - startClientY,
+          action,
+          direction,
+        ),
       );
-      this.positionMarker(marker, preview);
     };
 
     const finishTransform = (pointerEvent) => {
       marker.removeEventListener("pointermove", movePreview);
       marker.removeEventListener("pointerup", finishTransform);
       marker.removeEventListener("pointercancel", cancelTransform);
+      flushPreview();
       if (marker.hasPointerCapture?.(pointerEvent.pointerId)) {
         marker.releasePointerCapture(pointerEvent.pointerId);
       }
@@ -512,6 +776,7 @@ export class GridEditor {
       marker.removeEventListener("pointermove", movePreview);
       marker.removeEventListener("pointerup", finishTransform);
       marker.removeEventListener("pointercancel", cancelTransform);
+      cancelPreviewFrame();
       if (marker.hasPointerCapture?.(pointerEvent.pointerId)) {
         marker.releasePointerCapture(pointerEvent.pointerId);
       }
@@ -525,8 +790,12 @@ export class GridEditor {
 
   startPlacedObjectGroupTransform(event, activePlacedObject) {
     const selectedIds = Array.from(this.selectedPlacedObjectIds);
-    const selectedObjects = getPlacedObjects(this.level).filter((placedObject) =>
-      this.selectedPlacedObjectIds.has(placedObject.id),
+    const selectedObjects = getPlacedObjects(this.level).filter(
+      (placedObject) =>
+        this.isLayerVisible(placedObject.layer) &&
+        !this.isLayerLocked(placedObject.layer) &&
+        placedObject.editorLocked !== true &&
+        this.selectedPlacedObjectIds.has(placedObject.id),
     );
 
     if (selectedObjects.length <= 1) {
@@ -554,6 +823,54 @@ export class GridEditor {
     );
     let preview = this.calculateGroupMoveBounds(startBoundsById, 0, 0);
     let hasStartedGroupMove = false;
+    let pendingGroupPreview = null;
+    let groupAnimationFrame = null;
+    const markersById = new Map(
+      selectedObjects.map((placedObject) => [
+        placedObject.id,
+        this.surface.querySelector(
+          `.placed-asset[data-placed-object-id="${CSS.escape(placedObject.id)}"]`,
+        ),
+      ]),
+    );
+
+    const applyGroupPreview = () => {
+      groupAnimationFrame = null;
+      if (!pendingGroupPreview) {
+        return;
+      }
+      preview = pendingGroupPreview;
+      pendingGroupPreview = null;
+      preview.boundsById.forEach((bounds, placedObjectId) => {
+        const marker = markersById.get(placedObjectId);
+        if (marker) {
+          this.positionMarker(marker, bounds);
+        }
+      });
+    };
+
+    const scheduleGroupPreview = (nextPreview) => {
+      pendingGroupPreview = nextPreview;
+      if (groupAnimationFrame !== null) {
+        return;
+      }
+      groupAnimationFrame = window.requestAnimationFrame(applyGroupPreview);
+    };
+
+    const cancelGroupPreviewFrame = () => {
+      if (groupAnimationFrame !== null) {
+        window.cancelAnimationFrame(groupAnimationFrame);
+        groupAnimationFrame = null;
+      }
+      pendingGroupPreview = null;
+    };
+
+    const flushGroupPreview = () => {
+      if (groupAnimationFrame !== null) {
+        window.cancelAnimationFrame(groupAnimationFrame);
+        applyGroupPreview();
+      }
+    };
 
     const movePreview = (pointerEvent) => {
       const cellsX = Math.round((pointerEvent.clientX - startClientX) / this.level.tileSize);
@@ -562,21 +879,14 @@ export class GridEditor {
         hasStartedGroupMove = true;
         this.onPlacedObjectGroupMoveStart?.();
       }
-      preview = this.calculateGroupMoveBounds(startBoundsById, cellsX, cellsY);
-      preview.boundsById.forEach((bounds, placedObjectId) => {
-        const marker = this.surface.querySelector(
-          `.placed-asset[data-placed-object-id="${CSS.escape(placedObjectId)}"]`,
-        );
-        if (marker) {
-          this.positionMarker(marker, bounds);
-        }
-      });
+      scheduleGroupPreview(this.calculateGroupMoveBounds(startBoundsById, cellsX, cellsY));
     };
 
     const finishTransform = (pointerEvent) => {
       this.surface.removeEventListener("pointermove", movePreview);
       this.surface.removeEventListener("pointerup", finishTransform);
       this.surface.removeEventListener("pointercancel", cancelTransform);
+      flushGroupPreview();
       if (this.surface.hasPointerCapture?.(pointerEvent.pointerId)) {
         this.surface.releasePointerCapture(pointerEvent.pointerId);
       }
@@ -595,13 +905,12 @@ export class GridEditor {
       this.surface.removeEventListener("pointermove", movePreview);
       this.surface.removeEventListener("pointerup", finishTransform);
       this.surface.removeEventListener("pointercancel", cancelTransform);
+      cancelGroupPreviewFrame();
       if (this.surface.hasPointerCapture?.(pointerEvent.pointerId)) {
         this.surface.releasePointerCapture(pointerEvent.pointerId);
       }
       startBoundsById.forEach((bounds, placedObjectId) => {
-        const marker = this.surface.querySelector(
-          `.placed-asset[data-placed-object-id="${CSS.escape(placedObjectId)}"]`,
-        );
+        const marker = markersById.get(placedObjectId);
         if (marker) {
           this.positionMarker(marker, bounds);
         }
@@ -722,6 +1031,14 @@ function sameBounds(first, second) {
   );
 }
 
+function rangesMatch(first, second) {
+  if (!first || !second) {
+    return first === second;
+  }
+
+  return sameBounds(first, second);
+}
+
 function normalizeOpacity(opacity) {
   const number = Number(opacity);
   return Number.isFinite(number) ? clamp(Math.round(number), 0, 100) : 100;
@@ -735,4 +1052,8 @@ function getPlacedAssetLayerOrder(layer) {
     triggers: 30,
     Trigger: 30,
   }[layer] ?? 10;
+}
+
+function normalizePlacedLayer(layer) {
+  return layer === "Trigger" ? "triggers" : layer || "objects";
 }

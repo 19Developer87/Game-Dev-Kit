@@ -494,6 +494,12 @@ Add proper layer support so maps are easier to manage.
 
 ## Required Features
 
+Current Phase 5 direction note:
+
+- Phase 5 has started with layer/property direction.
+- Layer selection is now intended to live in Placed Asset Properties rather than a permanent left sidebar panel.
+- Full layer visibility, lock, and solo behaviour remains future work.
+
 - Show/hide each layer.
 - Lock/unlock each layer.
 - Edit only the selected layer.

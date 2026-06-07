@@ -28,17 +28,21 @@ export function createEditorLayout(root) {
                 <option value="30">30x30</option>
                 <option value="40">40x40</option>
                 <option value="50">50x50</option>
+                <option value="75">75x75</option>
+                <option value="100">100x100</option>
+                <option value="150">150x150</option>
+                <option value="200">200x200</option>
                 <option value="custom">Custom</option>
               </select>
             </label>
             <span class="custom-size" data-role="custom-size">
               <label>
                 W
-                <input data-role="custom-width" type="number" min="1" max="100" />
+                <input data-role="custom-width" type="number" min="1" max="500" />
               </label>
               <label>
                 H
-                <input data-role="custom-height" type="number" min="1" max="100" />
+                <input data-role="custom-height" type="number" min="1" max="500" />
               </label>
               <button type="button" data-action="apply-custom-size">Apply</button>
             </span>
@@ -88,6 +92,45 @@ export function createEditorLayout(root) {
                 <div class="menu-panel">
                   <button type="button" data-action="copy-level">Copy Level</button>
                   <button type="button" data-action="paste-level">Paste Level</button>
+                  <button type="button" data-action="edit-placed-asset-properties">Properties</button>
+                </div>
+              </details>
+              <details class="menu" data-menu data-role="view-menu">
+                <summary>View</summary>
+                <div class="menu-panel view-menu-panel">
+                  <div class="menu-flyout-item" data-role="layer-visibility-flyout">
+                    <button
+                      type="button"
+                      class="menu-flyout-trigger"
+                      data-flyout-trigger="layer-visibility"
+                      aria-expanded="false"
+                    >
+                      <span>Layer Visibility</span>
+                      <span aria-hidden="true">&rsaquo;</span>
+                    </button>
+                    <div class="menu-flyout-panel" data-flyout-panel="layer-visibility">
+                      <p class="menu-panel-heading">Layer Visibility</p>
+                      ${createLayerVisibilityControls()}
+                    </div>
+                  </div>
+                  <div class="menu-flyout-item" data-role="layer-locking-flyout">
+                    <button
+                      type="button"
+                      class="menu-flyout-trigger"
+                      data-flyout-trigger="layer-locking"
+                      aria-expanded="false"
+                    >
+                      <span>Layer Locking</span>
+                      <span aria-hidden="true">&rsaquo;</span>
+                    </button>
+                    <div class="menu-flyout-panel" data-flyout-panel="layer-locking">
+                      <p class="menu-panel-heading">Layer Locking</p>
+                      ${createLayerLockControls()}
+                    </div>
+                  </div>
+                  <div class="menu-panel-divider"></div>
+                  <button type="button" data-action="show-all-layers">Show All Layers</button>
+                  <button type="button" data-action="unlock-all-layers">Unlock All Layers and Assets</button>
                 </div>
               </details>
               <details class="menu is-disabled" data-menu data-role="asset-menu">
@@ -116,8 +159,15 @@ export function createEditorLayout(root) {
     customSize: root.querySelector('[data-role="custom-size"]'),
     customWidth: root.querySelector('[data-role="custom-width"]'),
     coordinateStatus: root.querySelector('[data-role="coordinate-status"]'),
+    editPropertiesButton: root.querySelector('[data-action="edit-placed-asset-properties"]'),
     gridSize: root.querySelector('[data-role="grid-size"]'),
     gridStage: root.querySelector('[data-role="grid-stage"]'),
+    layerVisibilityInputs: Array.from(
+      root.querySelectorAll('[data-role="layer-visibility-toggle"]'),
+    ),
+    layerLockInputs: Array.from(
+      root.querySelectorAll('[data-role="layer-lock-toggle"]'),
+    ),
     levelPicker: root.querySelector('[data-role="level-picker"]'),
     levelPickerButton: root.querySelector('[data-role="level-picker-button"]'),
     levelPickerPanel: root.querySelector('[data-role="level-picker-panel"]'),
@@ -131,4 +181,50 @@ export function createEditorLayout(root) {
     statusMessage: root.querySelector('[data-role="status-message"]'),
     workspace: root.querySelector(".workspace"),
   };
+}
+
+function createLayerVisibilityControls() {
+  return getKnownLayerNames().map(
+    (layerName) => `
+      <label class="layer-control-option">
+        <input
+          type="checkbox"
+          data-role="layer-visibility-toggle"
+          data-layer="${layerName}"
+          checked
+        />
+        <span>${layerName}</span>
+      </label>
+    `,
+  ).join("");
+}
+
+function createLayerLockControls() {
+  return getKnownLayerNames().map(
+    (layerName) => `
+      <label class="layer-control-option">
+        <input
+          type="checkbox"
+          data-role="layer-lock-toggle"
+          data-layer="${layerName}"
+        />
+        <span>${layerName} locked</span>
+      </label>
+    `,
+  ).join("");
+}
+
+function getKnownLayerNames() {
+  return [
+    "terrain",
+    "decorations",
+    "objects",
+    "collisions",
+    "spawns",
+    "items",
+    "npcs",
+    "enemies",
+    "triggers",
+    "overlay",
+  ];
 }

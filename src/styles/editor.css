@@ -200,6 +200,10 @@ textarea {
   overflow: hidden;
 }
 
+.workspace.is-sidebar-resizing {
+  cursor: ew-resize;
+}
+
 .workspace.is-sidebar-collapsed {
   grid-template-columns: var(--sidebar-collapsed-width) 0 minmax(0, 1fr);
 }
@@ -258,9 +262,10 @@ textarea {
 
 .sidebar-resizer {
   position: relative;
-  cursor: col-resize;
+  cursor: ew-resize;
   background: #101316;
   touch-action: none;
+  user-select: none;
 }
 
 .sidebar-resizer::after {
@@ -268,7 +273,14 @@ textarea {
   position: absolute;
   inset: 0 2px;
   background: #29333a;
+  cursor: ew-resize;
   transition: background 120ms ease;
+}
+
+body.is-sidebar-resizing,
+body.is-sidebar-resizing * {
+  cursor: ew-resize !important;
+  user-select: none;
 }
 
 .sidebar-resizer:hover::after,
@@ -511,6 +523,81 @@ textarea {
   white-space: nowrap;
 }
 
+.view-menu-panel {
+  min-width: 230px;
+  overflow: visible;
+}
+
+.menu-flyout-item {
+  position: relative;
+}
+
+.menu-flyout-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.menu-flyout-panel {
+  position: absolute;
+  top: -6px;
+  left: calc(100% - 1px);
+  min-width: 220px;
+  display: none;
+  gap: 2px;
+  max-height: min(76vh, 520px);
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid #38424a;
+  border-radius: 6px;
+  background: #151b20;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.38);
+  z-index: 11;
+}
+
+.menu-flyout-item.is-open > .menu-flyout-panel {
+  display: grid;
+}
+
+.menu-flyout-item.opens-left > .menu-flyout-panel {
+  right: calc(100% - 1px);
+  left: auto;
+}
+
+.menu-panel-heading {
+  margin: 2px 8px 4px;
+  color: #9eadb7;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.layer-control-option {
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  color: #d5dde2;
+  cursor: pointer;
+}
+
+.layer-control-option:hover,
+.layer-control-option:focus-within {
+  background: #26323a;
+}
+
+.layer-control-option input {
+  margin: 0;
+}
+
+.menu-panel-divider {
+  height: 1px;
+  margin: 6px 4px;
+  background: #38424a;
+}
+
 .status-bar {
   display: flex;
   align-items: center;
@@ -524,7 +611,11 @@ textarea {
 }
 
 .status-message {
+  flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .coordinate-status {
@@ -542,6 +633,7 @@ textarea {
   overflow: auto;
   padding: 0;
   scrollbar-gutter: stable;
+  contain: layout paint;
 }
 
 .grid-wrap {
@@ -556,20 +648,6 @@ textarea {
   grid-template-columns: 32px auto;
   grid-template-rows: 24px auto;
   width: max-content;
-}
-
-.grid-cell {
-  width: var(--tile-size);
-  height: var(--tile-size);
-  min-height: 0;
-  padding: 0;
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  display: grid;
-  place-items: center;
-  position: relative;
-  background: #182026;
-  user-select: none;
 }
 
 .grid-header {
@@ -620,12 +698,23 @@ textarea {
   grid-column: 2;
   grid-row: 2;
   position: relative;
+  background: #182026;
+  contain: layout paint size;
+  user-select: none;
 }
 
 .editor-grid-cells {
-  display: grid;
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
+  pointer-events: none;
+  background:
+    linear-gradient(to right, rgba(255, 255, 255, 0.08) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.08) 1px, transparent 1px),
+    #182026;
+  background-size: var(--tile-size) var(--tile-size);
+  background-position: -1px -1px;
 }
 
 .asset-overlay-layer,
@@ -643,11 +732,19 @@ textarea {
   z-index: 3;
 }
 
+.hover-box,
 .selection-box,
 .drop-preview-box,
 .copy-preview-box {
   position: absolute;
   pointer-events: none;
+  will-change: left, top, width, height;
+}
+
+.hover-box {
+  z-index: 1;
+  outline: 2px solid #8dc9ea;
+  outline-offset: -2px;
 }
 
 .selection-box {
@@ -676,11 +773,6 @@ textarea {
   opacity: 0.82;
 }
 
-.grid-cell:hover {
-  outline: 2px solid #8dc9ea;
-  outline-offset: -2px;
-}
-
 .placed-asset {
   position: absolute;
   display: flex;
@@ -707,9 +799,25 @@ textarea {
 
 .placed-asset.is-selected {
   overflow: visible;
-  border: 2px solid #8dc9ea;
-  box-shadow: inset 0 0 0 1px #101316;
+  border: 2px solid #d8b83f;
+  box-shadow:
+    inset 0 0 0 1px #101316,
+    0 0 0 1px rgba(237, 201, 73, 0.24);
   z-index: 1;
+  will-change: left, top, width, height;
+}
+
+.placed-asset.is-layer-hidden {
+  display: none;
+  pointer-events: none;
+}
+
+.placed-asset.is-layer-locked {
+  cursor: not-allowed;
+}
+
+.placed-asset.is-asset-locked {
+  cursor: not-allowed;
 }
 
 .placed-asset.is-primary-selected {
@@ -851,7 +959,8 @@ textarea {
 }
 
 .asset-import-dialog,
-.delete-level-dialog {
+.delete-level-dialog,
+.editor-modal-dialog {
   width: min(540px, calc(100vw - 28px));
   border: 1px solid #38424a;
   border-radius: 8px;
@@ -862,33 +971,42 @@ textarea {
 
 .asset-import-dialog::backdrop,
 .delete-level-dialog::backdrop,
+.editor-modal-dialog::backdrop,
 .placed-properties-dialog::backdrop {
   background: rgba(0, 0, 0, 0.58);
 }
 
 .asset-import-form,
-.delete-level-form {
+.delete-level-form,
+.editor-modal-form {
   display: grid;
   gap: 12px;
 }
 
 .asset-import-form h2,
-.delete-level-form h2 {
+.delete-level-form h2,
+.editor-modal-form h2 {
   margin: 0;
   font-size: 18px;
 }
 
-.delete-level-form p {
+.delete-level-form p,
+.editor-modal-form p {
   margin: 0;
   color: #b8c5cd;
   line-height: 1.45;
 }
 
-.asset-import-form label {
+.asset-import-form label,
+.editor-modal-form label {
   display: grid;
   gap: 6px;
   color: #b8c5cd;
   font-size: 13px;
+}
+
+.editor-modal-form input {
+  min-width: 0;
 }
 
 .asset-import-previews {
@@ -940,7 +1058,7 @@ textarea {
   min-height: min(320px, calc(100vh - 28px));
   max-width: calc(100vw - 28px);
   max-height: min(820px, calc(100vh - 28px));
-  overflow: auto;
+  overflow: hidden;
   position: fixed;
   resize: both;
   border: 1px solid #38424a;
@@ -952,8 +1070,10 @@ textarea {
 }
 
 .placed-properties-form {
-  display: grid;
-  gap: 14px;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .placed-properties-form h2 {
@@ -962,6 +1082,7 @@ textarea {
 }
 
 .properties-dialog-header {
+  flex: 0 0 auto;
   margin: -18px -18px 0;
   padding: 16px 18px 12px;
   border-bottom: 1px solid #2d373f;
@@ -972,6 +1093,28 @@ textarea {
 
 .properties-dialog-header.is-dragging {
   cursor: grabbing;
+}
+
+.properties-scroll-content {
+  min-height: 0;
+  margin: 0 -18px;
+  padding: 14px 18px 24px;
+  display: grid;
+  gap: 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.properties-dialog-actions {
+  flex: 0 0 auto;
+  margin: 0 -18px -18px;
+  padding: 12px 18px;
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  border-top: 1px solid #2d373f;
+  background: #151b20;
+  box-shadow: 0 -8px 18px rgba(0, 0, 0, 0.24);
 }
 
 .placed-properties-form fieldset {
@@ -1026,6 +1169,10 @@ textarea {
   align-content: start;
   padding: 10px 12px;
   gap: 7px;
+}
+
+.properties-layer-options {
+  grid-column: 1 / -1;
 }
 
 .properties-position input {

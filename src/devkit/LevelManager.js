@@ -224,25 +224,41 @@ export function deleteCurrentLevel(project, levelId = project.lastOpenedLevelId)
   return deletedLevel;
 }
 
-export function getPlacedObjects(level) {
-  return LAYERS.flatMap((layerName) =>
-    (level.layers[layerName] || []).map((placedObject) => ({
-      ...placedObject,
-      layer: placedObject.layer || layerName,
-    })),
+export function getPlacedObjects(level, layerNames = LAYERS) {
+  const requestedLayers = new Set(getKnownLayerNames(layerNames));
+  return LAYERS.flatMap((containingLayer) =>
+    (level.layers[containingLayer] || [])
+      .map((placedObject) => ({
+        ...placedObject,
+        layer: getEffectivePlacedObjectLayer(placedObject, containingLayer),
+      }))
+      .filter((placedObject) => requestedLayers.has(placedObject.layer)),
   );
 }
 
-export function findObjectsAtCell(level, x, y) {
-  return getPlacedObjects(level).filter((placedObject) => objectCoversCell(placedObject, x, y));
+export function findObjectsAtCell(level, x, y, layerNames = LAYERS) {
+  return getPlacedObjects(level, layerNames).filter((placedObject) =>
+    objectCoversCell(placedObject, x, y),
+  );
 }
 
-export function removeObjectsAtCell(level, x, y) {
+export function removeObjectsAtCell(
+  level,
+  x,
+  y,
+  layerNames = LAYERS,
+  canRemove = () => true,
+) {
   const removedObjects = [];
+  const requestedLayers = new Set(getKnownLayerNames(layerNames));
 
-  LAYERS.forEach((layerName) => {
-    level.layers[layerName] = (level.layers[layerName] || []).filter((placedObject) => {
-      if (!objectCoversCell(placedObject, x, y)) {
+  LAYERS.forEach((containingLayer) => {
+    level.layers[containingLayer] = (level.layers[containingLayer] || []).filter((placedObject) => {
+      if (
+        !requestedLayers.has(getEffectivePlacedObjectLayer(placedObject, containingLayer)) ||
+        !objectCoversCell(placedObject, x, y) ||
+        !canRemove(placedObject)
+      ) {
         return true;
       }
 
@@ -254,12 +270,22 @@ export function removeObjectsAtCell(level, x, y) {
   return removedObjects;
 }
 
-export function removePlacedObjectById(level, placedObjectId) {
+export function removePlacedObjectById(
+  level,
+  placedObjectId,
+  layerNames = LAYERS,
+  canRemove = () => true,
+) {
   let removed = null;
+  const requestedLayers = new Set(getKnownLayerNames(layerNames));
 
-  LAYERS.forEach((layerName) => {
-    level.layers[layerName] = (level.layers[layerName] || []).filter((placedObject) => {
-      if (placedObject.id !== placedObjectId) {
+  LAYERS.forEach((containingLayer) => {
+    level.layers[containingLayer] = (level.layers[containingLayer] || []).filter((placedObject) => {
+      if (
+        placedObject.id !== placedObjectId ||
+        !requestedLayers.has(getEffectivePlacedObjectLayer(placedObject, containingLayer)) ||
+        !canRemove(placedObject)
+      ) {
         return true;
       }
 
@@ -271,8 +297,8 @@ export function removePlacedObjectById(level, placedObjectId) {
   return removed;
 }
 
-export function findObjectsInRange(level, x, y, width = 1, height = 1) {
-  return getPlacedObjects(level).filter((placedObject) =>
+export function findObjectsInRange(level, x, y, width = 1, height = 1, layerNames = LAYERS) {
+  return getPlacedObjects(level, layerNames).filter((placedObject) =>
     rangesOverlap(
       x,
       y,
@@ -286,11 +312,28 @@ export function findObjectsInRange(level, x, y, width = 1, height = 1) {
   );
 }
 
-export function removeObjectsInRange(level, x, y, width = 1, height = 1) {
+export function removeObjectsInRange(
+  level,
+  x,
+  y,
+  width = 1,
+  height = 1,
+  layerNames = LAYERS,
+  canRemove = () => true,
+) {
   const removedObjects = [];
+  const requestedLayers = new Set(getKnownLayerNames(layerNames));
 
-  LAYERS.forEach((layerName) => {
-    level.layers[layerName] = (level.layers[layerName] || []).filter((placedObject) => {
+  LAYERS.forEach((containingLayer) => {
+    level.layers[containingLayer] = (level.layers[containingLayer] || []).filter((placedObject) => {
+      if (!requestedLayers.has(getEffectivePlacedObjectLayer(placedObject, containingLayer))) {
+        return true;
+      }
+
+      if (!canRemove(placedObject)) {
+        return true;
+      }
+
       const overlaps = rangesOverlap(
         x,
         y,
@@ -312,6 +355,22 @@ export function removeObjectsInRange(level, x, y, width = 1, height = 1) {
   });
 
   return removedObjects;
+}
+
+function getKnownLayerNames(layerNames) {
+  const requestedLayers =
+    layerNames && typeof layerNames[Symbol.iterator] === "function"
+      ? new Set(layerNames)
+      : new Set(LAYERS);
+
+  return LAYERS.filter((layerName) => requestedLayers.has(layerName));
+}
+
+function getEffectivePlacedObjectLayer(placedObject, containingLayer) {
+  const explicitLayer = placedObject?.layer === "Trigger"
+    ? "triggers"
+    : placedObject?.layer;
+  return LAYERS.includes(explicitLayer) ? explicitLayer : containingLayer;
 }
 
 function removeObjectsInRangeExcept(level, x, y, width, height, preservedObjectId) {
@@ -479,7 +538,7 @@ export function updatePlacedAssetProperties(level, placedObjectId, properties) {
   let selectedObject = null;
   let currentLayerName = null;
 
-  LAYERS.forEach((layerName) => {
+  for (const layerName of LAYERS) {
     const foundObject = (level.layers[layerName] || []).find(
       (placedObject) => placedObject.id === placedObjectId,
     );
@@ -487,33 +546,51 @@ export function updatePlacedAssetProperties(level, placedObjectId, properties) {
     if (foundObject) {
       selectedObject = foundObject;
       currentLayerName = layerName;
+      break;
     }
-  });
+  }
 
   if (!selectedObject) {
     return null;
   }
 
-  const storedLayer = properties.layer || selectedObject.layer || currentLayerName || "objects";
-  const targetLayerName = getLayerArrayName(storedLayer);
-  removeObjectsInRangeExcept(
-    level,
-    properties.x,
-    properties.y,
-    properties.width,
-    properties.height,
-    placedObjectId,
-  );
+  const targetLayerName = normalizeKnownLayerName(properties.layer) || currentLayerName;
+  const boundsChanged =
+    Number(selectedObject.x) !== Number(properties.x) ||
+    Number(selectedObject.y) !== Number(properties.y) ||
+    Number(selectedObject.width) !== Number(properties.width) ||
+    Number(selectedObject.height) !== Number(properties.height);
+  if (boundsChanged) {
+    removeObjectsInRangeExcept(
+      level,
+      properties.x,
+      properties.y,
+      properties.width,
+      properties.height,
+      placedObjectId,
+    );
+  }
   Object.assign(selectedObject, properties, {
     gridRef: toGridRef(properties.x, properties.y),
     rangeRef: toRangeRef(properties.x, properties.y, properties.width, properties.height),
-    layer: storedLayer,
+    layer: targetLayerName,
   });
 
-  if (targetLayerName !== currentLayerName) {
-    level.layers[currentLayerName] = level.layers[currentLayerName].filter(
-      (placedObject) => placedObject.id !== placedObjectId,
-    );
+  const knownLayerMatches = LAYERS.reduce(
+    (count, layerName) =>
+      count +
+      (level.layers[layerName] || []).filter(
+        (placedObject) => placedObject.id === placedObjectId,
+      ).length,
+    0,
+  );
+
+  if (targetLayerName !== currentLayerName || knownLayerMatches !== 1) {
+    LAYERS.forEach((layerName) => {
+      level.layers[layerName] = (level.layers[layerName] || []).filter(
+        (placedObject) => placedObject.id !== placedObjectId,
+      );
+    });
     level.layers[targetLayerName] = Array.isArray(level.layers[targetLayerName])
       ? level.layers[targetLayerName]
       : [];
@@ -524,7 +601,12 @@ export function updatePlacedAssetProperties(level, placedObjectId, properties) {
 }
 
 function getLayerArrayName(layer) {
-  return layer === "Trigger" ? "triggers" : layer;
+  return normalizeKnownLayerName(layer) || "objects";
+}
+
+function normalizeKnownLayerName(layer) {
+  const normalizedLayer = layer === "Trigger" ? "triggers" : layer;
+  return LAYERS.includes(normalizedLayer) ? normalizedLayer : null;
 }
 
 export function resizeCurrentLevel(project, width, height) {
