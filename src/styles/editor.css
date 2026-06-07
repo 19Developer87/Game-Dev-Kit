@@ -759,13 +759,18 @@ body.is-sidebar-resizing * {
 
 .copy-preview-box {
   z-index: 2;
+  overflow: visible;
+}
+
+.copy-preview-item {
+  position: absolute;
   overflow: hidden;
   border: 2px solid #edc949;
   background: rgba(237, 201, 73, 0.15);
   box-shadow: 0 0 0 1px rgba(16, 19, 22, 0.85);
 }
 
-.copy-preview-box img {
+.copy-preview-item img {
   width: 100%;
   height: 100%;
   object-fit: fill;

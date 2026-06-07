@@ -465,6 +465,60 @@ export function duplicatePlacedAsset(level, sourceObject, x, y, width, height) {
   return placedObject;
 }
 
+export function duplicatePlacedAssetGroup(level, copiedObjects, replacedObjectIds = []) {
+  if (!Array.isArray(copiedObjects) || copiedObjects.length === 0) {
+    return null;
+  }
+
+  const timestamp = Date.now();
+  const preparedObjects = copiedObjects.map((copy, index) => {
+    const sourceObject = copy?.sourceObject;
+    const x = Number(copy?.x);
+    const y = Number(copy?.y);
+    const width = Math.max(1, Number(copy?.width) || 1);
+    const height = Math.max(1, Number(copy?.height) || 1);
+    if (!sourceObject || !Number.isFinite(x) || !Number.isFinite(y)) {
+      return null;
+    }
+
+    const storedLayer = sourceObject.layer || "objects";
+    return {
+      layerName: getLayerArrayName(storedLayer),
+      placedObject: {
+        ...cloneJsonValue(sourceObject),
+        id: `placed-${sourceObject.assetId}-copy-${timestamp}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+        x,
+        y,
+        gridRef: toGridRef(x, y),
+        rangeRef: toRangeRef(x, y, width, height),
+        layer: storedLayer,
+        width,
+        height,
+      },
+    };
+  });
+
+  if (preparedObjects.some((entry) => !entry)) {
+    return null;
+  }
+
+  const replacedIds = new Set(replacedObjectIds);
+  LAYERS.forEach((layerName) => {
+    level.layers[layerName] = (level.layers[layerName] || []).filter(
+      (placedObject) => !replacedIds.has(placedObject.id),
+    );
+  });
+
+  preparedObjects.forEach(({ layerName, placedObject }) => {
+    level.layers[layerName] = Array.isArray(level.layers[layerName])
+      ? level.layers[layerName]
+      : [];
+    level.layers[layerName].push(placedObject);
+  });
+
+  return preparedObjects.map(({ placedObject }) => placedObject);
+}
+
 export function updatePlacedAssetBounds(level, placedObjectId, x, y, width, height) {
   let selectedObject = null;
 
@@ -1058,6 +1112,13 @@ function rangesOverlap(aX, aY, aWidth, aHeight, bX, bY, bWidth, bHeight) {
     aY < bY + bHeight &&
     aY + aHeight > bY
   );
+}
+
+function cloneJsonValue(value) {
+  if (typeof structuredClone === "function") {
+    return structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value));
 }
 
 function createUniqueCategoryId(name, categories) {

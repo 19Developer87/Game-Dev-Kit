@@ -430,22 +430,37 @@ export class GridEditor {
       return;
     }
 
-    const assetKey = preview.asset?.id || "missing";
-    if (this.copyPreviewBox.dataset.assetKey !== assetKey) {
+    if (this.copyPreviewBox.dataset.previewKey !== preview.key) {
       this.copyPreviewBox.replaceChildren();
-      if (preview.asset?.src) {
-        const image = document.createElement("img");
-        image.src = preview.asset.src;
-        image.alt = "";
-        image.draggable = false;
-        this.copyPreviewBox.append(image);
-      } else {
-        this.copyPreviewBox.textContent = "?";
-      }
-      this.copyPreviewBox.dataset.assetKey = assetKey;
+      preview.items.forEach((item) => {
+        const previewItem = document.createElement("div");
+        previewItem.className = "copy-preview-item";
+        previewItem.style.left = `${(item.range.x - preview.range.x) * this.level.tileSize}px`;
+        previewItem.style.top = `${(item.range.y - preview.range.y) * this.level.tileSize}px`;
+        previewItem.style.width = `${item.range.width * this.level.tileSize}px`;
+        previewItem.style.height = `${item.range.height * this.level.tileSize}px`;
+        if (item.asset?.src) {
+          const image = document.createElement("img");
+          image.src = item.asset.src;
+          image.alt = "";
+          image.draggable = false;
+          image.style.opacity = item.placedObject.visible === false
+            ? "0.18"
+            : String(normalizeOpacity(item.placedObject.opacity) / 100);
+          previewItem.append(image);
+        } else {
+          previewItem.textContent = "?";
+        }
+        this.copyPreviewBox.append(previewItem);
+      });
+      this.copyPreviewBox.dataset.previewKey = preview.key;
     }
 
     this.positionFeedbackBox(this.copyPreviewBox, preview.range);
+  }
+
+  updateCopyPreviewPosition(range) {
+    this.positionFeedbackBox(this.copyPreviewBox, range);
   }
 
   scheduleSelectionUpdate(current) {

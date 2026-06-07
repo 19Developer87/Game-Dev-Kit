@@ -29,7 +29,7 @@ Update this current-state file whenever working behaviour changes.
 
 ## 3. Current Phase Status
 
-- Current working branch: `codex/phase-5-layer-system`.
+- Current working branch: `codex/phase-6-area-tools`.
 - The project has begun Phase 4 with a focused placed-asset properties implementation.
 - Phase 1 and Phase 2 functionality is working.
 - Phase 3 has a solid asset import, categorisation, grid selection, and placement base and is being polished.
@@ -40,7 +40,8 @@ Update this current-state file whenever working behaviour changes.
 - Phase 5C editor-only layer visibility is working through the top `View` menu. Visibility is an editor preference and does not remove or alter saved placed assets.
 - Phase 5D editor-only layer locking is working through the top `View` menu. Locked layers protect placed assets from editor mutations without changing saved level data.
 - The focused Phase 5D follow-up adds per-instance `editorLocked` state in Placed Asset Properties and tidies View with nested visibility and locking flyouts.
-- Safe stopping point: existing tools, save/load, asset import/categories, placed-asset properties, and optimised grid rendering are working well enough to pause before continuing Phase 5 later.
+- Phase 5 is complete for the current editor-only layer scope and is merged into `main`.
+- Phase 6A multi-object copy/paste is implemented on the Phase 6 branch.
 
 ## 4. Current Working Features
 
@@ -76,6 +77,7 @@ The editor currently supports:
 - A Place Selected Asset button that is enabled when an asset and ready grid selection exist.
 - Select/Move is the main editing tool for selecting placed assets, moving/resizing placed assets, selecting grid areas, multi-selecting placed assets, and placing imported assets.
 - In Select/Move mode, `Ctrl+C` starts a floating copied-object placement for the selected placed asset.
+- With multiple eligible assets selected, `Ctrl+C` creates a transient copied group and previews every member while preserving relative spacing.
 - Tool hotkeys: `Q` for Select/Move, `W` for Select/Move compatibility, and `E` for Delete outside text-entry/modal contexts.
 - Eight resize handles on an asset selected in Select/Move mode.
 - Delete and Backspace remove the currently selected placed object or selected placed-object group in Select/Move mode when focus is not in editable UI.
@@ -115,6 +117,7 @@ Current limitations:
 
 - This is still an editor only; it does not run player movement, NPC logic, battles, doors, or game integration.
 - Full Phase 5 layer behaviour is not implemented yet. Solo layer, layer reordering, active placement layers, and runtime visibility are not implemented yet.
+- Later Phase 6 tools remain unimplemented: cut, duplicate command, fill, replace-matching, paint brushes, brush sizes, and `Ctrl+A`.
 - Play Mode, runtime collision, trigger execution, doors/exits, spawn runtime, NPC/enemy/item gameplay systems, chunked maps, animated character import, audio/music systems, and multilayer/parallax background tools are not implemented yet.
 - Palette asset deletion is blocked while that asset is placed on any level. Remove placed copies first.
 - A category that contains assets is not deleted automatically; its assets must be removed or reorganised first.
@@ -459,9 +462,15 @@ For one imported file while a grid range is already selected, the editor may off
 - There is no standalone Layer Panel or active placement layer yet; layer changes happen only through the selected placed asset's Properties dialog.
 - A temporary left-sidebar Layer Panel was tested during Phase 5A and worked as UI state, but the chosen direction is not to keep layers as a permanent left-sidebar panel.
 - Moving or resizing into another object's rectangle warns first with an in-app modal, then uses the existing replacement policy if confirmed.
-- In Select/Move mode, `Ctrl+C` copies the selected placed object into a floating placement preview with a yellow outline; clicking a grid cell commits a new placed object with a new ID and the same asset/size fields.
-- `Ctrl+C` group copy is not implemented; with multiple placed assets selected, the editor reports that group copy is not implemented yet.
-- The floating copy preview snaps to valid grid positions, is not saved before placement, and is cancelled with Escape or by switching away from Select/Move mode.
+- In Select/Move mode, `Ctrl+C` with one selected placed object keeps the existing single-copy workflow.
+- With multiple selected placed assets, `Ctrl+C` copies only visible, layer-unlocked, individually unlocked members into a transient in-memory group clipboard. The status reports how many selected assets were copied; if none are eligible it reports `No unlocked visible assets selected to copy.`
+- Group copy preserves each member's relative offset, dimensions, layer, display/behaviour properties, `layerOptions`, and unknown fields.
+- The floating group preview uses one cached lightweight preview element per copied asset. Pointer movement is requestAnimationFrame-throttled and only repositions the preview container; it does not mutate project data, rebuild grid cells/headers/placed markers, or autosave.
+- Copied placement uses the group's top-left bounding cell as its anchor and clamps the complete group inside the level.
+- A successful group paste creates new unique IDs, recalculates each member's `gridRef` and `rangeRef`, ends copy mode, selects the pasted group with the normal yellow multi-selection borders, renders once, and autosaves once.
+- Hidden destination assets remain part of overlap detection and are identified in the app-owned warning. A locked-layer or individually locked destination overlap blocks the complete paste. Confirmed editable overlaps are removed once before the whole copied group is inserted; partial paste is not allowed.
+- The floating copy preview is not persisted and is cancelled with Escape or by switching away from Select/Move mode.
+- Cut, duplicate command, fill, replace-matching, paint brushes, brush sizes, persistent/cross-level placed-object clipboard, and later Phase 6 tools are not implemented yet.
 - In Select/Move mode, Delete or Backspace removes the selected placed copy from the current level only, clears its selection, and does not ask for confirmation.
 - In Select/Move mode, Delete or Backspace removes all multi-selected placed copies from the current level only when a group is selected.
 - In Select/Move mode, if no placed copy is selected but a grid area is selected, Delete or Backspace immediately deletes every current-level placed copy that intersects that area.
@@ -710,6 +719,12 @@ Before accepting changes to existing editor behaviour, verify:
 - [ ] Resize a selected asset from corner and side handles, confirm it cannot leave the grid or shrink below `1x1`, then refresh and confirm the size persists.
 - [ ] In Select/Move mode, select a placed asset, press `Ctrl+C`, confirm a yellow floating preview appears, click a new grid position, and confirm the new placed copy survives refresh.
 - [ ] Start floating copy placement and press Escape; confirm no copied placed asset is added.
+- [ ] Multi-select visible/unlocked assets, press `Ctrl+C`, and confirm every eligible asset has a lightweight floating preview with its relative spacing preserved.
+- [ ] Include stale hidden/locked IDs in a group selection and confirm only eligible members are copied with a copied-count status; confirm a fully protected selection reports `No unlocked visible assets selected to copy.`
+- [ ] Paste a copied group and confirm every member has a new ID, preserved metadata/unknown fields, recalculated references, and the pasted group becomes the active yellow multi-selection.
+- [ ] Paste a copied group near every grid edge and confirm the complete group clamps inside the level.
+- [ ] Confirm hidden destination overlaps appear in one app-owned warning, locked destination overlaps block the whole paste, and cancelling leaves existing data and copy mode unchanged.
+- [ ] Confirm group-preview pointer movement does not autosave, mutate level data, or rebuild grid cells, coordinate headers, or placed-marker collections.
 - [ ] Move or resize over another asset and confirm the in-app overlap replacement warning appears before removal.
 - [ ] Select a placed object in Select/Move mode, press Delete and Backspace in separate tests, and confirm each removes only the selected grid copy.
 - [ ] Drag-select multiple placed assets in Select/Move mode and confirm every intersecting placed copy is highlighted.

@@ -34,7 +34,7 @@ import {
   findAssetCategoryByName,
   deleteAssetCategory,
   deleteImportedAsset,
-  duplicatePlacedAsset,
+  duplicatePlacedAssetGroup,
   getPlacedObjects,
   isAssetUsedOnAnyLevel,
   reorderLevel,
@@ -74,8 +74,8 @@ class DevEditor {
     this.dropPreviewRange = null;
     this.selectedPlacedObjectId = null;
     this.selectedPlacedObjectIds = new Set();
-    this.copiedPlacedObject = null;
-    this.copyPreviewRange = null;
+    this.copiedPlacedGroup = null;
+    this.copyPreviewOrigin = null;
     this.layerVisibility = this.loadLayerVisibility();
     this.layerLocks = this.loadLayerLocks();
     this.ui = createEditorLayout(root);
@@ -186,13 +186,9 @@ class DevEditor {
         !event.altKey &&
         event.key.toLowerCase() === "c" &&
         this.activeTool === "move" &&
-        this.selectedPlacedObjectId
+        (this.selectedPlacedObjectId || this.selectedPlacedObjectIds.size > 0)
       ) {
         event.preventDefault();
-        if (this.selectedPlacedObjectIds.size > 1) {
-          this.setStatus("Group copy is not implemented yet.");
-          return;
-        }
         this.startCopyPlacement();
         return;
       }
@@ -227,7 +223,7 @@ class DevEditor {
       }
 
       if (event.key === "Escape") {
-        if (this.copiedPlacedObject) {
+        if (this.copiedPlacedGroup) {
           event.preventDefault();
           this.cancelCopyPlacement();
           this.render();
@@ -378,7 +374,7 @@ class DevEditor {
     const level = getCurrentLevel(this.project);
 
     if (this.activeTool === "move") {
-      if (this.copiedPlacedObject) {
+      if (this.copiedPlacedGroup) {
         await this.pasteCopiedPlacedAssetAt(x, y);
         return;
       }
@@ -1262,43 +1258,95 @@ class DevEditor {
 
   startCopyPlacement() {
     const level = getCurrentLevel(this.project);
-    const selectedObject = getPlacedObjects(level, this.getEditableLayerNames()).find(
+    const selectedIds = this.selectedPlacedObjectIds.size > 0
+      ? Array.from(this.selectedPlacedObjectIds)
+      : [this.selectedPlacedObjectId].filter(Boolean);
+    const selectedIdSet = new Set(selectedIds);
+    const selectedObjects = getPlacedObjects(level).filter(
       (placedObject) =>
-        placedObject.id === this.selectedPlacedObjectId &&
+        selectedIdSet.has(placedObject.id) &&
+        this.isLayerVisible(placedObject.layer) &&
+        !this.isLayerLocked(placedObject.layer) &&
         placedObject.editorLocked !== true,
     );
 
-    if (!selectedObject) {
-      this.setStatus("Select an asset first.");
+    if (selectedObjects.length === 0) {
+      this.setStatus("No unlocked visible assets selected to copy.");
       return;
     }
 
-    this.copiedPlacedObject = { ...selectedObject };
-    this.copyPreviewRange = this.getCopiedPlacementRange(selectedObject.x, selectedObject.y);
+    const minimumX = Math.min(...selectedObjects.map((placedObject) => Number(placedObject.x) || 1));
+    const minimumY = Math.min(...selectedObjects.map((placedObject) => Number(placedObject.y) || 1));
+    const maximumX = Math.max(
+      ...selectedObjects.map(
+        (placedObject) =>
+          (Number(placedObject.x) || 1) + (Number(placedObject.width) || 1) - 1,
+      ),
+    );
+    const maximumY = Math.max(
+      ...selectedObjects.map(
+        (placedObject) =>
+          (Number(placedObject.y) || 1) + (Number(placedObject.height) || 1) - 1,
+      ),
+    );
+    this.copiedPlacedGroup = {
+      width: maximumX - minimumX + 1,
+      height: maximumY - minimumY + 1,
+      primarySourceId: this.selectedPlacedObjectId || selectedObjects[0].id,
+      objects: selectedObjects.map((placedObject) => ({
+        sourceObject: cloneEditorData(placedObject),
+        offsetX: (Number(placedObject.x) || 1) - minimumX,
+        offsetY: (Number(placedObject.y) || 1) - minimumY,
+      })),
+    };
+    this.copyPreviewOrigin = this.getCopiedPlacementOrigin(minimumX, minimumY);
     this.gridEditor.setCopyModeActive(true);
     this.render();
-    this.setStatus("Copied placed asset. Move over the grid and click to place; Escape cancels.");
+    if (selectedIds.length === 1 && selectedObjects.length === 1) {
+      this.setStatus("Copied placed asset. Move over the grid and click to place; Escape cancels.");
+    } else {
+      this.setStatus(
+        `Copied ${selectedObjects.length} of ${selectedIds.length} selected assets. Move over the grid and click to place; Escape cancels.`,
+      );
+    }
   }
 
   moveCopyPreview({ x, y }) {
-    if (!this.copiedPlacedObject || this.activeTool !== "move") {
+    if (!this.copiedPlacedGroup || this.activeTool !== "move") {
       return;
     }
 
-    this.copyPreviewRange = this.getCopiedPlacementRange(x, y);
-    this.gridEditor.updateCopyPreview(this.createCopyPreview());
+    this.copyPreviewOrigin = this.getCopiedPlacementOrigin(x, y);
+    this.gridEditor.updateCopyPreviewPosition({
+      ...this.copyPreviewOrigin,
+      width: this.copiedPlacedGroup.width,
+      height: this.copiedPlacedGroup.height,
+    });
   }
 
   async pasteCopiedPlacedAssetAt(x, y) {
-    if (!this.copiedPlacedObject) {
+    if (!this.copiedPlacedGroup) {
       return false;
     }
 
     const level = getCurrentLevel(this.project);
-    const range = this.getCopiedPlacementRange(x, y);
-    const existing = findObjectsInRange(level, range.x, range.y, range.width, range.height);
+    const origin = this.getCopiedPlacementOrigin(x, y);
+    const targetCopies = this.copiedPlacedGroup.objects.map((copy) => ({
+      sourceObject: copy.sourceObject,
+      x: origin.x + copy.offsetX,
+      y: origin.y + copy.offsetY,
+      width: Math.max(1, Number(copy.sourceObject.width) || 1),
+      height: Math.max(1, Number(copy.sourceObject.height) || 1),
+    }));
+    const existingById = new Map();
+    targetCopies.forEach((copy) => {
+      findObjectsInRange(level, copy.x, copy.y, copy.width, copy.height).forEach(
+        (placedObject) => existingById.set(placedObject.id, placedObject),
+      );
+    });
+    const existing = Array.from(existingById.values());
 
-    if (this.blockActionForLockedOverlaps(existing, "Copied asset placement")) {
+    if (this.blockActionForLockedOverlaps(existing, "Copied group placement")) {
       return false;
     }
 
@@ -1306,10 +1354,10 @@ class DevEditor {
       const confirmed = await this.showConfirmModal({
         title: "Overlap Existing Assets?",
         message: this.createOverlapWarningMessage(
-          "Placing this copied asset will overlap existing assets. Continue?",
+          `Placing this copied ${targetCopies.length === 1 ? "asset" : "group"} will overlap existing assets. Continue?`,
           existing,
         ),
-        confirmLabel: "Place Copy",
+        confirmLabel: targetCopies.length === 1 ? "Place Copy" : "Place Group",
       });
 
       if (!confirmed) {
@@ -1318,20 +1366,32 @@ class DevEditor {
       }
     }
 
-    const placedObject = duplicatePlacedAsset(
+    const primarySourceId = this.copiedPlacedGroup.primarySourceId;
+    const placedObjects = duplicatePlacedAssetGroup(
       level,
-      this.copiedPlacedObject,
-      range.x,
-      range.y,
-      range.width,
-      range.height,
+      targetCopies,
+      existing.map((placedObject) => placedObject.id),
     );
-    this.copiedPlacedObject = null;
-    this.copyPreviewRange = null;
+    if (!placedObjects) {
+      this.setStatus("Unable to paste the copied assets.");
+      return false;
+    }
+
+    const primaryIndex = this.copiedPlacedGroup.objects.findIndex(
+      (copy) => copy.sourceObject.id === primarySourceId,
+    );
+    const primaryPlacedObject = placedObjects[Math.max(0, primaryIndex)] || placedObjects[0];
+    this.copiedPlacedGroup = null;
+    this.copyPreviewOrigin = null;
     this.gridEditor.setCopyModeActive(false);
-    this.setPlacedObjectSelection([placedObject.id], placedObject.id);
+    this.setPlacedObjectSelection(
+      placedObjects.map((placedObject) => placedObject.id),
+      primaryPlacedObject.id,
+    );
     this.render();
-    this.autosave(`Pasted copied asset at ${placedObject.rangeRef} on ${level.name}.`);
+    this.autosave(
+      `Pasted ${placedObjects.length} copied asset${placedObjects.length === 1 ? "" : "s"} on ${level.name}.`,
+    );
     return true;
   }
 
@@ -1574,34 +1634,47 @@ class DevEditor {
     );
   }
 
-  getCopiedPlacementRange(x, y) {
+  getCopiedPlacementOrigin(x, y) {
     const level = getCurrentLevel(this.project);
-    const width = Math.max(1, Number(this.copiedPlacedObject?.width) || 1);
-    const height = Math.max(1, Number(this.copiedPlacedObject?.height) || 1);
+    const width = Math.max(1, Number(this.copiedPlacedGroup?.width) || 1);
+    const height = Math.max(1, Number(this.copiedPlacedGroup?.height) || 1);
 
     return {
       x: clamp(x, 1, Math.max(1, level.gridWidth - width + 1)),
       y: clamp(y, 1, Math.max(1, level.gridHeight - height + 1)),
-      width: Math.min(width, level.gridWidth),
-      height: Math.min(height, level.gridHeight),
     };
   }
 
   createCopyPreview() {
-    if (!this.copiedPlacedObject || !this.copyPreviewRange) {
+    if (!this.copiedPlacedGroup || !this.copyPreviewOrigin) {
       return null;
     }
 
     return {
-      placedObject: this.copiedPlacedObject,
-      asset: this.project.assets.find((asset) => asset.id === this.copiedPlacedObject.assetId),
-      range: this.copyPreviewRange,
+      key: this.copiedPlacedGroup.objects
+        .map((copy) => `${copy.sourceObject.id}:${copy.sourceObject.assetId}`)
+        .join("|"),
+      range: {
+        ...this.copyPreviewOrigin,
+        width: this.copiedPlacedGroup.width,
+        height: this.copiedPlacedGroup.height,
+      },
+      items: this.copiedPlacedGroup.objects.map((copy) => ({
+        placedObject: copy.sourceObject,
+        asset: this.project.assets.find((asset) => asset.id === copy.sourceObject.assetId),
+        range: {
+          x: this.copyPreviewOrigin.x + copy.offsetX,
+          y: this.copyPreviewOrigin.y + copy.offsetY,
+          width: Math.max(1, Number(copy.sourceObject.width) || 1),
+          height: Math.max(1, Number(copy.sourceObject.height) || 1),
+        },
+      })),
     };
   }
 
   cancelCopyPlacement() {
-    this.copiedPlacedObject = null;
-    this.copyPreviewRange = null;
+    this.copiedPlacedGroup = null;
+    this.copyPreviewOrigin = null;
     this.gridEditor?.setCopyModeActive(false);
     this.gridEditor?.updateCopyPreview(null);
   }
@@ -2508,11 +2581,12 @@ class DevEditor {
     }
 
     if (
-      this.copiedPlacedObject &&
-      (
-        !this.isLayerVisible(this.copiedPlacedObject.layer) ||
-        this.isLayerLocked(this.copiedPlacedObject.layer) ||
-        this.copiedPlacedObject.editorLocked === true
+      this.copiedPlacedGroup &&
+      this.copiedPlacedGroup.objects.some(
+        ({ sourceObject }) =>
+          !this.isLayerVisible(sourceObject.layer) ||
+          this.isLayerLocked(sourceObject.layer) ||
+          sourceObject.editorLocked === true,
       )
     ) {
       this.cancelCopyPlacement();
@@ -2579,10 +2653,11 @@ class DevEditor {
     }
 
     if (
-      this.copiedPlacedObject &&
-      (
-        this.isLayerLocked(this.copiedPlacedObject.layer) ||
-        this.copiedPlacedObject.editorLocked === true
+      this.copiedPlacedGroup &&
+      this.copiedPlacedGroup.objects.some(
+        ({ sourceObject }) =>
+          this.isLayerLocked(sourceObject.layer) ||
+          sourceObject.editorLocked === true,
       )
     ) {
       this.cancelCopyPlacement();
@@ -3353,4 +3428,11 @@ function escapeHtml(value) {
 
 function escapeAttribute(value) {
   return escapeHtml(value);
+}
+
+function cloneEditorData(value) {
+  if (typeof structuredClone === "function") {
+    return structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value));
 }
