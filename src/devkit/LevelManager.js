@@ -510,6 +510,33 @@ export function removeKnownPlacedObjectsByIds(level, placedObjectIds) {
   return removedObjects;
 }
 
+export function replacePlacedObjectAssetSources(level, placedObjectIds, replacementAsset) {
+  if (!replacementAsset?.id || !Array.isArray(placedObjectIds) || placedObjectIds.length === 0) {
+    return [];
+  }
+
+  const replacementIds = new Set(placedObjectIds);
+  const replacedObjects = [];
+  LAYERS.forEach((layerName) => {
+    level.layers[layerName] = (level.layers[layerName] || []).map((placedObject) => {
+      if (!replacementIds.has(placedObject.id)) {
+        return placedObject;
+      }
+
+      const replacedObject = {
+        ...placedObject,
+        assetId: replacementAsset.id,
+        type: replacementAsset.type || replacementAsset.id,
+        name: replacementAsset.name || replacementAsset.id,
+      };
+      replacedObjects.push(replacedObject);
+      return replacedObject;
+    });
+  });
+
+  return replacedObjects;
+}
+
 export function duplicatePlacedAsset(level, sourceObject, x, y, width, height) {
   removeObjectsInRange(level, x, y, width, height);
   const storedLayer = sourceObject.layer || "objects";

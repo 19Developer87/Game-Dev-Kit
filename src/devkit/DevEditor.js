@@ -42,6 +42,7 @@ import {
   reorderLevel,
   removeEmptyAssetCategories,
   renameCurrentLevel,
+  replacePlacedObjectAssetSources,
   removeObjectsInRange,
   removeObjectsAtCell,
   removePlacedObjectById,
@@ -317,6 +318,11 @@ class DevEditor {
 
     this.ui.clearSelectedAreaButton.addEventListener("click", () => {
       this.clearSelectedArea();
+      this.closeMenus();
+    });
+
+    this.ui.replaceMatchingAssetsButton.addEventListener("click", async () => {
+      await this.replaceMatchingAssetsInSelectedArea();
       this.closeMenus();
     });
 
@@ -1587,6 +1593,78 @@ class DevEditor {
     });
   }
 
+  showSelectModal(options) {
+    return new Promise((resolve) => {
+      const dialog = document.createElement("dialog");
+      const selectOptions = (options.options || []).map(
+        (option) =>
+          `<option value="${escapeAttribute(option.value)}">${escapeHtml(option.label)}</option>`,
+      ).join("");
+      let resolved = false;
+
+      dialog.className = "editor-modal-dialog editor-modal-select";
+      dialog.innerHTML = `
+        <form class="editor-modal-form" method="dialog">
+          <h2>${escapeHtml(options.title || "Choose Option")}</h2>
+          ${options.message ? `<p>${escapeHtml(options.message)}</p>` : ""}
+          <label>${escapeHtml(options.label || "Option")}
+            <select name="modalValue" required>${selectOptions}</select>
+          </label>
+          <div class="dialog-actions">
+            <button type="button" data-action="cancel-modal">${escapeHtml(options.cancelLabel || "Cancel")}</button>
+            <button type="submit">${escapeHtml(options.confirmLabel || "Continue")}</button>
+          </div>
+        </form>
+      `;
+
+      const finish = (value) => {
+        if (resolved) {
+          return;
+        }
+        resolved = true;
+        resolve(value);
+        if (dialog.open) {
+          dialog.close();
+        } else {
+          dialog.remove();
+        }
+      };
+
+      document.body.append(dialog);
+      const form = dialog.querySelector("form");
+      const select = dialog.querySelector("select[name='modalValue']");
+      const cancelButton = dialog.querySelector('[data-action="cancel-modal"]');
+      if (options.value) {
+        select.value = options.value;
+      }
+
+      cancelButton.addEventListener("click", () => {
+        finish(null);
+      });
+
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        finish(select.value);
+      });
+
+      dialog.addEventListener("cancel", (event) => {
+        event.preventDefault();
+        finish(null);
+      });
+
+      dialog.addEventListener("close", () => {
+        if (!resolved) {
+          resolved = true;
+          resolve(null);
+        }
+        dialog.remove();
+      });
+
+      dialog.showModal();
+      select.focus();
+    });
+  }
+
   showEditorModal(options) {
     return new Promise((resolve) => {
       const dialog = document.createElement("dialog");
@@ -2076,6 +2154,182 @@ class DevEditor {
       }`,
     );
     return true;
+  }
+
+  async replaceMatchingAssetsInSelectedArea() {
+    if (!this.selectedRange || this.selectionState !== "selectionReady") {
+      this.setStatus("Select a grid area first.");
+      return false;
+    }
+
+    if (!this.selectedAsset) {
+      this.setStatus("No replacement asset selected.");
+      return false;
+    }
+
+    if (
+      this.selectedAsset.isImported &&
+      (!this.selectedAsset.src || typeof this.selectedAsset.src !== "string")
+    ) {
+      this.setStatus("Replacement asset image data missing.");
+      return false;
+    }
+
+    const level = getCurrentLevel(this.project);
+    const range = { ...this.selectedRange };
+    const candidates = this.getReplaceMatchingCandidates(range);
+    if (candidates.length === 0) {
+      this.setStatus("No visible unlocked placed assets found in the selected area.");
+      return false;
+    }
+
+    const sourceAssetId = await this.showSelectModal({
+      title: "Replace Matching Assets",
+      message: "Choose the placed asset type to replace inside the selected area.",
+      label: "Source asset to replace",
+      options: candidates.map((candidate) => ({
+        value: candidate.assetId,
+        label: candidate.label,
+      })),
+      value: candidates[0].assetId,
+      confirmLabel: "Choose Source",
+    });
+
+    if (!sourceAssetId) {
+      this.setStatus("Replace matching assets cancelled.");
+      return false;
+    }
+
+    if (sourceAssetId === this.selectedAsset.id) {
+      this.setStatus("Source and replacement assets are the same. No changes made.");
+      return false;
+    }
+
+    const matchingObjects = findObjectsInRange(
+      level,
+      range.x,
+      range.y,
+      range.width,
+      range.height,
+    ).filter((placedObject) => placedObject.assetId === sourceAssetId);
+    const replaceableObjects = matchingObjects.filter(
+      (placedObject) =>
+        this.isLayerVisible(placedObject.layer) &&
+        !this.isPlacedObjectProtected(placedObject),
+    );
+    const hiddenCount = matchingObjects.filter(
+      (placedObject) => !this.isLayerVisible(placedObject.layer),
+    ).length;
+    const lockedCount = matchingObjects.filter(
+      (placedObject) =>
+        this.isLayerVisible(placedObject.layer) &&
+        this.isPlacedObjectProtected(placedObject),
+    ).length;
+
+    if (replaceableObjects.length === 0) {
+      const skippedParts = this.createSkippedAssetParts(hiddenCount, lockedCount);
+      this.setStatus(
+        skippedParts.length > 0
+          ? `No editable matching assets replaced. ${skippedParts.join(" and ")} asset${hiddenCount + lockedCount === 1 ? " was" : "s were"} skipped.`
+          : "No matching assets found in the selected area.",
+      );
+      return false;
+    }
+
+    const skippedText = this.createSkippedAssetParts(hiddenCount, lockedCount);
+    const confirmed = await this.showConfirmModal({
+      title: "Replace Matching Assets?",
+      message: `Replace ${replaceableObjects.length} matching asset${replaceableObjects.length === 1 ? "" : "s"} in the selected area?${
+        skippedText.length > 0
+          ? ` ${skippedText.join(" and ")} asset${hiddenCount + lockedCount === 1 ? " will be" : "s will be"} skipped.`
+          : ""
+      }`,
+      confirmLabel: "Replace Assets",
+    });
+
+    if (!confirmed) {
+      this.setStatus("Replace matching assets cancelled.");
+      return false;
+    }
+
+    const replacedObjects = replacePlacedObjectAssetSources(
+      level,
+      replaceableObjects.map((placedObject) => placedObject.id),
+      this.selectedAsset,
+    );
+    if (replacedObjects.length === 0) {
+      this.setStatus("Unable to replace matching assets.");
+      return false;
+    }
+
+    this.cancelCopyPlacement();
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    this.refreshPlacedAssetMarkers();
+    this.autosave(
+      `Replaced ${replacedObjects.length} matching asset${replacedObjects.length === 1 ? "" : "s"} with ${this.selectedAsset.name}.${
+        skippedText.length > 0
+          ? ` ${skippedText.join(" and ")} asset${hiddenCount + lockedCount === 1 ? " was" : "s were"} skipped.`
+          : ""
+      }`,
+    );
+    return true;
+  }
+
+  getReplaceMatchingCandidates(range) {
+    const level = getCurrentLevel(this.project);
+    const candidateObjects = findObjectsInRange(
+      level,
+      range.x,
+      range.y,
+      range.width,
+      range.height,
+    ).filter(
+      (placedObject) =>
+        placedObject.assetId &&
+        this.isLayerVisible(placedObject.layer) &&
+        !this.isPlacedObjectProtected(placedObject),
+    );
+    const candidatesByAssetId = new Map();
+
+    candidateObjects.forEach((placedObject) => {
+      if (!candidatesByAssetId.has(placedObject.assetId)) {
+        const sourceAsset = this.project.assets.find(
+          (asset) => asset.id === placedObject.assetId,
+        );
+        candidatesByAssetId.set(placedObject.assetId, {
+          assetId: placedObject.assetId,
+          asset: sourceAsset,
+          fallbackName: placedObject.name || placedObject.assetId,
+          count: 0,
+        });
+      }
+      candidatesByAssetId.get(placedObject.assetId).count += 1;
+    });
+
+    return Array.from(candidatesByAssetId.values())
+      .map((candidate) => ({
+        ...candidate,
+        label: this.formatReplaceMatchingCandidateLabel(candidate),
+      }))
+      .sort((first, second) => second.count - first.count || first.label.localeCompare(second.label));
+  }
+
+  formatReplaceMatchingCandidateLabel(candidate) {
+    const assetName = candidate.asset?.name || candidate.fallbackName || candidate.assetId;
+    const categoryName = candidate.asset?.category || "Unknown category";
+    return `${assetName} (${categoryName}) - ${candidate.count} match${candidate.count === 1 ? "" : "es"}`;
+  }
+
+  createSkippedAssetParts(hiddenCount, lockedCount) {
+    const skippedParts = [];
+    if (hiddenCount > 0) {
+      skippedParts.push(`${hiddenCount} hidden`);
+    }
+    if (lockedCount > 0) {
+      skippedParts.push(`${lockedCount} locked`);
+    }
+    return skippedParts;
   }
 
   refreshPlacedAssetMarkers() {
@@ -3224,6 +3478,11 @@ class DevEditor {
       this.selectionState === "selectionReady";
     this.ui.fillSelectedAreaButton.disabled = !(hasSelectedArea && this.selectedAsset);
     this.ui.clearSelectedAreaButton.disabled = !hasSelectedArea;
+    this.ui.replaceMatchingAssetsButton.disabled = !(
+      hasSelectedArea &&
+      this.selectedAsset &&
+      this.getReplaceMatchingCandidates(this.selectedRange).length > 0
+    );
   }
 
   bindMenuBehavior() {

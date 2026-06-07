@@ -1015,7 +1015,8 @@ body.is-sidebar-resizing * {
   font-size: 13px;
 }
 
-.editor-modal-form input {
+.editor-modal-form input,
+.editor-modal-form select {
   min-width: 0;
 }
 

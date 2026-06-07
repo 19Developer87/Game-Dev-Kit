@@ -44,6 +44,7 @@ Update this current-state file whenever working behaviour changes.
 - Phase 6A multi-object copy/paste is implemented on the Phase 6 branch.
 - Phase 6B multi-object cut/paste and duplicate are implemented on the Phase 6 branch.
 - Phase 6C Fill Selected Area and Clear Selected Area are implemented on the Phase 6 branch.
+- Phase 6D Replace Matching Assets Inside Selected Area is implemented on the Phase 6 branch.
 
 ## 4. Current Working Features
 
@@ -85,6 +86,7 @@ The editor currently supports:
 - The Edit menu keeps Copy Level / Paste Level separate from Copy Selected Assets, Cut Selected Assets, and Duplicate Selected Assets.
 - Edit > Fill Selected Area creates one separate `1x1` placed object in every cell of the active grid selection.
 - Edit > Clear Selected Area removes visible, unlocked placed grid copies intersecting the active grid selection without deleting palette assets, categories, or registry entries.
+- Edit > Replace Matching Assets uses the active grid selection, an app-owned source-choice modal, and the currently selected palette asset to replace only matching placed-object `assetId` values.
 - Tool hotkeys: `Q` for Select/Move, `W` for Select/Move compatibility, and `E` for Delete outside text-entry/modal contexts.
 - Eight resize handles on an asset selected in Select/Move mode.
 - Delete and Backspace remove the currently selected placed object or selected placed-object group in Select/Move mode when focus is not in editable UI.
@@ -124,7 +126,7 @@ Current limitations:
 
 - This is still an editor only; it does not run player movement, NPC logic, battles, doors, or game integration.
 - Full Phase 5 layer behaviour is not implemented yet. Solo layer, layer reordering, active placement layers, and runtime visibility are not implemented yet.
-- Later Phase 6 tools remain unimplemented: replace-matching, drag painting, paint brushes, brush sizes, and `Ctrl+A`.
+- Later Phase 6 tools remain unimplemented: drag painting, paint brushes, brush sizes, replace-by-category/layer/all-levels, and `Ctrl+A`.
 - Play Mode, runtime collision, trigger execution, doors/exits, spawn runtime, NPC/enemy/item gameplay systems, chunked maps, animated character import, audio/music systems, and multilayer/parallax background tools are not implemented yet.
 - Palette asset deletion is blocked while that asset is placed on any level. Remove placed copies first.
 - A category that contains assets is not deleted automatically; its assets must be removed or reorganised first.
@@ -488,7 +490,12 @@ For one imported file while a grid range is already selected, the editor may off
 - Clear Selected Area removes only visible, unlocked placed copies intersecting the active range. Hidden, locked-layer, and individually locked objects are retained and reported as skipped. The active grid selection remains available after Fill and Clear.
 - Fill and Clear update the placed-asset overlay once, keep grid cells and coordinate headers intact, render no pointer-movement work, and autosave once after a completed operation.
 - Fill and Clear never mutate imported palette assets, categories, asset registry entries, other levels, unknown layer arrays, schema versions, or storage keys.
-- Replace-matching, drag painting, paint brushes, brush sizes, undo/redo, persistent/cross-level placed-object clipboard, and later Phase 6 tools are not implemented yet.
+- Replace Matching Assets uses Edit > Replace Matching Assets, requires an active selected grid area and a selected replacement palette asset, and opens an app-owned modal listing unique visible/unlocked source `assetId` types found in the selected area. The default source is the most common eligible source asset in the range.
+- Replace Matching Assets matches by placed-object `assetId` only. It does not replace by name, category, layer, size, or visual similarity.
+- Replace Matching Assets updates only `assetId`, `type`, and `name` to the selected replacement palette asset. It preserves each replaced placed object's ID, position, dimensions, `gridRef`, `rangeRef`, layer, visibility/opacity/blocking fields, notes, `editorLocked`, `layerOptions`, and unknown/custom fields.
+- Replace Matching Assets skips hidden-layer, locked-layer, and individually locked matches and reports the skipped counts. Non-matching placed assets and unknown layer arrays are untouched.
+- Replace Matching Assets confirms once with an app-owned modal before mutation, refreshes only placed markers after the data change, and autosaves once after a completed replacement.
+- Drag painting, paint brushes, brush sizes, undo/redo, persistent/cross-level placed-object clipboard, replace-by-category/layer/all-levels, and later Phase 6 tools are not implemented yet.
 - In Select/Move mode, Delete or Backspace removes the selected placed copy from the current level only, clears its selection, and does not ask for confirmation.
 - In Select/Move mode, Delete or Backspace removes all multi-selected placed copies from the current level only when a group is selected.
 - In Select/Move mode, if no placed copy is selected but a grid area is selected, Delete or Backspace immediately deletes every current-level placed copy that intersects that area.
@@ -758,6 +765,12 @@ Before accepting changes to existing editor behaviour, verify:
 - [ ] Use Edit > Clear Selected Area and confirm visible unlocked intersections are removed while hidden and locked intersections remain and are reported as skipped.
 - [ ] Confirm Fill and Clear keep the selected range active, update only placed markers, autosave once, and preserve palette assets, categories, unknown layers, and saved JSON structures.
 - [ ] Confirm Edit disables Fill without both a selected range and palette asset, and disables Clear without a selected range.
+- [ ] Select an area containing repeated copies of one source asset and other non-matching assets, then use Edit > Replace Matching Assets and confirm only matching `assetId` values are replaced.
+- [ ] Confirm Replace Matching Assets uses the currently selected palette asset as the replacement and keeps the source choice inside an app-owned modal with no Chrome-native dialog.
+- [ ] Confirm replaced objects keep their IDs, positions, dimensions, grid/range refs, layer, visible/opacity/blocking fields, notes, `editorLocked`, `layerOptions`, and unknown fields.
+- [ ] Confirm hidden, layer-locked, and individually locked matching assets are skipped and reported, while non-matching assets are untouched.
+- [ ] Cancel the source modal and the confirmation modal in separate Replace Matching Assets tests and confirm no level data changes.
+- [ ] Confirm Replace Matching Assets refreshes only placed markers, autosaves once after confirmation, and preserves hidden assets, unknown layer arrays, File Save output, and Copy Level / Paste Level data.
 - [ ] Move or resize over another asset and confirm the in-app overlap replacement warning appears before removal.
 - [ ] Select a placed object in Select/Move mode, press Delete and Backspace in separate tests, and confirm each removes only the selected grid copy.
 - [ ] Drag-select multiple placed assets in Select/Move mode and confirm every intersecting placed copy is highlighted.

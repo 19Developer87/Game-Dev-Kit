@@ -99,6 +99,7 @@ export function createEditorLayout(root) {
                   <div class="menu-panel-divider"></div>
                   <button type="button" data-action="fill-selected-area">Fill Selected Area</button>
                   <button type="button" data-action="clear-selected-area">Clear Selected Area</button>
+                  <button type="button" data-action="replace-matching-assets">Replace Matching Assets</button>
                   <div class="menu-panel-divider"></div>
                   <button type="button" data-action="edit-placed-asset-properties">Properties</button>
                 </div>
@@ -173,6 +174,7 @@ export function createEditorLayout(root) {
     editPropertiesButton: root.querySelector('[data-action="edit-placed-asset-properties"]'),
     fillSelectedAreaButton: root.querySelector('[data-action="fill-selected-area"]'),
     clearSelectedAreaButton: root.querySelector('[data-action="clear-selected-area"]'),
+    replaceMatchingAssetsButton: root.querySelector('[data-action="replace-matching-assets"]'),
     gridSize: root.querySelector('[data-role="grid-size"]'),
     gridStage: root.querySelector('[data-role="grid-stage"]'),
     layerVisibilityInputs: Array.from(
