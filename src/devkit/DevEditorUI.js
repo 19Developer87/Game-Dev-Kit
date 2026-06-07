@@ -97,10 +97,40 @@ export function createEditorLayout(root) {
               </details>
               <details class="menu" data-menu data-role="view-menu">
                 <summary>View</summary>
-                <div class="menu-panel layer-visibility-menu">
-                  <p class="menu-panel-heading">Layer Visibility</p>
-                  ${createLayerVisibilityControls()}
+                <div class="menu-panel view-menu-panel">
+                  <div class="menu-flyout-item" data-role="layer-visibility-flyout">
+                    <button
+                      type="button"
+                      class="menu-flyout-trigger"
+                      data-flyout-trigger="layer-visibility"
+                      aria-expanded="false"
+                    >
+                      <span>Layer Visibility</span>
+                      <span aria-hidden="true">&rsaquo;</span>
+                    </button>
+                    <div class="menu-flyout-panel" data-flyout-panel="layer-visibility">
+                      <p class="menu-panel-heading">Layer Visibility</p>
+                      ${createLayerVisibilityControls()}
+                    </div>
+                  </div>
+                  <div class="menu-flyout-item" data-role="layer-locking-flyout">
+                    <button
+                      type="button"
+                      class="menu-flyout-trigger"
+                      data-flyout-trigger="layer-locking"
+                      aria-expanded="false"
+                    >
+                      <span>Layer Locking</span>
+                      <span aria-hidden="true">&rsaquo;</span>
+                    </button>
+                    <div class="menu-flyout-panel" data-flyout-panel="layer-locking">
+                      <p class="menu-panel-heading">Layer Locking</p>
+                      ${createLayerLockControls()}
+                    </div>
+                  </div>
+                  <div class="menu-panel-divider"></div>
                   <button type="button" data-action="show-all-layers">Show All Layers</button>
+                  <button type="button" data-action="unlock-all-layers">Unlock All Layers and Assets</button>
                 </div>
               </details>
               <details class="menu is-disabled" data-menu data-role="asset-menu">
@@ -135,6 +165,9 @@ export function createEditorLayout(root) {
     layerVisibilityInputs: Array.from(
       root.querySelectorAll('[data-role="layer-visibility-toggle"]'),
     ),
+    layerLockInputs: Array.from(
+      root.querySelectorAll('[data-role="layer-lock-toggle"]'),
+    ),
     levelPicker: root.querySelector('[data-role="level-picker"]'),
     levelPickerButton: root.querySelector('[data-role="level-picker-button"]'),
     levelPickerPanel: root.querySelector('[data-role="level-picker-panel"]'),
@@ -151,6 +184,37 @@ export function createEditorLayout(root) {
 }
 
 function createLayerVisibilityControls() {
+  return getKnownLayerNames().map(
+    (layerName) => `
+      <label class="layer-control-option">
+        <input
+          type="checkbox"
+          data-role="layer-visibility-toggle"
+          data-layer="${layerName}"
+          checked
+        />
+        <span>${layerName}</span>
+      </label>
+    `,
+  ).join("");
+}
+
+function createLayerLockControls() {
+  return getKnownLayerNames().map(
+    (layerName) => `
+      <label class="layer-control-option">
+        <input
+          type="checkbox"
+          data-role="layer-lock-toggle"
+          data-layer="${layerName}"
+        />
+        <span>${layerName} locked</span>
+      </label>
+    `,
+  ).join("");
+}
+
+function getKnownLayerNames() {
   return [
     "terrain",
     "decorations",
@@ -162,17 +226,5 @@ function createLayerVisibilityControls() {
     "enemies",
     "triggers",
     "overlay",
-  ].map(
-    (layerName) => `
-      <label class="layer-visibility-option">
-        <input
-          type="checkbox"
-          data-role="layer-visibility-toggle"
-          data-layer="${layerName}"
-          checked
-        />
-        <span>${layerName}</span>
-      </label>
-    `,
-  ).join("");
+  ];
 }

@@ -1,6 +1,7 @@
 import { AssetPalette } from "./AssetPalette.js";
 import {
   COPIED_LEVEL_STORAGE_KEY,
+  LAYER_LOCKS_STORAGE_KEY,
   LAYER_VISIBILITY_STORAGE_KEY,
   LAYERS,
   PLACED_PROPERTIES_DIALOG_STORAGE_KEY,
@@ -76,6 +77,7 @@ class DevEditor {
     this.copiedPlacedObject = null;
     this.copyPreviewRange = null;
     this.layerVisibility = this.loadLayerVisibility();
+    this.layerLocks = this.loadLayerLocks();
     this.ui = createEditorLayout(root);
     this.sidebarWidth = this.loadSidebarWidth();
     this.isSidebarCollapsed = this.loadSidebarCollapsed();
@@ -93,6 +95,12 @@ class DevEditor {
       onPlacedObjectTransform: (transform) => this.transformPlacedObject(transform),
       onPlacedObjectGroupMoveStart: () => this.clearGridAreaSelection(),
       onCopyPreviewMove: (cell) => this.moveCopyPreview(cell),
+      onLockedLayerInteraction: (layerName) => {
+        this.setStatus(`Layer "${layerName}" is locked.`);
+      },
+      onLockedAssetInteraction: () => {
+        this.setStatus("This asset is locked. Double-click it to open Properties and unlock it.");
+      },
       onAssetRenderError: (placedObject, asset) => {
         this.setStatus(
           `Unable to render asset "${asset?.name || placedObject.assetId}" at ${placedObject.rangeRef}.`,
@@ -100,6 +108,7 @@ class DevEditor {
       },
     });
     this.gridEditor.setLayerVisibility(this.layerVisibility);
+    this.gridEditor.setLayerLocks(this.layerLocks);
 
     this.assetPalette = new AssetPalette({
       root: this.ui.assetPalette,
@@ -148,8 +157,18 @@ class DevEditor {
       });
     });
 
+    this.ui.layerLockInputs.forEach((input) => {
+      input.addEventListener("change", () => {
+        this.setLayerLocked(input.dataset.layer, input.checked);
+      });
+    });
+
     this.root.querySelector('[data-action="show-all-layers"]').addEventListener("click", () => {
       this.showAllLayers();
+    });
+
+    this.root.querySelector('[data-action="unlock-all-layers"]').addEventListener("click", () => {
+      this.unlockAllLayers();
     });
 
     document.addEventListener("keydown", (event) => {
@@ -378,10 +397,20 @@ class DevEditor {
         level,
         x,
         y,
-        this.getVisibleLayerNames(),
+        this.getEditableLayerNames(),
+        (placedObject) => placedObject.editorLocked !== true,
       );
       if (removedObjects.length === 0) {
-        this.setStatus(`No placed asset at ${toGridRef(x, y)}.`);
+        const protectedObject = findObjectsInRange(level, x, y, 1, 1).find(
+          (placedObject) =>
+            this.isLayerLocked(placedObject.layer) ||
+            placedObject.editorLocked === true,
+        );
+        this.setStatus(
+          protectedObject
+            ? this.getPlacedObjectLockMessage(protectedObject)
+            : `No placed asset at ${toGridRef(x, y)}.`,
+        );
         this.render();
         return;
       }
@@ -467,8 +496,8 @@ class DevEditor {
         range.y,
         range.width,
         range.height,
-        this.getVisibleLayerNames(),
-      );
+        this.getEditableLayerNames(),
+      ).filter((placedObject) => placedObject.editorLocked !== true);
       if (selectedObjects.length > 0) {
         this.setPlacedObjectSelection(
           selectedObjects.map((placedObject) => placedObject.id),
@@ -528,10 +557,21 @@ class DevEditor {
 
     const placedObject = getPlacedObjects(
       getCurrentLevel(this.project),
-      this.getVisibleLayerNames(),
-    ).find((candidate) => candidate.id === placedObjectId);
+      this.getEditableLayerNames(),
+    ).find(
+      (candidate) =>
+        candidate.id === placedObjectId &&
+        candidate.editorLocked !== true,
+    );
     if (!placedObject) {
-      this.setStatus("That asset is on a hidden editor layer.");
+      const unavailableObject = getPlacedObjects(getCurrentLevel(this.project)).find(
+        (candidate) => candidate.id === placedObjectId,
+      );
+      this.setStatus(
+        unavailableObject
+          ? this.getPlacedObjectLockMessage(unavailableObject)
+          : "That asset is on a hidden editor layer.",
+      );
       return;
     }
 
@@ -555,20 +595,31 @@ class DevEditor {
     }
 
     const level = getCurrentLevel(this.project);
-    const placedObject = getPlacedObjects(level, this.getVisibleLayerNames()).find(
+    const placedObject = getPlacedObjects(level, this.getEditableLayerNames()).find(
       (candidate) => candidate.id === placedObjectId,
     );
 
     if (!placedObject) {
+      const unavailableObject = getPlacedObjects(level).find(
+        (candidate) => candidate.id === placedObjectId,
+      );
       this.clearPlacedObjectSelection();
       this.render();
-      this.setStatus("Select an asset first.");
+      this.setStatus(
+        unavailableObject
+          ? this.getPlacedObjectLockMessage(unavailableObject)
+          : "Select an asset first.",
+      );
       return;
     }
 
     this.cancelCopyPlacement();
     this.clearSelection();
-    this.setPlacedObjectSelection([placedObjectId], placedObjectId);
+    if (placedObject.editorLocked === true) {
+      this.clearPlacedObjectSelection();
+    } else {
+      this.setPlacedObjectSelection([placedObjectId], placedObjectId);
+    }
     this.render();
     this.showPlacedAssetPropertiesDialog(level, placedObject);
   }
@@ -591,60 +642,68 @@ class DevEditor {
         <header class="properties-dialog-header">
           <h2>Placed Asset Properties &mdash; ${escapeHtml(titleName)}</h2>
         </header>
-        <fieldset class="properties-info">
-          <legend>Identity / Info</legend>
-          <dl>
-            <div><dt>Source asset name</dt><dd>${escapeHtml(sourceAsset?.name || placedObject.name || "-")}</dd></div>
-            <div><dt>Category name</dt><dd>${escapeHtml(sourceAsset?.category || "-")}</dd></div>
-          </dl>
-        </fieldset>
-        <div class="properties-fields">
-          <fieldset class="properties-position">
-            <legend>Position</legend>
-            <label>Grid Ref <input name="gridRef" value="${escapeAttribute(toGridRef(x, y))}" required /></label>
-            <p class="properties-hint">Position on the grid, for example 3.B or 10.F.</p>
+        <div class="properties-scroll-content">
+          <fieldset class="properties-info">
+            <legend>Identity / Info</legend>
+            <dl>
+              <div><dt>Source asset name</dt><dd>${escapeHtml(sourceAsset?.name || placedObject.name || "-")}</dd></div>
+              <div><dt>Category name</dt><dd>${escapeHtml(sourceAsset?.category || "-")}</dd></div>
+            </dl>
           </fieldset>
-          <fieldset>
-            <legend>Size</legend>
-            <label>Width <input name="width" type="number" min="1" max="${level.gridWidth}" value="${width}" required /></label>
-            <label>Height <input name="height" type="number" min="1" max="${level.gridHeight}" value="${height}" required /></label>
-            <p class="properties-hint">Measured in grid squares.</p>
-          </fieldset>
-          <fieldset>
-            <legend>Display</legend>
-            <label>Visible
-              <select name="visible">
-                <option value="true" ${placedObject.visible !== false ? "selected" : ""}>Yes</option>
-                <option value="false" ${placedObject.visible === false ? "selected" : ""}>No</option>
-              </select>
-            </label>
-            <label>Opacity (0 to 100) <input name="opacity" type="number" min="0" max="100" value="${opacity}" required /></label>
-            <p class="properties-hint">Visibility and opacity are editor display settings for this placed copy.</p>
-          </fieldset>
-          <fieldset>
-            <legend>Layer / Behaviour</legend>
-            <label>Layer
-              <select name="layer" data-role="placed-layer-select">
-                ${createLayerOptions(layer)}
-              </select>
-            </label>
-            <label>Blocks Movement
-              <select name="blocksMovement">
-                <option value="false" ${!placedObject.blocksMovement ? "selected" : ""}>No</option>
-                <option value="true" ${placedObject.blocksMovement ? "selected" : ""}>Yes</option>
-              </select>
-            </label>
-            <label class="properties-notes">Notes
-              <textarea name="notes" rows="4">${escapeHtml(placedObject.notes || "")}</textarea>
-            </label>
-            <p class="properties-hint">Layer choice is saved on this placed copy. Full layer visibility, locking, solo, and runtime systems are not implemented yet.</p>
-          </fieldset>
-          <fieldset class="properties-layer-options" data-role="layer-options-container">
-            ${createLayerOptionsFields(layer, layerOptions)}
-          </fieldset>
+          <div class="properties-fields">
+            <fieldset class="properties-position">
+              <legend>Position</legend>
+              <label>Grid Ref <input name="gridRef" value="${escapeAttribute(toGridRef(x, y))}" required /></label>
+              <p class="properties-hint">Position on the grid, for example 3.B or 10.F.</p>
+            </fieldset>
+            <fieldset>
+              <legend>Size</legend>
+              <label>Width <input name="width" type="number" min="1" max="${level.gridWidth}" value="${width}" required /></label>
+              <label>Height <input name="height" type="number" min="1" max="${level.gridHeight}" value="${height}" required /></label>
+              <p class="properties-hint">Measured in grid squares.</p>
+            </fieldset>
+            <fieldset>
+              <legend>Display</legend>
+              <label>Visible
+                <select name="visible">
+                  <option value="true" ${placedObject.visible !== false ? "selected" : ""}>Yes</option>
+                  <option value="false" ${placedObject.visible === false ? "selected" : ""}>No</option>
+                </select>
+              </label>
+              <label>Opacity (0 to 100) <input name="opacity" type="number" min="0" max="100" value="${opacity}" required /></label>
+              <p class="properties-hint">Visibility and opacity are editor display settings for this placed copy.</p>
+            </fieldset>
+            <fieldset>
+              <legend>Layer / Behaviour</legend>
+              <label>Layer
+                <select name="layer" data-role="placed-layer-select">
+                  ${createLayerOptions(layer)}
+                </select>
+              </label>
+              <label>Blocks Movement
+                <select name="blocksMovement">
+                  <option value="false" ${!placedObject.blocksMovement ? "selected" : ""}>No</option>
+                  <option value="true" ${placedObject.blocksMovement ? "selected" : ""}>Yes</option>
+                </select>
+              </label>
+              <label>Locked
+                <select name="editorLocked">
+                  <option value="false" ${placedObject.editorLocked !== true ? "selected" : ""}>No</option>
+                  <option value="true" ${placedObject.editorLocked === true ? "selected" : ""}>Yes</option>
+                </select>
+              </label>
+              <label class="properties-notes">Notes
+                <textarea name="notes" rows="4">${escapeHtml(placedObject.notes || "")}</textarea>
+              </label>
+              <p class="properties-hint">Layer locks are controlled from View. Locked here protects only this placed copy; double-click it later to unlock it.</p>
+            </fieldset>
+            <fieldset class="properties-layer-options" data-role="layer-options-container">
+              ${createLayerOptionsFields(layer, layerOptions)}
+            </fieldset>
+          </div>
+          <p class="form-error" role="alert" hidden></p>
         </div>
-        <p class="form-error" role="alert" hidden></p>
-        <div class="dialog-actions">
+        <div class="dialog-actions properties-dialog-actions">
           <button type="button" data-action="cancel-properties">Cancel / Close</button>
           <button type="submit">Apply / Save Changes</button>
         </div>
@@ -677,6 +736,19 @@ class DevEditor {
         return;
       }
 
+      const lockedPropertiesLayer = this.isLayerLocked(result.values.layer)
+        ? result.values.layer
+        : this.isLayerLocked(placedObject.layer)
+          ? placedObject.layer
+          : null;
+      if (lockedPropertiesLayer) {
+        error.hidden = false;
+        error.textContent = `Layer "${normalizePlacedLayer(
+          lockedPropertiesLayer,
+        )}" is locked. Unlock it before applying Properties changes.`;
+        return;
+      }
+
       const boundsChanged =
         Number(placedObject.x) !== result.values.x ||
         Number(placedObject.y) !== result.values.y ||
@@ -691,6 +763,19 @@ class DevEditor {
             result.values.height,
           ).filter((candidate) => candidate.id !== placedObject.id)
         : [];
+
+      const lockedOverlap = overlaps.find((candidate) =>
+        this.isPlacedObjectProtected(candidate),
+      );
+      if (lockedOverlap) {
+        error.hidden = false;
+        error.textContent = `Changes were not applied because the new bounds overlap ${
+          this.isLayerLocked(lockedOverlap.layer)
+            ? `locked layer "${normalizePlacedLayer(lockedOverlap.layer)}"`
+            : "an individually locked asset"
+        }.`;
+        return;
+      }
 
       if (overlaps.length > 0) {
         const confirmed = await this.showConfirmModal({
@@ -723,7 +808,7 @@ class DevEditor {
       }
 
       const movedToHiddenLayer = !this.isLayerVisible(updatedObject.layer);
-      if (movedToHiddenLayer) {
+      if (movedToHiddenLayer || updatedObject.editorLocked === true) {
         this.clearPlacedObjectSelection();
       } else {
         this.setPlacedObjectSelection([updatedObject.id], updatedObject.id);
@@ -733,6 +818,8 @@ class DevEditor {
       this.autosave(
         movedToHiddenLayer
           ? `Saved properties and moved ${sourceAsset?.name || updatedObject.name || "placed asset"} to hidden editor layer ${updatedObject.layer}.`
+          : updatedObject.editorLocked === true
+            ? `Saved properties and locked ${sourceAsset?.name || updatedObject.name || "placed asset"}. Double-click it to unlock it.`
           : `Saved properties for ${sourceAsset?.name || updatedObject.name || "placed asset"}.`,
       );
     });
@@ -789,6 +876,7 @@ class DevEditor {
         visible: data.get("visible") === "true",
         opacity,
         blocksMovement: data.get("blocksMovement") === "true",
+        editorLocked: data.get("editorLocked") === "true",
         layerOptions: {
           ...previousLayerOptions,
           ...layerSpecificOptions,
@@ -952,7 +1040,12 @@ class DevEditor {
       : [this.selectedPlacedObjectId].filter(Boolean);
     const removedObjects = selectedIds
       .map((placedObjectId) =>
-        removePlacedObjectById(level, placedObjectId, this.getVisibleLayerNames()),
+        removePlacedObjectById(
+          level,
+          placedObjectId,
+          this.getEditableLayerNames(),
+          (placedObject) => placedObject.editorLocked !== true,
+        ),
       )
       .filter(Boolean);
 
@@ -979,22 +1072,33 @@ class DevEditor {
 
   deleteAssetsInRange(range, { clearSelection = false } = {}) {
     const level = getCurrentLevel(this.project);
-    const visibleLayerNames = this.getVisibleLayerNames();
+    const editableLayerNames = this.getEditableLayerNames();
     const matchingObjects = findObjectsInRange(
       level,
       range.x,
       range.y,
       range.width,
       range.height,
-      visibleLayerNames,
-    );
+      editableLayerNames,
+    ).filter((placedObject) => placedObject.editorLocked !== true);
 
     if (matchingObjects.length === 0) {
       if (clearSelection) {
         this.clearSelection();
         this.render();
       }
-      this.setStatus("No placed assets found in the selected area.");
+      const protectedObject = findObjectsInRange(
+        level,
+        range.x,
+        range.y,
+        range.width,
+        range.height,
+      ).find((placedObject) => this.isPlacedObjectProtected(placedObject));
+      this.setStatus(
+        protectedObject
+          ? `${this.getPlacedObjectLockMessage(protectedObject)} It was protected from deletion.`
+          : "No placed assets found in the selected area.",
+      );
       return false;
     }
 
@@ -1004,7 +1108,8 @@ class DevEditor {
       range.y,
       range.width,
       range.height,
-      visibleLayerNames,
+      editableLayerNames,
+      (placedObject) => placedObject.editorLocked !== true,
     );
     this.clearPlacedObjectSelection();
     this.closePlacedPropertiesDialog();
@@ -1023,6 +1128,18 @@ class DevEditor {
     }
 
     const level = getCurrentLevel(this.project);
+    const sourceObject = getPlacedObjects(level).find(
+      (placedObject) => placedObject.id === placedObjectId,
+    );
+    if (!sourceObject || this.isPlacedObjectProtected(sourceObject)) {
+      this.setStatus(
+        sourceObject
+          ? this.getPlacedObjectLockMessage(sourceObject)
+          : "Unable to update the selected asset.",
+      );
+      this.render();
+      return false;
+    }
 
     if (action === "group-move") {
       return this.transformPlacedObjectGroup(transform);
@@ -1031,6 +1148,11 @@ class DevEditor {
     const existing = findObjectsInRange(level, x, y, width, height).filter(
       (placedObject) => placedObject.id !== placedObjectId,
     );
+
+    if (this.blockActionForLockedOverlaps(existing, "Move/resize")) {
+      this.render();
+      return false;
+    }
 
     if (existing.length > 0) {
       const confirmed = await this.showConfirmModal({
@@ -1076,6 +1198,22 @@ class DevEditor {
       return false;
     }
 
+    const selectedObjects = getPlacedObjects(level).filter((placedObject) =>
+      selectedIdSet.has(placedObject.id),
+    );
+    const lockedSelectedObject = selectedObjects.find((placedObject) =>
+      this.isPlacedObjectProtected(placedObject),
+    );
+    if (lockedSelectedObject || selectedObjects.length !== selectedIds.length) {
+      this.setStatus(
+        lockedSelectedObject
+          ? this.getPlacedObjectLockMessage(lockedSelectedObject)
+          : "Unable to move the selected assets.",
+      );
+      this.render();
+      return false;
+    }
+
     const overlappingObjects = [];
     updates.forEach((bounds) => {
       findObjectsInRange(level, bounds.x, bounds.y, bounds.width, bounds.height).forEach(
@@ -1088,6 +1226,11 @@ class DevEditor {
     });
 
     if (overlappingObjects.length > 0) {
+      if (this.blockActionForLockedOverlaps(overlappingObjects, "Group move")) {
+        this.render();
+        return false;
+      }
+
       const confirmed = await this.showConfirmModal({
         title: "Overlap Existing Assets?",
         message: this.createOverlapWarningMessage(
@@ -1119,8 +1262,10 @@ class DevEditor {
 
   startCopyPlacement() {
     const level = getCurrentLevel(this.project);
-    const selectedObject = getPlacedObjects(level, this.getVisibleLayerNames()).find(
-      (placedObject) => placedObject.id === this.selectedPlacedObjectId,
+    const selectedObject = getPlacedObjects(level, this.getEditableLayerNames()).find(
+      (placedObject) =>
+        placedObject.id === this.selectedPlacedObjectId &&
+        placedObject.editorLocked !== true,
     );
 
     if (!selectedObject) {
@@ -1152,6 +1297,10 @@ class DevEditor {
     const level = getCurrentLevel(this.project);
     const range = this.getCopiedPlacementRange(x, y);
     const existing = findObjectsInRange(level, range.x, range.y, range.width, range.height);
+
+    if (this.blockActionForLockedOverlaps(existing, "Copied asset placement")) {
+      return false;
+    }
 
     if (existing.length > 0) {
       const confirmed = await this.showConfirmModal({
@@ -1487,8 +1636,21 @@ class DevEditor {
       return false;
     }
 
+    if (this.isLayerLocked(asset.defaultLayer || "objects")) {
+      this.setStatus(
+        `Asset placement blocked: layer "${normalizePlacedLayer(
+          asset.defaultLayer || "objects",
+        )}" is locked.`,
+      );
+      return false;
+    }
+
     const level = getCurrentLevel(this.project);
     const existing = findObjectsInRange(level, range.x, range.y, range.width, range.height);
+
+    if (this.blockActionForLockedOverlaps(existing, "Asset placement")) {
+      return false;
+    }
 
     if (existing.length > 0) {
       const confirmed = await this.showConfirmModal({
@@ -2113,6 +2275,7 @@ class DevEditor {
       this.createCopyPreview(),
     );
     this.gridEditor.setLayerVisibility(this.layerVisibility);
+    this.gridEditor.setLayerLocks(this.layerLocks);
     this.gridEditor.syncPlacedObjectSelection(
       this.selectedPlacedObjectId,
       Array.from(this.selectedPlacedObjectIds),
@@ -2121,6 +2284,7 @@ class DevEditor {
     this.syncGridControls(level);
     this.syncToolButtons();
     this.syncLayerVisibilityControls();
+    this.syncLayerLockControls();
     this.syncCoordinateStatus();
     this.syncPlacementButton();
     this.syncAssetMenu();
@@ -2244,13 +2408,73 @@ class DevEditor {
     }
   }
 
-  getVisibleLayerNames() {
-    return LAYERS.filter((layerName) => this.layerVisibility[layerName] !== false);
+  loadLayerLocks() {
+    const defaults = Object.fromEntries(LAYERS.map((layerName) => [layerName, false]));
+    const storedLocks = localStorage.getItem(LAYER_LOCKS_STORAGE_KEY);
+
+    if (!storedLocks) {
+      return defaults;
+    }
+
+    try {
+      const parsedLocks = JSON.parse(storedLocks);
+      if (!parsedLocks || typeof parsedLocks !== "object" || Array.isArray(parsedLocks)) {
+        return defaults;
+      }
+
+      return Object.fromEntries(
+        LAYERS.map((layerName) => [layerName, parsedLocks[layerName] === true]),
+      );
+    } catch (error) {
+      console.warn("Layer lock preferences could not be loaded.", error);
+      return defaults;
+    }
+  }
+
+  saveLayerLocks() {
+    try {
+      localStorage.setItem(LAYER_LOCKS_STORAGE_KEY, JSON.stringify(this.layerLocks));
+    } catch (error) {
+      console.warn("Layer lock preferences could not be saved.", error);
+    }
+  }
+
+  getEditableLayerNames() {
+    return LAYERS.filter(
+      (layerName) =>
+        this.layerVisibility[layerName] !== false &&
+        this.layerLocks[layerName] !== true,
+    );
   }
 
   isLayerVisible(layerName) {
     const normalizedLayer = layerName === "Trigger" ? "triggers" : layerName || "objects";
     return !LAYERS.includes(normalizedLayer) || this.layerVisibility[normalizedLayer] !== false;
+  }
+
+  isLayerLocked(layerName) {
+    const normalizedLayer = normalizePlacedLayer(layerName);
+    return LAYERS.includes(normalizedLayer) && this.layerLocks[normalizedLayer] === true;
+  }
+
+  isPlacedObjectProtected(placedObject) {
+    return Boolean(
+      placedObject &&
+      (
+        this.isLayerLocked(placedObject.layer) ||
+        placedObject.editorLocked === true
+      ),
+    );
+  }
+
+  getPlacedObjectLockMessage(placedObject) {
+    if (this.isLayerLocked(placedObject?.layer)) {
+      return `Layer "${normalizePlacedLayer(placedObject.layer)}" is locked.`;
+    }
+    if (placedObject?.editorLocked === true) {
+      return "This asset is locked.";
+    }
+    return "That asset is on a hidden editor layer.";
   }
 
   setLayerVisibility(layerName, isVisible) {
@@ -2265,25 +2489,31 @@ class DevEditor {
     this.saveLayerVisibility();
 
     const level = getCurrentLevel(this.project);
-    const visibleObjects = getPlacedObjects(level, this.getVisibleLayerNames());
-    const visibleIds = new Set(visibleObjects.map((placedObject) => placedObject.id));
+    const editableObjects = getPlacedObjects(level, this.getEditableLayerNames()).filter(
+      (placedObject) => placedObject.editorLocked !== true,
+    );
+    const editableIds = new Set(editableObjects.map((placedObject) => placedObject.id));
     const retainedIds = Array.from(this.selectedPlacedObjectIds).filter((id) =>
-      visibleIds.has(id),
+      editableIds.has(id),
     );
     const previousPrimaryId = this.selectedPlacedObjectId;
 
     this.selectedPlacedObjectIds = new Set(retainedIds);
-    this.selectedPlacedObjectId = visibleIds.has(previousPrimaryId)
+    this.selectedPlacedObjectId = editableIds.has(previousPrimaryId)
       ? previousPrimaryId
       : retainedIds[0] || null;
 
-    if (previousPrimaryId && !visibleIds.has(previousPrimaryId)) {
+    if (previousPrimaryId && !editableIds.has(previousPrimaryId)) {
       this.closePlacedPropertiesDialog();
     }
 
     if (
       this.copiedPlacedObject &&
-      !this.isLayerVisible(this.copiedPlacedObject.layer)
+      (
+        !this.isLayerVisible(this.copiedPlacedObject.layer) ||
+        this.isLayerLocked(this.copiedPlacedObject.layer) ||
+        this.copiedPlacedObject.editorLocked === true
+      )
     ) {
       this.cancelCopyPlacement();
     }
@@ -2316,17 +2546,158 @@ class DevEditor {
     });
   }
 
+  setLayerLocked(layerName, isLocked) {
+    if (!LAYERS.includes(layerName)) {
+      return;
+    }
+
+    this.layerLocks = {
+      ...this.layerLocks,
+      [layerName]: Boolean(isLocked),
+    };
+    this.saveLayerLocks();
+
+    const level = getCurrentLevel(this.project);
+    const editableIds = new Set(
+      getPlacedObjects(level, this.getEditableLayerNames()).map(
+        (placedObject) =>
+          placedObject.editorLocked === true ? null : placedObject.id,
+      ),
+    );
+    editableIds.delete(null);
+    const retainedIds = Array.from(this.selectedPlacedObjectIds).filter((id) =>
+      editableIds.has(id),
+    );
+    const previousPrimaryId = this.selectedPlacedObjectId;
+    this.selectedPlacedObjectIds = new Set(retainedIds);
+    this.selectedPlacedObjectId = editableIds.has(previousPrimaryId)
+      ? previousPrimaryId
+      : retainedIds[0] || null;
+
+    if (previousPrimaryId && !editableIds.has(previousPrimaryId)) {
+      this.closePlacedPropertiesDialog();
+    }
+
+    if (
+      this.copiedPlacedObject &&
+      (
+        this.isLayerLocked(this.copiedPlacedObject.layer) ||
+        this.copiedPlacedObject.editorLocked === true
+      )
+    ) {
+      this.cancelCopyPlacement();
+    }
+
+    this.gridEditor.setLayerLocks(this.layerLocks);
+    this.gridEditor.syncPlacedObjectSelection(
+      this.selectedPlacedObjectId,
+      Array.from(this.selectedPlacedObjectIds),
+    );
+    this.syncLayerLockControls();
+    this.syncAssetMenu();
+    this.setStatus(
+      `${layerName} layer ${isLocked ? "locked" : "unlocked"} for editing.`,
+    );
+  }
+
+  unlockAllLayers() {
+    this.layerLocks = Object.fromEntries(
+      LAYERS.map((layerName) => [layerName, false]),
+    );
+    this.saveLayerLocks();
+
+    let unlockedAssetCount = 0;
+    this.project.levels.forEach((level) => {
+      Object.values(level.layers || {}).forEach((layerEntries) => {
+        if (!Array.isArray(layerEntries)) {
+          return;
+        }
+
+        layerEntries.forEach((placedObject) => {
+          if (placedObject?.editorLocked === true) {
+            placedObject.editorLocked = false;
+            unlockedAssetCount += 1;
+          }
+        });
+      });
+    });
+
+    this.gridEditor.setLayerLocks(this.layerLocks);
+    this.syncLayerLockControls();
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    this.render();
+    this.autosave(
+      `All layers and individually locked assets unlocked${
+        unlockedAssetCount > 0 ? ` (${unlockedAssetCount} asset${unlockedAssetCount === 1 ? "" : "s"})` : ""
+      }.`,
+    );
+  }
+
+  syncLayerLockControls() {
+    this.ui.layerLockInputs.forEach((input) => {
+      input.checked = this.layerLocks[input.dataset.layer] === true;
+    });
+  }
+
+  blockActionForLockedOverlaps(overlappingObjects, actionLabel) {
+    const lockedLayers = Array.from(
+      new Set(
+        overlappingObjects
+          .filter((placedObject) => this.isLayerLocked(placedObject.layer))
+          .map((placedObject) => normalizePlacedLayer(placedObject.layer)),
+      ),
+    );
+    const lockedAssetCount = overlappingObjects.filter(
+      (placedObject) =>
+        placedObject.editorLocked === true &&
+        !this.isLayerLocked(placedObject.layer),
+    ).length;
+
+    if (lockedLayers.length === 0 && lockedAssetCount === 0) {
+      return false;
+    }
+
+    const reasons = [];
+    if (lockedLayers.length > 0) {
+      reasons.push(
+        `locked layer${lockedLayers.length === 1 ? "" : "s"} ${lockedLayers.join(", ")}`,
+      );
+    }
+    if (lockedAssetCount > 0) {
+      reasons.push(
+        `${lockedAssetCount} individually locked asset${lockedAssetCount === 1 ? "" : "s"}`,
+      );
+    }
+    this.setStatus(`${actionLabel} blocked: ${reasons.join(" and ")} cannot be replaced.`);
+    return true;
+  }
+
   createOverlapWarningMessage(message, overlappingObjects) {
     const hiddenCount = overlappingObjects.filter(
       (placedObject) => !this.isLayerVisible(placedObject.layer),
     ).length;
 
-    if (hiddenCount === 0) {
+    const lockedCount = overlappingObjects.filter(
+      (placedObject) => this.isPlacedObjectProtected(placedObject),
+    ).length;
+
+    if (hiddenCount === 0 && lockedCount === 0) {
       return message;
     }
 
-    const assetLabel = hiddenCount === 1 ? "asset is" : "assets are";
-    return `${message} ${hiddenCount} overlapping hidden-layer ${assetLabel} included.`;
+    const details = [];
+    if (hiddenCount > 0) {
+      details.push(
+        `${hiddenCount} overlapping hidden-layer asset${hiddenCount === 1 ? " is" : "s are"} included`,
+      );
+    }
+    if (lockedCount > 0) {
+      details.push(
+        `${lockedCount} locked-layer asset${lockedCount === 1 ? " is" : "s are"} protected from replacement`,
+      );
+    }
+    return `${message} ${details.join(". ")}.`;
   }
 
   syncCoordinateStatus() {
@@ -2365,6 +2736,69 @@ class DevEditor {
   }
 
   bindMenuBehavior() {
+    const viewMenu = this.root.querySelector('[data-role="view-menu"]');
+    const flyoutItems = Array.from(
+      viewMenu.querySelectorAll(".menu-flyout-item"),
+    );
+
+    const closeViewFlyouts = (exceptItem = null) => {
+      flyoutItems.forEach((item) => {
+        if (item === exceptItem) {
+          return;
+        }
+        item.classList.remove("is-open", "opens-left");
+        item.querySelector("[data-flyout-trigger]")?.setAttribute("aria-expanded", "false");
+        const panel = item.querySelector("[data-flyout-panel]");
+        if (panel) {
+          panel.style.top = "";
+        }
+      });
+    };
+
+    const openViewFlyout = (item) => {
+      closeViewFlyouts(item);
+      item.classList.add("is-open");
+      const trigger = item.querySelector("[data-flyout-trigger]");
+      const panel = item.querySelector("[data-flyout-panel]");
+      trigger?.setAttribute("aria-expanded", "true");
+
+      window.requestAnimationFrame(() => {
+        if (!panel || !item.classList.contains("is-open")) {
+          return;
+        }
+        item.classList.remove("opens-left");
+        panel.style.top = "-6px";
+        let panelRect = panel.getBoundingClientRect();
+        if (panelRect.right > window.innerWidth - 8) {
+          item.classList.add("opens-left");
+          panelRect = panel.getBoundingClientRect();
+        }
+        const itemRect = item.getBoundingClientRect();
+        let panelTop = -6;
+        if (panelRect.bottom > window.innerHeight - 8) {
+          panelTop -= panelRect.bottom - window.innerHeight + 8;
+        }
+        panelTop = Math.max(8 - itemRect.top, panelTop);
+        panel.style.top = `${panelTop}px`;
+      });
+    };
+
+    flyoutItems.forEach((item) => {
+      const trigger = item.querySelector("[data-flyout-trigger]");
+      item.addEventListener("mouseenter", () => openViewFlyout(item));
+      item.addEventListener("focusin", () => openViewFlyout(item));
+      item.addEventListener("mouseleave", (event) => {
+        if (!item.contains(event.relatedTarget)) {
+          closeViewFlyouts();
+        }
+      });
+      trigger.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openViewFlyout(item);
+      });
+    });
+
     this.root.querySelectorAll("[data-menu]").forEach((menu) => {
       menu.querySelector("summary").addEventListener("click", (event) => {
         if (menu.classList.contains("is-disabled")) {
@@ -2374,6 +2808,9 @@ class DevEditor {
       });
       menu.addEventListener("toggle", () => {
         if (!menu.open) {
+          if (menu === viewMenu) {
+            closeViewFlyouts();
+          }
           return;
         }
 
@@ -2385,11 +2822,55 @@ class DevEditor {
       });
     });
 
-    this.root.querySelectorAll(".menu-panel button").forEach((button) => {
+    this.root.querySelectorAll(".menu-panel button:not([data-flyout-trigger])").forEach((button) => {
       button.addEventListener("click", () => {
         this.closeMenus();
       });
     });
+
+    let suppressOutsideMenuClick = false;
+    document.addEventListener(
+      "pointerdown",
+      (event) => {
+        if (!viewMenu.open || viewMenu.contains(event.target)) {
+          return;
+        }
+
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        suppressOutsideMenuClick = true;
+        this.closeMenus();
+        window.setTimeout(() => {
+          suppressOutsideMenuClick = false;
+        }, 0);
+      },
+      true,
+    );
+
+    document.addEventListener(
+      "click",
+      (event) => {
+        if (!suppressOutsideMenuClick) {
+          return;
+        }
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        suppressOutsideMenuClick = false;
+      },
+      true,
+    );
+
+    document.addEventListener(
+      "keydown",
+      (event) => {
+        if (event.key === "Escape" && viewMenu.open) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          this.closeMenus();
+        }
+      },
+      true,
+    );
 
     document.addEventListener("click", (event) => {
       if (!this.root.contains(event.target) || !event.target.closest("[data-menu]")) {

@@ -242,7 +242,13 @@ export function findObjectsAtCell(level, x, y, layerNames = LAYERS) {
   );
 }
 
-export function removeObjectsAtCell(level, x, y, layerNames = LAYERS) {
+export function removeObjectsAtCell(
+  level,
+  x,
+  y,
+  layerNames = LAYERS,
+  canRemove = () => true,
+) {
   const removedObjects = [];
   const requestedLayers = new Set(getKnownLayerNames(layerNames));
 
@@ -250,7 +256,8 @@ export function removeObjectsAtCell(level, x, y, layerNames = LAYERS) {
     level.layers[containingLayer] = (level.layers[containingLayer] || []).filter((placedObject) => {
       if (
         !requestedLayers.has(getEffectivePlacedObjectLayer(placedObject, containingLayer)) ||
-        !objectCoversCell(placedObject, x, y)
+        !objectCoversCell(placedObject, x, y) ||
+        !canRemove(placedObject)
       ) {
         return true;
       }
@@ -263,7 +270,12 @@ export function removeObjectsAtCell(level, x, y, layerNames = LAYERS) {
   return removedObjects;
 }
 
-export function removePlacedObjectById(level, placedObjectId, layerNames = LAYERS) {
+export function removePlacedObjectById(
+  level,
+  placedObjectId,
+  layerNames = LAYERS,
+  canRemove = () => true,
+) {
   let removed = null;
   const requestedLayers = new Set(getKnownLayerNames(layerNames));
 
@@ -271,7 +283,8 @@ export function removePlacedObjectById(level, placedObjectId, layerNames = LAYER
     level.layers[containingLayer] = (level.layers[containingLayer] || []).filter((placedObject) => {
       if (
         placedObject.id !== placedObjectId ||
-        !requestedLayers.has(getEffectivePlacedObjectLayer(placedObject, containingLayer))
+        !requestedLayers.has(getEffectivePlacedObjectLayer(placedObject, containingLayer)) ||
+        !canRemove(placedObject)
       ) {
         return true;
       }
@@ -306,6 +319,7 @@ export function removeObjectsInRange(
   width = 1,
   height = 1,
   layerNames = LAYERS,
+  canRemove = () => true,
 ) {
   const removedObjects = [];
   const requestedLayers = new Set(getKnownLayerNames(layerNames));
@@ -313,6 +327,10 @@ export function removeObjectsInRange(
   LAYERS.forEach((containingLayer) => {
     level.layers[containingLayer] = (level.layers[containingLayer] || []).filter((placedObject) => {
       if (!requestedLayers.has(getEffectivePlacedObjectLayer(placedObject, containingLayer))) {
+        return true;
+      }
+
+      if (!canRemove(placedObject)) {
         return true;
       }
 

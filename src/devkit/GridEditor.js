@@ -13,6 +13,8 @@ export class GridEditor {
     onPlacedObjectTransform,
     onPlacedObjectGroupMoveStart,
     onCopyPreviewMove,
+    onLockedLayerInteraction,
+    onLockedAssetInteraction,
   }) {
     this.root = root;
     this.onCellClick = onCellClick;
@@ -25,6 +27,8 @@ export class GridEditor {
     this.onPlacedObjectTransform = onPlacedObjectTransform;
     this.onPlacedObjectGroupMoveStart = onPlacedObjectGroupMoveStart;
     this.onCopyPreviewMove = onCopyPreviewMove;
+    this.onLockedLayerInteraction = onLockedLayerInteraction;
+    this.onLockedAssetInteraction = onLockedAssetInteraction;
     this.interactionMode = "move";
     this.copyModeActive = false;
     this.gesture = null;
@@ -37,6 +41,8 @@ export class GridEditor {
     this.selectedPlacedObjectId = null;
     this.selectedPlacedObjectIds = new Set();
     this.lastPlacedObjectPointerDown = null;
+    this.lastPlacedObjectPropertiesOpen = null;
+    this.lockedAssetStatusTimer = null;
     this.pendingSelectionCell = null;
     this.selectionAnimationFrame = null;
     this.lastLiveSelectionRange = null;
@@ -44,6 +50,7 @@ export class GridEditor {
     this.pendingCopyCell = null;
     this.copyAnimationFrame = null;
     this.layerVisibility = {};
+    this.layerLocks = {};
     this.placedObjectsById = new Map();
   }
 
@@ -56,12 +63,52 @@ export class GridEditor {
     this.surface?.classList.toggle("is-copy-mode", this.copyModeActive);
   }
 
+  requestPlacedObjectProperties(placedObjectId) {
+    const now = Date.now();
+    const recentlyOpened =
+      this.lastPlacedObjectPropertiesOpen?.id === placedObjectId &&
+      now - this.lastPlacedObjectPropertiesOpen.time < 250;
+    if (recentlyOpened) {
+      return;
+    }
+
+    this.lastPlacedObjectPropertiesOpen = { id: placedObjectId, time: now };
+    this.onPlacedObjectProperties?.(placedObjectId);
+  }
+
+  scheduleLockedAssetInteraction(placedObject) {
+    window.clearTimeout(this.lockedAssetStatusTimer);
+    this.lockedAssetStatusTimer = window.setTimeout(() => {
+      this.lockedAssetStatusTimer = null;
+      this.onLockedAssetInteraction?.(placedObject);
+    }, 475);
+  }
+
+  cancelLockedAssetInteractionStatus() {
+    window.clearTimeout(this.lockedAssetStatusTimer);
+    this.lockedAssetStatusTimer = null;
+  }
+
   setLayerVisibility(layerVisibility) {
     this.layerVisibility = { ...layerVisibility };
     this.surface?.querySelectorAll(".placed-asset").forEach((marker) => {
       marker.classList.toggle(
         "is-layer-hidden",
         !this.isLayerVisible(marker.dataset.layer),
+      );
+    });
+    this.syncPlacedObjectSelection(
+      this.selectedPlacedObjectId,
+      Array.from(this.selectedPlacedObjectIds),
+    );
+  }
+
+  setLayerLocks(layerLocks) {
+    this.layerLocks = { ...layerLocks };
+    this.surface?.querySelectorAll(".placed-asset").forEach((marker) => {
+      marker.classList.toggle(
+        "is-layer-locked",
+        this.isLayerLocked(marker.dataset.layer),
       );
     });
     this.syncPlacedObjectSelection(
@@ -82,7 +129,9 @@ export class GridEditor {
       const isSelected =
         this.interactionMode === "move" &&
         this.selectedPlacedObjectIds.has(placedObjectId) &&
-        this.isLayerVisible(marker.dataset.layer);
+        this.isLayerVisible(marker.dataset.layer) &&
+        !this.isLayerLocked(marker.dataset.layer) &&
+        this.placedObjectsById.get(placedObjectId)?.editorLocked !== true;
       if (!isSelected) {
         return;
       }
@@ -504,8 +553,10 @@ export class GridEditor {
       const isSelected =
         this.interactionMode === "move" &&
         this.isLayerVisible(placedObject.layer) &&
+        !this.isLayerLocked(placedObject.layer) &&
+        placedObject.editorLocked !== true &&
         (placedObject.id === selectedPlacedObjectId || this.selectedPlacedObjectIds.has(placedObject.id));
-      const isPrimarySelected = placedObject.id === selectedPlacedObjectId;
+      const isPrimarySelected = isSelected && placedObject.id === selectedPlacedObjectId;
       const isVisible = placedObject.visible !== false;
       const opacity = normalizeOpacity(placedObject.opacity);
       marker.classList.toggle("is-selected", isSelected);
@@ -516,6 +567,11 @@ export class GridEditor {
         "is-layer-hidden",
         !this.isLayerVisible(marker.dataset.layer),
       );
+      marker.classList.toggle(
+        "is-layer-locked",
+        this.isLayerLocked(marker.dataset.layer),
+      );
+      marker.classList.toggle("is-asset-locked", placedObject.editorLocked === true);
 
       if (asset?.src) {
         const image = document.createElement("img");
@@ -543,15 +599,25 @@ export class GridEditor {
 
           event.preventDefault();
           event.stopPropagation();
+          if (this.isLayerLocked(placedObject.layer)) {
+            this.onLockedLayerInteraction?.(normalizePlacedLayer(placedObject.layer));
+            return;
+          }
           const now = event.timeStamp;
           const isDoubleClick =
             this.lastPlacedObjectPointerDown?.id === placedObject.id &&
             now - this.lastPlacedObjectPointerDown.time < 450;
           this.lastPlacedObjectPointerDown = { id: placedObject.id, time: now };
           if (isDoubleClick) {
-            this.onPlacedObjectProperties?.(placedObject.id);
+            this.cancelLockedAssetInteractionStatus();
+            this.requestPlacedObjectProperties(placedObject.id);
             return;
           }
+          if (placedObject.editorLocked === true) {
+            this.scheduleLockedAssetInteraction(placedObject);
+            return;
+          }
+          this.cancelLockedAssetInteractionStatus();
           if (this.copyModeActive) {
             const target = this.getCellFromClientPoint(event.clientX, event.clientY);
             if (target) {
@@ -574,6 +640,21 @@ export class GridEditor {
 
           this.startPlacedObjectTransform(event, marker, placedObject, "move");
         });
+
+        marker.addEventListener("dblclick", (event) => {
+          if (event.button !== 0 || event.target.closest(".resize-handle")) {
+            return;
+          }
+
+          event.preventDefault();
+          event.stopPropagation();
+          if (this.isLayerLocked(placedObject.layer)) {
+            this.onLockedLayerInteraction?.(normalizePlacedLayer(placedObject.layer));
+            return;
+          }
+          this.cancelLockedAssetInteractionStatus();
+          this.requestPlacedObjectProperties(placedObject.id);
+        });
       }
 
       if (isSelected && this.selectedPlacedObjectIds.size <= 1) {
@@ -586,6 +667,10 @@ export class GridEditor {
 
   isLayerVisible(layerName) {
     return this.layerVisibility[normalizePlacedLayer(layerName)] !== false;
+  }
+
+  isLayerLocked(layerName) {
+    return this.layerLocks[normalizePlacedLayer(layerName)] === true;
   }
 
   appendResizeHandles(marker, placedObject) {
@@ -708,6 +793,8 @@ export class GridEditor {
     const selectedObjects = getPlacedObjects(this.level).filter(
       (placedObject) =>
         this.isLayerVisible(placedObject.layer) &&
+        !this.isLayerLocked(placedObject.layer) &&
+        placedObject.editorLocked !== true &&
         this.selectedPlacedObjectIds.has(placedObject.id),
     );
 
