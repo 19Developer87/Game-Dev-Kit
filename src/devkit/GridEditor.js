@@ -120,6 +120,22 @@ export class GridEditor {
     );
   }
 
+  refreshPlacedObjects(level, assets, selectedPlacedObjectId, selectedPlacedObjectIds = []) {
+    const currentLayer = this.surface?.querySelector(".asset-overlay-layer");
+    if (!currentLayer) {
+      return;
+    }
+
+    this.level = level;
+    this.selectedPlacedObjectId = selectedPlacedObjectId;
+    this.selectedPlacedObjectIds = new Set(selectedPlacedObjectIds);
+    this.placedObjectsById.clear();
+    const nextLayer = document.createElement("div");
+    nextLayer.className = "asset-overlay-layer";
+    this.renderPlacedObjects(nextLayer, level, assets, selectedPlacedObjectId);
+    currentLayer.replaceWith(nextLayer);
+  }
+
   syncPlacedObjectSelection(selectedPlacedObjectId, selectedPlacedObjectIds = []) {
     this.selectedPlacedObjectId = selectedPlacedObjectId;
     this.selectedPlacedObjectIds = new Set(selectedPlacedObjectIds);

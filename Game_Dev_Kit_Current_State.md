@@ -43,6 +43,7 @@ Update this current-state file whenever working behaviour changes.
 - Phase 5 is complete for the current editor-only layer scope and is merged into `main`.
 - Phase 6A multi-object copy/paste is implemented on the Phase 6 branch.
 - Phase 6B multi-object cut/paste and duplicate are implemented on the Phase 6 branch.
+- Phase 6C Fill Selected Area and Clear Selected Area are implemented on the Phase 6 branch.
 
 ## 4. Current Working Features
 
@@ -82,6 +83,8 @@ The editor currently supports:
 - `Ctrl+X` starts a transient orange cut placement for one or more visible, layer-unlocked, individually unlocked selected assets. Source assets remain unchanged until a successful paste commits the move atomically.
 - `Ctrl+D` duplicates one or more eligible selected assets at a nearby clamped grid offset and selects the new copies.
 - The Edit menu keeps Copy Level / Paste Level separate from Copy Selected Assets, Cut Selected Assets, and Duplicate Selected Assets.
+- Edit > Fill Selected Area creates one separate `1x1` placed object in every cell of the active grid selection.
+- Edit > Clear Selected Area removes visible, unlocked placed grid copies intersecting the active grid selection without deleting palette assets, categories, or registry entries.
 - Tool hotkeys: `Q` for Select/Move, `W` for Select/Move compatibility, and `E` for Delete outside text-entry/modal contexts.
 - Eight resize handles on an asset selected in Select/Move mode.
 - Delete and Backspace remove the currently selected placed object or selected placed-object group in Select/Move mode when focus is not in editable UI.
@@ -121,7 +124,7 @@ Current limitations:
 
 - This is still an editor only; it does not run player movement, NPC logic, battles, doors, or game integration.
 - Full Phase 5 layer behaviour is not implemented yet. Solo layer, layer reordering, active placement layers, and runtime visibility are not implemented yet.
-- Later Phase 6 tools remain unimplemented: fill, replace-matching, paint brushes, brush sizes, and `Ctrl+A`.
+- Later Phase 6 tools remain unimplemented: replace-matching, drag painting, paint brushes, brush sizes, and `Ctrl+A`.
 - Play Mode, runtime collision, trigger execution, doors/exits, spawn runtime, NPC/enemy/item gameplay systems, chunked maps, animated character import, audio/music systems, and multilayer/parallax background tools are not implemented yet.
 - Palette asset deletion is blocked while that asset is placed on any level. Remove placed copies first.
 - A category that contains assets is not deleted automatically; its assets must be removed or reorganised first.
@@ -479,7 +482,13 @@ For one imported file while a grid range is already selected, the editor may off
 - `Ctrl+D` and Edit > Duplicate Selected Assets duplicate eligible selected assets one cell right and down where bounds allow, otherwise using a nearby clamped offset. Duplicates receive new IDs, preserve metadata and unknown fields, become the active yellow selection, render once, and autosave once.
 - Cut and duplicate ignore their own selected source objects during destination overlap checks. Other hidden destination assets remain included in warnings, locked destinations block the entire operation, and confirmed editable overlaps are replaced atomically.
 - Cut/copy clipboard state remains transient editor memory only. No storage keys, schema versions, project JSON, level JSON, or asset registry structures are changed.
-- Fill, replace-matching, paint brushes, brush sizes, undo/redo, persistent/cross-level placed-object clipboard, and later Phase 6 tools are not implemented yet.
+- Fill Selected Area is separate from normal stretched placement: normal selected-range placement creates one fitted object, while Fill creates a new unique `1x1` placed object for every selected cell with its own `gridRef` and `rangeRef`.
+- Fill checks all known-layer overlaps before mutation, including hidden assets. Any locked-layer or individually locked overlap blocks the complete fill. Editable overlaps use one app-owned replacement confirmation and are removed only when the complete fill data is ready to commit.
+- Fills larger than 500 cells use an app-owned performance warning before creating the placed objects.
+- Clear Selected Area removes only visible, unlocked placed copies intersecting the active range. Hidden, locked-layer, and individually locked objects are retained and reported as skipped. The active grid selection remains available after Fill and Clear.
+- Fill and Clear update the placed-asset overlay once, keep grid cells and coordinate headers intact, render no pointer-movement work, and autosave once after a completed operation.
+- Fill and Clear never mutate imported palette assets, categories, asset registry entries, other levels, unknown layer arrays, schema versions, or storage keys.
+- Replace-matching, drag painting, paint brushes, brush sizes, undo/redo, persistent/cross-level placed-object clipboard, and later Phase 6 tools are not implemented yet.
 - In Select/Move mode, Delete or Backspace removes the selected placed copy from the current level only, clears its selection, and does not ask for confirmation.
 - In Select/Move mode, Delete or Backspace removes all multi-selected placed copies from the current level only when a group is selected.
 - In Select/Move mode, if no placed copy is selected but a grid area is selected, Delete or Backspace immediately deletes every current-level placed copy that intersects that area.
@@ -742,6 +751,13 @@ Before accepting changes to existing editor behaviour, verify:
 - [ ] Include stale hidden, layer-locked, and individually locked selections in cut/duplicate attempts and confirm they are skipped; confirm a fully protected cut reports `No unlocked visible assets selected to cut.`
 - [ ] Confirm Edit keeps Copy Level / Paste Level working and exposes separately named Copy, Cut, and Duplicate Selected Assets commands with unavailable states when appropriate.
 - [ ] Focus Properties inputs or an app-owned modal and confirm `Ctrl+C`, `Ctrl+X`, and `Ctrl+D` do not invoke placed-asset commands.
+- [ ] Select a small grid range and use Edit > Fill Selected Area; confirm every cell receives a separate `1x1` object with a unique ID and cell-specific references rather than one stretched object.
+- [ ] Fill over editable overlaps, cancel the app-owned warning, and confirm nothing changes; confirm the operation replaces those overlaps atomically after approval.
+- [ ] Fill over a hidden editable overlap and confirm the warning identifies hidden content; fill over a locked-layer or individually locked overlap and confirm the complete operation is blocked.
+- [ ] Select more than 500 cells for Fill and confirm the app-owned large-fill performance warning appears before data changes.
+- [ ] Use Edit > Clear Selected Area and confirm visible unlocked intersections are removed while hidden and locked intersections remain and are reported as skipped.
+- [ ] Confirm Fill and Clear keep the selected range active, update only placed markers, autosave once, and preserve palette assets, categories, unknown layers, and saved JSON structures.
+- [ ] Confirm Edit disables Fill without both a selected range and palette asset, and disables Clear without a selected range.
 - [ ] Move or resize over another asset and confirm the in-app overlap replacement warning appears before removal.
 - [ ] Select a placed object in Select/Move mode, press Delete and Backspace in separate tests, and confirm each removes only the selected grid copy.
 - [ ] Drag-select multiple placed assets in Select/Move mode and confirm every intersecting placed copy is highlighted.

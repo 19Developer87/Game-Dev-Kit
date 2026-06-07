@@ -444,6 +444,72 @@ export function placeAsset(level, asset, x, y, width = 1, height = 1) {
   return placedObject;
 }
 
+export function fillAreaWithAsset(level, asset, range, replacedObjectIds = []) {
+  if (!asset?.id || !range) {
+    return null;
+  }
+
+  const startX = Number(range.x);
+  const startY = Number(range.y);
+  const width = Math.max(1, Number(range.width) || 1);
+  const height = Math.max(1, Number(range.height) || 1);
+  if (!Number.isFinite(startX) || !Number.isFinite(startY)) {
+    return null;
+  }
+
+  const layerName = getLayerArrayName(asset.defaultLayer || "objects");
+  const timestamp = Date.now();
+  const placedObjects = [];
+  let index = 0;
+  for (let y = startY; y < startY + height; y += 1) {
+    for (let x = startX; x < startX + width; x += 1) {
+      placedObjects.push({
+        id: `placed-${asset.id}-fill-${timestamp}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+        assetId: asset.id,
+        type: asset.type || asset.id,
+        name: asset.name,
+        x,
+        y,
+        gridRef: toGridRef(x, y),
+        rangeRef: toRangeRef(x, y, 1, 1),
+        layer: layerName,
+        width: 1,
+        height: 1,
+        visible: asset.visible !== false,
+        transparent: asset.transparent !== false,
+        solid: Boolean(asset.solid),
+        blocksMovement: Boolean(asset.blocksMovement),
+        collisionEnabled: Boolean(asset.collisionEnabled),
+        opacity: 100,
+        notes: "",
+      });
+      index += 1;
+    }
+  }
+
+  removeKnownPlacedObjectsByIds(level, replacedObjectIds);
+  level.layers[layerName] = Array.isArray(level.layers[layerName])
+    ? level.layers[layerName]
+    : [];
+  level.layers[layerName].push(...placedObjects);
+  return placedObjects;
+}
+
+export function removeKnownPlacedObjectsByIds(level, placedObjectIds) {
+  const removedIds = new Set(placedObjectIds);
+  const removedObjects = [];
+  LAYERS.forEach((layerName) => {
+    level.layers[layerName] = (level.layers[layerName] || []).filter((placedObject) => {
+      if (!removedIds.has(placedObject.id)) {
+        return true;
+      }
+      removedObjects.push(placedObject);
+      return false;
+    });
+  });
+  return removedObjects;
+}
+
 export function duplicatePlacedAsset(level, sourceObject, x, y, width, height) {
   removeObjectsInRange(level, x, y, width, height);
   const storedLayer = sourceObject.layer || "objects";

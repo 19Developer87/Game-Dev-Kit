@@ -31,6 +31,7 @@ import {
   pasteLevelContent,
   placeAsset,
   findObjectsInRange,
+  fillAreaWithAsset,
   findAssetCategoryByName,
   deleteAssetCategory,
   deleteImportedAsset,
@@ -44,6 +45,7 @@ import {
   removeObjectsInRange,
   removeObjectsAtCell,
   removePlacedObjectById,
+  removeKnownPlacedObjectsByIds,
   resizeCurrentLevel,
   switchLevel,
   toGridRef,
@@ -118,6 +120,7 @@ class DevEditor {
       onSelect: (asset) => {
         this.selectedAsset = asset;
         this.activateTool("move");
+        this.syncAreaToolMenu();
         if (this.selectionState === "selectionReady") {
           this.setSelectionReadyStatus();
         } else {
@@ -304,6 +307,16 @@ class DevEditor {
 
     this.ui.duplicateSelectedAssetsButton.addEventListener("click", async () => {
       await this.duplicateSelectedPlacedAssets();
+      this.closeMenus();
+    });
+
+    this.ui.fillSelectedAreaButton.addEventListener("click", async () => {
+      await this.fillSelectedArea();
+      this.closeMenus();
+    });
+
+    this.ui.clearSelectedAreaButton.addEventListener("click", () => {
+      this.clearSelectedArea();
       this.closeMenus();
     });
 
@@ -1907,6 +1920,179 @@ class DevEditor {
     await this.placeAssetInRange(asset, range, "button");
   }
 
+  async fillSelectedArea() {
+    if (!this.selectedRange || this.selectionState !== "selectionReady") {
+      this.setStatus("Select a grid area first.");
+      return false;
+    }
+    if (!this.selectedAsset) {
+      this.setStatus("No asset selected.");
+      return false;
+    }
+    if (
+      this.selectedAsset.isImported &&
+      (!this.selectedAsset.src || typeof this.selectedAsset.src !== "string")
+    ) {
+      this.setStatus("Asset image data missing.");
+      return false;
+    }
+
+    const targetLayer = this.selectedAsset.defaultLayer || "objects";
+    if (this.isLayerLocked(targetLayer)) {
+      this.setStatus(
+        `Fill blocked: layer "${normalizePlacedLayer(targetLayer)}" is locked.`,
+      );
+      return false;
+    }
+
+    const level = getCurrentLevel(this.project);
+    const range = { ...this.selectedRange };
+    const existing = findObjectsInRange(
+      level,
+      range.x,
+      range.y,
+      range.width,
+      range.height,
+    );
+    if (existing.some((placedObject) => this.isPlacedObjectProtected(placedObject))) {
+      this.setStatus(
+        "Selected area contains locked assets. Unlock them before filling this area.",
+      );
+      return false;
+    }
+
+    const fillCount = range.width * range.height;
+    if (fillCount > 500) {
+      const confirmed = await this.showConfirmModal({
+        title: "Large Area Fill?",
+        message: `Filling this area will create ${fillCount} placed assets and may affect performance. Continue?`,
+        confirmLabel: "Fill Area",
+      });
+      if (!confirmed) {
+        this.setStatus("Fill cancelled.");
+        return false;
+      }
+    }
+
+    if (existing.length > 0) {
+      const confirmed = await this.showConfirmModal({
+        title: "Replace Existing Assets?",
+        message: this.createOverlapWarningMessage(
+          "Filling this area will replace existing editable assets in the selected area. Continue?",
+          existing,
+        ),
+        confirmLabel: "Fill Area",
+      });
+      if (!confirmed) {
+        this.setStatus("Fill cancelled.");
+        return false;
+      }
+    }
+
+    const placedObjects = fillAreaWithAsset(
+      level,
+      this.selectedAsset,
+      range,
+      existing.map((placedObject) => placedObject.id),
+    );
+    if (!placedObjects) {
+      this.setStatus("Unable to fill the selected area.");
+      return false;
+    }
+
+    this.cancelCopyPlacement();
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    this.refreshPlacedAssetMarkers();
+    this.autosave(`Filled ${placedObjects.length} cells.`);
+    return true;
+  }
+
+  clearSelectedArea() {
+    if (!this.selectedRange || this.selectionState !== "selectionReady") {
+      this.setStatus("Select a grid area first.");
+      return false;
+    }
+
+    const level = getCurrentLevel(this.project);
+    const range = this.selectedRange;
+    const existing = findObjectsInRange(
+      level,
+      range.x,
+      range.y,
+      range.width,
+      range.height,
+    );
+    const removable = existing.filter(
+      (placedObject) =>
+        this.isLayerVisible(placedObject.layer) &&
+        !this.isPlacedObjectProtected(placedObject),
+    );
+    const hiddenCount = existing.filter(
+      (placedObject) => !this.isLayerVisible(placedObject.layer),
+    ).length;
+    const lockedCount = existing.filter(
+      (placedObject) =>
+        this.isLayerVisible(placedObject.layer) &&
+        this.isPlacedObjectProtected(placedObject),
+    ).length;
+
+    if (removable.length === 0) {
+      const skipped = [];
+      if (hiddenCount > 0) {
+        skipped.push(`${hiddenCount} hidden`);
+      }
+      if (lockedCount > 0) {
+        skipped.push(`${lockedCount} locked`);
+      }
+      this.setStatus(
+        skipped.length > 0
+          ? `No editable visible assets cleared. ${skipped.join(" and ")} asset${hiddenCount + lockedCount === 1 ? " was" : "s were"} skipped.`
+          : "No placed assets found in the selected area.",
+      );
+      return false;
+    }
+
+    const removedObjects = removeKnownPlacedObjectsByIds(
+      level,
+      removable.map((placedObject) => placedObject.id),
+    );
+    this.cancelCopyPlacement();
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    this.refreshPlacedAssetMarkers();
+    const skippedParts = [];
+    if (hiddenCount > 0) {
+      skippedParts.push(`${hiddenCount} hidden`);
+    }
+    if (lockedCount > 0) {
+      skippedParts.push(`${lockedCount} locked`);
+    }
+    this.autosave(
+      `Cleared ${removedObjects.length} asset${removedObjects.length === 1 ? "" : "s"}.${
+        skippedParts.length > 0
+          ? ` ${skippedParts.join(" and ")} asset${hiddenCount + lockedCount === 1 ? " was" : "s were"} skipped.`
+          : ""
+      }`,
+    );
+    return true;
+  }
+
+  refreshPlacedAssetMarkers() {
+    const level = getCurrentLevel(this.project);
+    this.gridEditor.refreshPlacedObjects(
+      level,
+      this.project.assets,
+      this.selectedPlacedObjectId,
+      Array.from(this.selectedPlacedObjectIds),
+    );
+    this.gridEditor.setLayerVisibility(this.layerVisibility);
+    this.gridEditor.setLayerLocks(this.layerLocks);
+    this.gridEditor.updateSelection(this.selectedRange);
+    this.syncAssetMenu();
+    this.syncAreaToolMenu();
+  }
+
   async placeAssetInRange(asset, range, source) {
     if (!asset) {
       this.setStatus("No asset selected.");
@@ -2574,6 +2760,7 @@ class DevEditor {
     this.syncLayerLockControls();
     this.syncCoordinateStatus();
     this.syncPlacementButton();
+    this.syncAreaToolMenu();
     this.syncAssetMenu();
     this.ui.levelSummary.textContent = `${level.name} · ${level.gridWidth}x${level.gridHeight} · ${level.tileSize}px tiles`;
   }
@@ -3008,6 +3195,7 @@ class DevEditor {
       this.selectionState === "selectionReady" &&
       this.activeTool !== "delete"
     );
+    this.syncAreaToolMenu();
   }
 
   syncAssetMenu() {
@@ -3028,6 +3216,14 @@ class DevEditor {
     if (!isEnabled) {
       this.ui.assetMenu.removeAttribute("open");
     }
+  }
+
+  syncAreaToolMenu() {
+    const hasSelectedArea =
+      Boolean(this.selectedRange) &&
+      this.selectionState === "selectionReady";
+    this.ui.fillSelectedAreaButton.disabled = !(hasSelectedArea && this.selectedAsset);
+    this.ui.clearSelectedAreaButton.disabled = !hasSelectedArea;
   }
 
   bindMenuBehavior() {

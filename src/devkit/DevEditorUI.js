@@ -97,6 +97,9 @@ export function createEditorLayout(root) {
                   <button type="button" data-action="cut-selected-assets" title="Ctrl+X">Cut Selected Assets</button>
                   <button type="button" data-action="duplicate-selected-assets" title="Ctrl+D">Duplicate Selected Assets</button>
                   <div class="menu-panel-divider"></div>
+                  <button type="button" data-action="fill-selected-area">Fill Selected Area</button>
+                  <button type="button" data-action="clear-selected-area">Clear Selected Area</button>
+                  <div class="menu-panel-divider"></div>
                   <button type="button" data-action="edit-placed-asset-properties">Properties</button>
                 </div>
               </details>
@@ -168,6 +171,8 @@ export function createEditorLayout(root) {
     cutSelectedAssetsButton: root.querySelector('[data-action="cut-selected-assets"]'),
     duplicateSelectedAssetsButton: root.querySelector('[data-action="duplicate-selected-assets"]'),
     editPropertiesButton: root.querySelector('[data-action="edit-placed-asset-properties"]'),
+    fillSelectedAreaButton: root.querySelector('[data-action="fill-selected-area"]'),
+    clearSelectedAreaButton: root.querySelector('[data-action="clear-selected-area"]'),
     gridSize: root.querySelector('[data-role="grid-size"]'),
     gridStage: root.querySelector('[data-role="grid-stage"]'),
     layerVisibilityInputs: Array.from(
