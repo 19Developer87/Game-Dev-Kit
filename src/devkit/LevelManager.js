@@ -495,6 +495,62 @@ export function fillAreaWithAsset(level, asset, range, replacedObjectIds = []) {
   return placedObjects;
 }
 
+export function fillCellsWithAsset(level, asset, cells, replacedObjectIds = []) {
+  if (!asset?.id || !Array.isArray(cells) || cells.length === 0) {
+    return null;
+  }
+
+  const normalizedCells = [];
+  const occupiedCells = new Set();
+  cells.forEach((cell) => {
+    const x = Number(cell?.x);
+    const y = Number(cell?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return;
+    }
+    const key = `${x}:${y}`;
+    if (occupiedCells.has(key)) {
+      return;
+    }
+    occupiedCells.add(key);
+    normalizedCells.push({ x, y });
+  });
+
+  if (normalizedCells.length === 0) {
+    return null;
+  }
+
+  const layerName = getLayerArrayName(asset.defaultLayer || "objects");
+  const timestamp = Date.now();
+  const placedObjects = normalizedCells.map(({ x, y }, index) => ({
+    id: `placed-${asset.id}-fill-${timestamp}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+    assetId: asset.id,
+    type: asset.type || asset.id,
+    name: asset.name,
+    x,
+    y,
+    gridRef: toGridRef(x, y),
+    rangeRef: toRangeRef(x, y, 1, 1),
+    layer: layerName,
+    width: 1,
+    height: 1,
+    visible: asset.visible !== false,
+    transparent: asset.transparent !== false,
+    solid: Boolean(asset.solid),
+    blocksMovement: Boolean(asset.blocksMovement),
+    collisionEnabled: Boolean(asset.collisionEnabled),
+    opacity: 100,
+    notes: "",
+  }));
+
+  removeKnownPlacedObjectsByIds(level, replacedObjectIds);
+  level.layers[layerName] = Array.isArray(level.layers[layerName])
+    ? level.layers[layerName]
+    : [];
+  level.layers[layerName].push(...placedObjects);
+  return placedObjects;
+}
+
 export function removeKnownPlacedObjectsByIds(level, placedObjectIds) {
   const removedIds = new Set(placedObjectIds);
   const removedObjects = [];

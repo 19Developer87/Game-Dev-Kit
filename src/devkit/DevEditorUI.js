@@ -152,6 +152,7 @@ export function createEditorLayout(root) {
           </div>
           <div class="status-bar">
             <div class="status-message" data-role="status-message"></div>
+            <div class="mode-status" data-role="mode-status" hidden></div>
             <div class="coordinate-status" data-role="coordinate-status">Hover: - · Selected: -</div>
             <div class="level-summary" data-role="level-summary"></div>
           </div>
@@ -187,6 +188,7 @@ export function createEditorLayout(root) {
     levelPickerButton: root.querySelector('[data-role="level-picker-button"]'),
     levelPickerPanel: root.querySelector('[data-role="level-picker-panel"]'),
     levelSummary: root.querySelector('[data-role="level-summary"]'),
+    modeStatus: root.querySelector('[data-role="mode-status"]'),
     placeSelectedAssetButton: root.querySelector('[data-action="place-selected-asset"]'),
     selectedLevelName: root.querySelector('[data-role="selected-level-name"]'),
     sidebar: root.querySelector('[data-role="sidebar"]'),

@@ -32,6 +32,7 @@ import {
   placeAsset,
   findObjectsInRange,
   fillAreaWithAsset,
+  fillCellsWithAsset,
   findAssetCategoryByName,
   deleteAssetCategory,
   deleteImportedAsset,
@@ -72,6 +73,8 @@ class DevEditor {
     this.saveQueue = Promise.resolve();
     this.copiedLevel = this.loadCopiedLevel();
     this.selectedRange = null;
+    this.selectedRanges = [];
+    this.isCtrlPressed = false;
     this.selectionState = "idle";
     this.selectionConfirmationTimer = null;
     this.hoveredGridRef = null;
@@ -92,7 +95,7 @@ class DevEditor {
       root: this.ui.gridStage,
       onCellClick: (cell) => this.handleCellClick(cell),
       onHoverCell: (cell) => this.handleHoverCell(cell),
-      onSelectionChange: (range, state) => this.handleSelectionChange(range, state),
+      onSelectionChange: (range, state, options) => this.handleSelectionChange(range, state, options),
       onAssetDrop: (drop) => this.handleAssetDrop(drop),
       onPlacedObjectSelect: (placedObjectId) => this.selectPlacedObject(placedObjectId),
       onPlacedObjectProperties: (placedObjectId) => this.openPlacedAssetProperties(placedObjectId),
@@ -150,6 +153,24 @@ class DevEditor {
 
     this.root.querySelector('[data-action="place-selected-asset"]').addEventListener("click", async () => {
       await this.placeSelectedAssetInRange();
+    });
+
+    window.addEventListener("keydown", (event) => {
+      if (event.key !== "Control" || this.isCtrlPressed) {
+        return;
+      }
+      this.setCtrlPressed(true);
+    });
+
+    window.addEventListener("keyup", (event) => {
+      if (event.key !== "Control") {
+        return;
+      }
+      this.setCtrlPressed(false);
+    });
+
+    window.addEventListener("blur", () => {
+      this.setCtrlPressed(false);
     });
 
     this.ui.sidebarToggle.addEventListener("click", () => {
@@ -433,12 +454,19 @@ class DevEditor {
       });
   }
 
-  async handleCellClick({ x, y }) {
+  async handleCellClick({ x, y, additive = false }) {
     const level = getCurrentLevel(this.project);
 
     if (this.activeTool === "move") {
       if (this.copiedPlacedGroup) {
         await this.pasteCopiedPlacedAssetAt(x, y);
+        return;
+      }
+
+      if (!additive && this.selectedRanges.length > 0) {
+        this.clearSelection();
+        this.render();
+        this.setStatus("Multi-area selection cleared.");
         return;
       }
 
@@ -515,8 +543,10 @@ class DevEditor {
     }
   }
 
-  handleSelectionChange(range, state) {
+  handleSelectionChange(range, state, options = {}) {
+    const isAdditiveSelection = Boolean(options.additive);
     const hadPlacedObjectSelection = this.activeTool === "move" && this.selectedPlacedObjectIds.size > 0;
+    const previousSelectedRange = this.selectedRange;
     this.selectedRange = range;
     this.selectionState = state;
     this.dropPreviewRange = null;
@@ -533,22 +563,41 @@ class DevEditor {
     if (state === "draggingSelection") {
       if (this.activeTool === "delete") {
         this.setStatus(`Delete area: ${formatRange(range)}.`);
+      } else if (isAdditiveSelection) {
+        const previewRanges = [...this.selectedRanges, range];
+        this.setStatus(this.createMultiAreaSelectionStatus(previewRanges));
       }
       return;
     }
 
     this.syncPlacementButton();
-    this.gridEditor.updateSelection(this.selectedRange);
+    this.gridEditor.updateSelection(this.selectedRanges.length > 0 ? null : this.selectedRange);
     this.gridEditor.updateDropPreview(null);
 
     if (this.activeTool === "delete") {
       if (state === "selectionReady") {
-        this.deleteAssetsInRange(range, { clearSelection: true });
+        if (isAdditiveSelection) {
+          this.addSelectedArea(range);
+          this.setStatus(this.createMultiAreaSelectionStatus());
+        } else {
+          this.deleteAssetsInRange(range, { clearSelection: true });
+        }
       }
       return;
     }
 
     if (state === "selectionReady") {
+      if (isAdditiveSelection) {
+        this.addSelectedArea(range, { seedRange: previousSelectedRange });
+        this.clearPlacedObjectSelection();
+        this.render();
+        this.setStatus(this.createMultiAreaSelectionStatus());
+        return;
+      }
+
+      this.selectedRanges = [];
+      this.gridEditor.updateMultiSelections([]);
+      this.gridEditor.updateSelection(this.selectedRange);
       const selectedObjects = findObjectsInRange(
         getCurrentLevel(this.project),
         range.x,
@@ -583,6 +632,13 @@ class DevEditor {
     }
 
     this.selectedAsset = asset;
+    if (this.selectedRanges.length > 1) {
+      this.dropPreviewRange = null;
+      this.gridEditor.updateDropPreview(null);
+      this.setStatus("Use Fill Selected Area to place assets into multiple selected areas.");
+      return;
+    }
+
     if (this.selectedRange && !rangeContains(this.selectedRange, x, y)) {
       this.clearSelection();
     }
@@ -1995,11 +2051,17 @@ class DevEditor {
       return;
     }
 
+    if (this.selectedRanges.length > 1) {
+      this.setStatus("Use Fill Selected Area to place assets into multiple selected areas.");
+      return;
+    }
+
     await this.placeAssetInRange(asset, range, "button");
   }
 
   async fillSelectedArea() {
-    if (!this.selectedRange || this.selectionState !== "selectionReady") {
+    const selectedAreas = this.getSelectedAreaRanges();
+    if (selectedAreas.length === 0) {
       this.setStatus("Select a grid area first.");
       return false;
     }
@@ -2024,22 +2086,32 @@ class DevEditor {
     }
 
     const level = getCurrentLevel(this.project);
-    const range = { ...this.selectedRange };
-    const existing = findObjectsInRange(
-      level,
-      range.x,
-      range.y,
-      range.width,
-      range.height,
-    );
+    const isMultiAreaFill = selectedAreas.length > 1;
+    const range = { ...selectedAreas[selectedAreas.length - 1] };
+    const existing = isMultiAreaFill
+      ? this.findObjectsInSelectedAreas(selectedAreas)
+      : findObjectsInRange(
+          level,
+          range.x,
+          range.y,
+          range.width,
+          range.height,
+        );
     if (existing.some((placedObject) => this.isPlacedObjectProtected(placedObject))) {
       this.setStatus(
-        "Selected area contains locked assets. Unlock them before filling this area.",
+        isMultiAreaFill
+          ? "Selected areas contain locked assets. Unlock them before filling these areas."
+          : "Selected area contains locked assets. Unlock them before filling this area.",
       );
       return false;
     }
 
-    const fillCount = range.width * range.height;
+    const selectedCells = isMultiAreaFill
+      ? this.getUniqueSelectedCells(selectedAreas)
+      : null;
+    const fillCount = isMultiAreaFill
+      ? selectedCells.length
+      : range.width * range.height;
     if (fillCount > 500) {
       const confirmed = await this.showConfirmModal({
         title: "Large Area Fill?",
@@ -2056,7 +2128,9 @@ class DevEditor {
       const confirmed = await this.showConfirmModal({
         title: "Replace Existing Assets?",
         message: this.createOverlapWarningMessage(
-          "Filling this area will replace existing editable assets in the selected area. Continue?",
+          isMultiAreaFill
+            ? "Filling these areas will replace existing editable assets in the selected areas. Continue?"
+            : "Filling this area will replace existing editable assets in the selected area. Continue?",
           existing,
         ),
         confirmLabel: "Fill Area",
@@ -2067,12 +2141,19 @@ class DevEditor {
       }
     }
 
-    const placedObjects = fillAreaWithAsset(
-      level,
-      this.selectedAsset,
-      range,
-      existing.map((placedObject) => placedObject.id),
-    );
+    const placedObjects = isMultiAreaFill
+      ? fillCellsWithAsset(
+          level,
+          this.selectedAsset,
+          selectedCells,
+          existing.map((placedObject) => placedObject.id),
+        )
+      : fillAreaWithAsset(
+          level,
+          this.selectedAsset,
+          range,
+          existing.map((placedObject) => placedObject.id),
+        );
     if (!placedObjects) {
       this.setStatus("Unable to fill the selected area.");
       return false;
@@ -2082,25 +2163,33 @@ class DevEditor {
     this.clearPlacedObjectSelection();
     this.closePlacedPropertiesDialog();
     this.refreshPlacedAssetMarkers();
-    this.autosave(`Filled ${placedObjects.length} cells.`);
+    this.autosave(
+      isMultiAreaFill
+        ? `Filled ${placedObjects.length} cells across ${selectedAreas.length} areas.`
+        : `Filled ${placedObjects.length} cells.`,
+    );
     return true;
   }
 
   clearSelectedArea() {
-    if (!this.selectedRange || this.selectionState !== "selectionReady") {
+    const selectedAreas = this.getSelectedAreaRanges();
+    if (selectedAreas.length === 0) {
       this.setStatus("Select a grid area first.");
       return false;
     }
 
     const level = getCurrentLevel(this.project);
-    const range = this.selectedRange;
-    const existing = findObjectsInRange(
-      level,
-      range.x,
-      range.y,
-      range.width,
-      range.height,
-    );
+    const isMultiAreaClear = selectedAreas.length > 1;
+    const range = selectedAreas[selectedAreas.length - 1];
+    const existing = isMultiAreaClear
+      ? this.findObjectsInSelectedAreas(selectedAreas)
+      : findObjectsInRange(
+          level,
+          range.x,
+          range.y,
+          range.width,
+          range.height,
+        );
     const removable = existing.filter(
       (placedObject) =>
         this.isLayerVisible(placedObject.layer) &&
@@ -2126,7 +2215,7 @@ class DevEditor {
       this.setStatus(
         skipped.length > 0
           ? `No editable visible assets cleared. ${skipped.join(" and ")} asset${hiddenCount + lockedCount === 1 ? " was" : "s were"} skipped.`
-          : "No placed assets found in the selected area.",
+          : `No placed assets found in the selected area${isMultiAreaClear ? "s" : ""}.`,
       );
       return false;
     }
@@ -2147,7 +2236,9 @@ class DevEditor {
       skippedParts.push(`${lockedCount} locked`);
     }
     this.autosave(
-      `Cleared ${removedObjects.length} asset${removedObjects.length === 1 ? "" : "s"}.${
+      `Cleared ${removedObjects.length} asset${removedObjects.length === 1 ? "" : "s"}${
+        isMultiAreaClear ? ` across ${selectedAreas.length} areas` : ""
+      }.${
         skippedParts.length > 0
           ? ` ${skippedParts.join(" and ")} asset${hiddenCount + lockedCount === 1 ? " was" : "s were"} skipped.`
           : ""
@@ -2157,7 +2248,8 @@ class DevEditor {
   }
 
   async replaceMatchingAssetsInSelectedArea() {
-    if (!this.selectedRange || this.selectionState !== "selectionReady") {
+    const selectedAreas = this.getSelectedAreaRanges();
+    if (selectedAreas.length === 0) {
       this.setStatus("Select a grid area first.");
       return false;
     }
@@ -2176,8 +2268,8 @@ class DevEditor {
     }
 
     const level = getCurrentLevel(this.project);
-    const range = { ...this.selectedRange };
-    const candidates = this.getReplaceMatchingCandidates(range);
+    const isMultiAreaReplace = selectedAreas.length > 1;
+    const candidates = this.getReplaceMatchingCandidates(selectedAreas);
     if (candidates.length === 0) {
       this.setStatus("No visible unlocked placed assets found in the selected area.");
       return false;
@@ -2205,13 +2297,9 @@ class DevEditor {
       return false;
     }
 
-    const matchingObjects = findObjectsInRange(
-      level,
-      range.x,
-      range.y,
-      range.width,
-      range.height,
-    ).filter((placedObject) => placedObject.assetId === sourceAssetId);
+    const matchingObjects = this.findObjectsInSelectedAreas(selectedAreas).filter(
+      (placedObject) => placedObject.assetId === sourceAssetId,
+    );
     const replaceableObjects = matchingObjects.filter(
       (placedObject) =>
         this.isLayerVisible(placedObject.layer) &&
@@ -2239,7 +2327,7 @@ class DevEditor {
     const skippedText = this.createSkippedAssetParts(hiddenCount, lockedCount);
     const confirmed = await this.showConfirmModal({
       title: "Replace Matching Assets?",
-      message: `Replace ${replaceableObjects.length} matching asset${replaceableObjects.length === 1 ? "" : "s"} in the selected area?${
+      message: `Replace ${replaceableObjects.length} matching asset${replaceableObjects.length === 1 ? "" : "s"} in the selected area${isMultiAreaReplace ? "s" : ""}?${
         skippedText.length > 0
           ? ` ${skippedText.join(" and ")} asset${hiddenCount + lockedCount === 1 ? " will be" : "s will be"} skipped.`
           : ""
@@ -2267,7 +2355,9 @@ class DevEditor {
     this.closePlacedPropertiesDialog();
     this.refreshPlacedAssetMarkers();
     this.autosave(
-      `Replaced ${replacedObjects.length} matching asset${replacedObjects.length === 1 ? "" : "s"} with ${this.selectedAsset.name}.${
+      `Replaced ${replacedObjects.length} matching asset${replacedObjects.length === 1 ? "" : "s"} with ${this.selectedAsset.name}${
+        isMultiAreaReplace ? ` across ${selectedAreas.length} areas` : ""
+      }.${
         skippedText.length > 0
           ? ` ${skippedText.join(" and ")} asset${hiddenCount + lockedCount === 1 ? " was" : "s were"} skipped.`
           : ""
@@ -2276,15 +2366,9 @@ class DevEditor {
     return true;
   }
 
-  getReplaceMatchingCandidates(range) {
-    const level = getCurrentLevel(this.project);
-    const candidateObjects = findObjectsInRange(
-      level,
-      range.x,
-      range.y,
-      range.width,
-      range.height,
-    ).filter(
+  getReplaceMatchingCandidates(rangeOrRanges) {
+    const ranges = Array.isArray(rangeOrRanges) ? rangeOrRanges : [rangeOrRanges].filter(Boolean);
+    const candidateObjects = this.findObjectsInSelectedAreas(ranges).filter(
       (placedObject) =>
         placedObject.assetId &&
         this.isLayerVisible(placedObject.layer) &&
@@ -2342,7 +2426,8 @@ class DevEditor {
     );
     this.gridEditor.setLayerVisibility(this.layerVisibility);
     this.gridEditor.setLayerLocks(this.layerLocks);
-    this.gridEditor.updateSelection(this.selectedRange);
+    this.gridEditor.updateSelection(this.selectedRanges.length > 0 ? null : this.selectedRange);
+    this.gridEditor.updateMultiSelections(this.selectedRanges);
     this.syncAssetMenu();
     this.syncAreaToolMenu();
   }
@@ -2424,16 +2509,90 @@ class DevEditor {
     return { x, y, width: 1, height: 1 };
   }
 
+  addSelectedArea(range, { seedRange = null } = {}) {
+    const normalizedRange = { ...range };
+    if (
+      seedRange &&
+      this.selectedRanges.length === 0 &&
+      !rangesMatch(seedRange, normalizedRange)
+    ) {
+      this.selectedRanges.push({ ...seedRange });
+    }
+    this.selectedRange = normalizedRange;
+    this.selectedRanges = this.selectedRanges.filter(
+      (selectedRange) => !rangesMatch(selectedRange, normalizedRange),
+    );
+    this.selectedRanges.push(normalizedRange);
+    this.selectionState = "selectionReady";
+    this.gridEditor.updateSelection(null);
+    this.gridEditor.updateMultiSelections(this.selectedRanges);
+    this.syncCoordinateStatus();
+    this.syncPlacementButton();
+    this.syncAreaToolMenu();
+  }
+
+  getSelectedAreaRanges() {
+    if (this.selectedRanges.length > 0) {
+      return this.selectedRanges.map((range) => ({ ...range }));
+    }
+
+    if (this.selectedRange && this.selectionState === "selectionReady") {
+      return [{ ...this.selectedRange }];
+    }
+
+    return [];
+  }
+
+  getUniqueSelectedCells(ranges = this.getSelectedAreaRanges()) {
+    const cells = [];
+    const cellKeys = new Set();
+    ranges.forEach((range) => {
+      for (let y = range.y; y < range.y + range.height; y += 1) {
+        for (let x = range.x; x < range.x + range.width; x += 1) {
+          const key = `${x}:${y}`;
+          if (cellKeys.has(key)) {
+            continue;
+          }
+          cellKeys.add(key);
+          cells.push({ x, y });
+        }
+      }
+    });
+    return cells;
+  }
+
+  findObjectsInSelectedAreas(ranges = this.getSelectedAreaRanges()) {
+    const level = getCurrentLevel(this.project);
+    const objectsById = new Map();
+    ranges.forEach((range) => {
+      findObjectsInRange(level, range.x, range.y, range.width, range.height).forEach(
+        (placedObject) => {
+          if (!objectsById.has(placedObject.id)) {
+            objectsById.set(placedObject.id, placedObject);
+          }
+        },
+      );
+    });
+    return Array.from(objectsById.values());
+  }
+
+  createMultiAreaSelectionStatus(ranges = this.selectedRanges) {
+    const cells = this.getUniqueSelectedCells(ranges);
+    return `Selected: ${ranges.length} areas / ${cells.length} cells.`;
+  }
+
   clearSelection() {
     if (this.selectionConfirmationTimer) {
       window.clearTimeout(this.selectionConfirmationTimer);
       this.selectionConfirmationTimer = null;
     }
     this.selectedRange = null;
+    this.selectedRanges = [];
     this.selectionState = "idle";
     this.dropPreviewRange = null;
     this.gridEditor.cancelGesture();
     this.gridEditor.updateSelection(null);
+    this.gridEditor.updateMultiSelections([]);
     this.gridEditor.updateDropPreview(null);
     this.syncCoordinateStatus();
     this.syncPlacementButton();
@@ -2445,15 +2604,23 @@ class DevEditor {
       this.selectionConfirmationTimer = null;
     }
     this.selectedRange = null;
+    this.selectedRanges = [];
     this.selectionState = "idle";
     this.dropPreviewRange = null;
     this.gridEditor.updateSelection(null);
+    this.gridEditor.updateMultiSelections([]);
     this.gridEditor.updateDropPreview(null);
     this.syncCoordinateStatus();
     this.syncPlacementButton();
   }
 
   setSelectionReadyStatus() {
+    if (this.selectedRanges.length > 1) {
+      this.setStatus(`${this.createMultiAreaSelectionStatus()} Use Fill, Clear, or Replace Matching Assets from Edit.`);
+      this.syncPlacementButton();
+      return;
+    }
+
     const selected = `${toGridRef(this.selectedRange.x, this.selectedRange.y)} to ${toGridRef(
       this.selectedRange.x + this.selectedRange.width - 1,
       this.selectedRange.y + this.selectedRange.height - 1,
@@ -2995,11 +3162,12 @@ class DevEditor {
     this.gridEditor.render(
       level,
       this.project.assets,
-      this.selectedRange,
+      this.selectedRanges.length > 0 ? null : this.selectedRange,
       this.dropPreviewRange,
       this.selectedPlacedObjectId,
       Array.from(this.selectedPlacedObjectIds),
       this.createCopyPreview(),
+      this.selectedRanges,
     );
     this.gridEditor.setLayerVisibility(this.layerVisibility);
     this.gridEditor.setLayerLocks(this.layerLocks);
@@ -3432,12 +3600,14 @@ class DevEditor {
 
   syncCoordinateStatus() {
     const hover = this.hoveredGridRef || "-";
-    const selected = this.selectedRange
-      ? `${toGridRef(this.selectedRange.x, this.selectedRange.y)} to ${toGridRef(
-          this.selectedRange.x + this.selectedRange.width - 1,
-          this.selectedRange.y + this.selectedRange.height - 1,
-        )}`
-      : "-";
+    const selected = this.selectedRanges.length > 1
+      ? `${this.selectedRanges.length} areas / ${this.getUniqueSelectedCells().length} cells`
+      : this.selectedRange
+        ? `${toGridRef(this.selectedRange.x, this.selectedRange.y)} to ${toGridRef(
+            this.selectedRange.x + this.selectedRange.width - 1,
+            this.selectedRange.y + this.selectedRange.height - 1,
+          )}`
+        : "-";
 
     this.ui.coordinateStatus.textContent = `Hover: ${hover} · Selected: ${selected}`;
   }
@@ -3473,15 +3643,14 @@ class DevEditor {
   }
 
   syncAreaToolMenu() {
-    const hasSelectedArea =
-      Boolean(this.selectedRange) &&
-      this.selectionState === "selectionReady";
+    const selectedAreas = this.getSelectedAreaRanges();
+    const hasSelectedArea = selectedAreas.length > 0;
     this.ui.fillSelectedAreaButton.disabled = !(hasSelectedArea && this.selectedAsset);
     this.ui.clearSelectedAreaButton.disabled = !hasSelectedArea;
     this.ui.replaceMatchingAssetsButton.disabled = !(
       hasSelectedArea &&
       this.selectedAsset &&
-      this.getReplaceMatchingCandidates(this.selectedRange).length > 0
+      this.getReplaceMatchingCandidates(selectedAreas).length > 0
     );
   }
 
@@ -3774,6 +3943,13 @@ class DevEditor {
 
   setStartupStatus(message) {
     this.ui.startupStatus.textContent = message;
+  }
+
+  setCtrlPressed(isPressed) {
+    this.isCtrlPressed = Boolean(isPressed);
+    this.gridEditor?.setCtrlPressed(this.isCtrlPressed);
+    this.ui.modeStatus.hidden = !this.isCtrlPressed;
+    this.ui.modeStatus.textContent = this.isCtrlPressed ? "Multi-select mode" : "";
   }
 
   setStatus(message) {

@@ -36,6 +36,7 @@ export class GridEditor {
     this.level = null;
     this.surface = null;
     this.hoverBox = null;
+    this.multiSelectionLayer = null;
     this.selectionBox = null;
     this.dropPreviewBox = null;
     this.copyPreviewBox = null;
@@ -50,6 +51,7 @@ export class GridEditor {
     this.lastHoveredCellKey = null;
     this.pendingCopyCell = null;
     this.copyAnimationFrame = null;
+    this.isCtrlPressed = false;
     this.layerVisibility = {};
     this.layerLocks = {};
     this.placedObjectsById = new Map();
@@ -120,6 +122,11 @@ export class GridEditor {
     );
   }
 
+  setCtrlPressed(isPressed) {
+    this.isCtrlPressed = Boolean(isPressed);
+    this.surface?.classList.toggle("is-multi-select-mode", this.isCtrlPressed);
+  }
+
   refreshPlacedObjects(level, assets, selectedPlacedObjectId, selectedPlacedObjectIds = []) {
     const currentLayer = this.surface?.querySelector(".asset-overlay-layer");
     if (!currentLayer) {
@@ -177,6 +184,7 @@ export class GridEditor {
     selectedPlacedObjectId = null,
     selectedPlacedObjectIds = [],
     copyPreview = null,
+    multiSelections = [],
   ) {
     this.level = level;
     this.selectedPlacedObjectId = selectedPlacedObjectId;
@@ -220,7 +228,9 @@ export class GridEditor {
 
     this.surface = document.createElement("div");
     this.surface.className = "grid-surface";
+    this.surface.tabIndex = 0;
     this.surface.classList.toggle("is-move-mode", this.interactionMode === "move");
+    this.surface.classList.toggle("is-multi-select-mode", this.isCtrlPressed);
     this.surface.classList.toggle("is-copy-mode", this.copyModeActive);
     this.surface.classList.toggle(
       "is-cut-mode",
@@ -241,13 +251,20 @@ export class GridEditor {
     selectionLayer.className = "selection-overlay-layer";
     this.hoverBox = document.createElement("div");
     this.hoverBox.className = "hover-box";
+    this.multiSelectionLayer = document.createElement("div");
+    this.multiSelectionLayer.className = "multi-selection-layer";
     this.selectionBox = document.createElement("div");
     this.selectionBox.className = "selection-box";
     this.dropPreviewBox = document.createElement("div");
     this.dropPreviewBox.className = "drop-preview-box";
     this.copyPreviewBox = document.createElement("div");
     this.copyPreviewBox.className = "copy-preview-box";
-    selectionLayer.append(this.selectionBox, this.dropPreviewBox, this.copyPreviewBox);
+    selectionLayer.append(
+      this.multiSelectionLayer,
+      this.selectionBox,
+      this.dropPreviewBox,
+      this.copyPreviewBox,
+    );
 
     this.surface.append(cells, this.hoverBox, assetsLayer, selectionLayer);
     this.bindSurfacePointerEvents();
@@ -257,6 +274,7 @@ export class GridEditor {
     this.root.append(wrap);
 
     this.updateSelection(selection);
+    this.updateMultiSelections(multiSelections);
     this.updateDropPreview(dropPreview);
     this.updateCopyPreview(copyPreview);
   }
@@ -282,6 +300,7 @@ export class GridEditor {
         start: target,
         current: target,
         moved: false,
+        additive: (event.ctrlKey || this.isCtrlPressed) && this.interactionMode === "move",
       };
       this.lastLiveSelectionRange = null;
       this.surface.setPointerCapture(event.pointerId);
@@ -419,19 +438,34 @@ export class GridEditor {
         gesture.current.y,
       );
       this.updateSelection(range);
-      this.onSelectionChange(range, "selectionReady");
+      this.onSelectionChange(range, "selectionReady", { additive: gesture.additive });
       return;
     }
 
     this.onCellClick({
       ...gesture.start,
       existing: findObjectsAtCell(this.level, gesture.start.x, gesture.start.y),
+      additive: gesture.additive,
     });
   }
 
   updateSelection(selection) {
     this.positionFeedbackBox(this.selectionBox, selection);
     this.lastLiveSelectionRange = selection ? { ...selection } : null;
+  }
+
+  updateMultiSelections(selections = []) {
+    if (!this.multiSelectionLayer) {
+      return;
+    }
+
+    this.multiSelectionLayer.replaceChildren();
+    selections.forEach((selection) => {
+      const box = document.createElement("div");
+      box.className = "selection-box multi-selection-box";
+      this.positionFeedbackBox(box, selection);
+      this.multiSelectionLayer.append(box);
+    });
   }
 
   cancelGesture() {
@@ -521,7 +555,7 @@ export class GridEditor {
     }
 
     this.updateSelection(range);
-    this.onSelectionChange(range, "draggingSelection");
+    this.onSelectionChange(range, "draggingSelection", { additive: this.gesture.additive });
   }
 
   cancelPendingSelectionFrame() {
@@ -634,6 +668,10 @@ export class GridEditor {
       if (this.interactionMode === "move") {
         marker.addEventListener("pointerdown", (event) => {
           if (event.button !== 0 || event.target.closest(".resize-handle")) {
+            return;
+          }
+
+          if ((event.ctrlKey || this.isCtrlPressed) && !this.copyModeActive) {
             return;
           }
 
