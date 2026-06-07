@@ -466,6 +466,31 @@ export function duplicatePlacedAsset(level, sourceObject, x, y, width, height) {
 }
 
 export function duplicatePlacedAssetGroup(level, copiedObjects, replacedObjectIds = []) {
+  return insertPlacedAssetGroup(level, copiedObjects, replacedObjectIds, {
+    preserveIds: false,
+  });
+}
+
+export function movePlacedAssetGroup(
+  level,
+  copiedObjects,
+  sourceObjectIds,
+  replacedObjectIds = [],
+) {
+  return insertPlacedAssetGroup(
+    level,
+    copiedObjects,
+    [...sourceObjectIds, ...replacedObjectIds],
+    { preserveIds: true },
+  );
+}
+
+function insertPlacedAssetGroup(
+  level,
+  copiedObjects,
+  removedObjectIds = [],
+  { preserveIds = false } = {},
+) {
   if (!Array.isArray(copiedObjects) || copiedObjects.length === 0) {
     return null;
   }
@@ -486,7 +511,9 @@ export function duplicatePlacedAssetGroup(level, copiedObjects, replacedObjectId
       layerName: getLayerArrayName(storedLayer),
       placedObject: {
         ...cloneJsonValue(sourceObject),
-        id: `placed-${sourceObject.assetId}-copy-${timestamp}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+        id: preserveIds
+          ? sourceObject.id
+          : `placed-${sourceObject.assetId}-copy-${timestamp}-${index}-${Math.random().toString(36).slice(2, 8)}`,
         x,
         y,
         gridRef: toGridRef(x, y),
@@ -502,10 +529,10 @@ export function duplicatePlacedAssetGroup(level, copiedObjects, replacedObjectId
     return null;
   }
 
-  const replacedIds = new Set(replacedObjectIds);
+  const removedIds = new Set(removedObjectIds);
   LAYERS.forEach((layerName) => {
     level.layers[layerName] = (level.layers[layerName] || []).filter(
-      (placedObject) => !replacedIds.has(placedObject.id),
+      (placedObject) => !removedIds.has(placedObject.id),
     );
   });
 

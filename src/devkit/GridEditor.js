@@ -31,6 +31,7 @@ export class GridEditor {
     this.onLockedAssetInteraction = onLockedAssetInteraction;
     this.interactionMode = "move";
     this.copyModeActive = false;
+    this.copyMode = "copy";
     this.gesture = null;
     this.level = null;
     this.surface = null;
@@ -58,9 +59,11 @@ export class GridEditor {
     this.interactionMode = mode;
   }
 
-  setCopyModeActive(isActive) {
+  setCopyModeActive(isActive, mode = "copy") {
     this.copyModeActive = Boolean(isActive);
+    this.copyMode = mode;
     this.surface?.classList.toggle("is-copy-mode", this.copyModeActive);
+    this.surface?.classList.toggle("is-cut-mode", this.copyModeActive && mode === "cut");
   }
 
   requestPlacedObjectProperties(placedObjectId) {
@@ -203,6 +206,10 @@ export class GridEditor {
     this.surface.className = "grid-surface";
     this.surface.classList.toggle("is-move-mode", this.interactionMode === "move");
     this.surface.classList.toggle("is-copy-mode", this.copyModeActive);
+    this.surface.classList.toggle(
+      "is-cut-mode",
+      this.copyModeActive && this.copyMode === "cut",
+    );
     this.surface.style.width = `${level.gridWidth * level.tileSize}px`;
     this.surface.style.height = `${level.gridHeight * level.tileSize}px`;
 
@@ -427,9 +434,11 @@ export class GridEditor {
 
     if (!preview) {
       this.copyPreviewBox.hidden = true;
+      this.copyPreviewBox.classList.remove("is-cut-preview");
       return;
     }
 
+    this.copyPreviewBox.classList.toggle("is-cut-preview", preview.mode === "cut");
     if (this.copyPreviewBox.dataset.previewKey !== preview.key) {
       this.copyPreviewBox.replaceChildren();
       preview.items.forEach((item) => {

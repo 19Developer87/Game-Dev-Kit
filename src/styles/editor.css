@@ -770,6 +770,11 @@ body.is-sidebar-resizing * {
   box-shadow: 0 0 0 1px rgba(16, 19, 22, 0.85);
 }
 
+.copy-preview-box.is-cut-preview .copy-preview-item {
+  border-color: #ed9b49;
+  background: rgba(237, 155, 73, 0.18);
+}
+
 .copy-preview-item img {
   width: 100%;
   height: 100%;

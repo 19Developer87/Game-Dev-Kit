@@ -37,6 +37,7 @@ import {
   duplicatePlacedAssetGroup,
   getPlacedObjects,
   isAssetUsedOnAnyLevel,
+  movePlacedAssetGroup,
   reorderLevel,
   removeEmptyAssetCategories,
   renameCurrentLevel,
@@ -181,8 +182,31 @@ class DevEditor {
       }
 
       if (
-        event.ctrlKey &&
-        !event.metaKey &&
+        (event.ctrlKey || event.metaKey) &&
+        !event.altKey &&
+        event.key.toLowerCase() === "x" &&
+        this.activeTool === "move" &&
+        (this.selectedPlacedObjectId || this.selectedPlacedObjectIds.size > 0)
+      ) {
+        event.preventDefault();
+        this.startCutPlacement();
+        return;
+      }
+
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        !event.altKey &&
+        event.key.toLowerCase() === "d" &&
+        this.activeTool === "move" &&
+        (this.selectedPlacedObjectId || this.selectedPlacedObjectIds.size > 0)
+      ) {
+        event.preventDefault();
+        this.duplicateSelectedPlacedAssets();
+        return;
+      }
+
+      if (
+        (event.ctrlKey || event.metaKey) &&
         !event.altKey &&
         event.key.toLowerCase() === "c" &&
         this.activeTool === "move" &&
@@ -225,9 +249,14 @@ class DevEditor {
       if (event.key === "Escape") {
         if (this.copiedPlacedGroup) {
           event.preventDefault();
+          const cancelledMode = this.copiedPlacedGroup.mode;
           this.cancelCopyPlacement();
           this.render();
-          this.setStatus("Copy placement cancelled.");
+          this.setStatus(
+            cancelledMode === "cut"
+              ? "Cut placement cancelled. Original assets were unchanged."
+              : "Copy placement cancelled.",
+          );
           return;
         }
 
@@ -260,6 +289,21 @@ class DevEditor {
 
     this.root.querySelector('[data-action="paste-level"]').addEventListener("click", async () => {
       await this.pasteCopiedLevel();
+      this.closeMenus();
+    });
+
+    this.ui.copySelectedAssetsButton.addEventListener("click", () => {
+      this.startCopyPlacement();
+      this.closeMenus();
+    });
+
+    this.ui.cutSelectedAssetsButton.addEventListener("click", () => {
+      this.startCutPlacement();
+      this.closeMenus();
+    });
+
+    this.ui.duplicateSelectedAssetsButton.addEventListener("click", async () => {
+      await this.duplicateSelectedPlacedAssets();
       this.closeMenus();
     });
 
@@ -534,6 +578,9 @@ class DevEditor {
     }
 
     this.activeTool = tool;
+    if (tool !== "move" && this.copiedPlacedGroup) {
+      this.cancelCopyPlacement();
+    }
     if (tool === "delete") {
       this.clearSelection();
     }
@@ -1257,52 +1304,41 @@ class DevEditor {
   }
 
   startCopyPlacement() {
+    this.startPlacedAssetPlacement("copy");
+  }
+
+  startCutPlacement() {
+    this.startPlacedAssetPlacement("cut");
+  }
+
+  startPlacedAssetPlacement(mode) {
     const level = getCurrentLevel(this.project);
-    const selectedIds = this.selectedPlacedObjectIds.size > 0
-      ? Array.from(this.selectedPlacedObjectIds)
-      : [this.selectedPlacedObjectId].filter(Boolean);
-    const selectedIdSet = new Set(selectedIds);
-    const selectedObjects = getPlacedObjects(level).filter(
-      (placedObject) =>
-        selectedIdSet.has(placedObject.id) &&
-        this.isLayerVisible(placedObject.layer) &&
-        !this.isLayerLocked(placedObject.layer) &&
-        placedObject.editorLocked !== true,
-    );
+    const { selectedIds, selectedObjects } = this.getEligibleSelectedPlacedAssets();
 
     if (selectedObjects.length === 0) {
-      this.setStatus("No unlocked visible assets selected to copy.");
+      this.setStatus(
+        mode === "cut"
+          ? "No unlocked visible assets selected to cut."
+          : "No unlocked visible assets selected to copy.",
+      );
       return;
     }
 
-    const minimumX = Math.min(...selectedObjects.map((placedObject) => Number(placedObject.x) || 1));
-    const minimumY = Math.min(...selectedObjects.map((placedObject) => Number(placedObject.y) || 1));
-    const maximumX = Math.max(
-      ...selectedObjects.map(
-        (placedObject) =>
-          (Number(placedObject.x) || 1) + (Number(placedObject.width) || 1) - 1,
-      ),
+    this.copiedPlacedGroup = this.createPlacedAssetGroup(selectedObjects, mode);
+    this.copyPreviewOrigin = this.getCopiedPlacementOrigin(
+      this.copiedPlacedGroup.sourceOrigin.x,
+      this.copiedPlacedGroup.sourceOrigin.y,
     );
-    const maximumY = Math.max(
-      ...selectedObjects.map(
-        (placedObject) =>
-          (Number(placedObject.y) || 1) + (Number(placedObject.height) || 1) - 1,
-      ),
-    );
-    this.copiedPlacedGroup = {
-      width: maximumX - minimumX + 1,
-      height: maximumY - minimumY + 1,
-      primarySourceId: this.selectedPlacedObjectId || selectedObjects[0].id,
-      objects: selectedObjects.map((placedObject) => ({
-        sourceObject: cloneEditorData(placedObject),
-        offsetX: (Number(placedObject.x) || 1) - minimumX,
-        offsetY: (Number(placedObject.y) || 1) - minimumY,
-      })),
-    };
-    this.copyPreviewOrigin = this.getCopiedPlacementOrigin(minimumX, minimumY);
-    this.gridEditor.setCopyModeActive(true);
+    this.gridEditor.setCopyModeActive(true, mode);
     this.render();
-    if (selectedIds.length === 1 && selectedObjects.length === 1) {
+    if (mode === "cut") {
+      const skippedCount = selectedIds.length - selectedObjects.length;
+      this.setStatus(
+        skippedCount > 0
+          ? `Cut ${selectedObjects.length} of ${selectedIds.length} selected assets. Cut mode: click grid to place, Escape to cancel.`
+          : "Cut mode: click grid to place, Escape to cancel.",
+      );
+    } else if (selectedIds.length === 1 && selectedObjects.length === 1) {
       this.setStatus("Copied placed asset. Move over the grid and click to place; Escape cancels.");
     } else {
       this.setStatus(
@@ -1331,6 +1367,10 @@ class DevEditor {
 
     const level = getCurrentLevel(this.project);
     const origin = this.getCopiedPlacementOrigin(x, y);
+    const isCut = this.copiedPlacedGroup.mode === "cut";
+    const sourceIds = new Set(
+      this.copiedPlacedGroup.objects.map((copy) => copy.sourceObject.id),
+    );
     const targetCopies = this.copiedPlacedGroup.objects.map((copy) => ({
       sourceObject: copy.sourceObject,
       x: origin.x + copy.offsetX,
@@ -1341,12 +1381,21 @@ class DevEditor {
     const existingById = new Map();
     targetCopies.forEach((copy) => {
       findObjectsInRange(level, copy.x, copy.y, copy.width, copy.height).forEach(
-        (placedObject) => existingById.set(placedObject.id, placedObject),
+        (placedObject) => {
+          if (!isCut || !sourceIds.has(placedObject.id)) {
+            existingById.set(placedObject.id, placedObject);
+          }
+        },
       );
     });
     const existing = Array.from(existingById.values());
 
-    if (this.blockActionForLockedOverlaps(existing, "Copied group placement")) {
+    if (
+      this.blockActionForLockedOverlaps(
+        existing,
+        isCut ? "Cut group placement" : "Copied group placement",
+      )
+    ) {
       return false;
     }
 
@@ -1354,26 +1403,43 @@ class DevEditor {
       const confirmed = await this.showConfirmModal({
         title: "Overlap Existing Assets?",
         message: this.createOverlapWarningMessage(
-          `Placing this copied ${targetCopies.length === 1 ? "asset" : "group"} will overlap existing assets. Continue?`,
+          `Placing this ${isCut ? "cut" : "copied"} ${targetCopies.length === 1 ? "asset" : "group"} will overlap existing assets. Continue?`,
           existing,
         ),
-        confirmLabel: targetCopies.length === 1 ? "Place Copy" : "Place Group",
+        confirmLabel: isCut
+          ? "Place Cut Assets"
+          : targetCopies.length === 1
+            ? "Place Copy"
+            : "Place Group",
       });
 
       if (!confirmed) {
-        this.setStatus("Copy placement cancelled. Click another grid cell or press Escape.");
+        this.setStatus(
+          `${isCut ? "Cut" : "Copy"} placement not applied. Click another grid cell or press Escape.`,
+        );
         return false;
       }
     }
 
     const primarySourceId = this.copiedPlacedGroup.primarySourceId;
-    const placedObjects = duplicatePlacedAssetGroup(
-      level,
-      targetCopies,
-      existing.map((placedObject) => placedObject.id),
-    );
+    const placedObjects = isCut
+      ? movePlacedAssetGroup(
+        level,
+        targetCopies,
+        Array.from(sourceIds),
+        existing.map((placedObject) => placedObject.id),
+      )
+      : duplicatePlacedAssetGroup(
+        level,
+        targetCopies,
+        existing.map((placedObject) => placedObject.id),
+      );
     if (!placedObjects) {
-      this.setStatus("Unable to paste the copied assets.");
+      this.setStatus(
+        isCut
+          ? "Unable to move the cut assets. Original assets were unchanged."
+          : "Unable to paste the copied assets.",
+      );
       return false;
     }
 
@@ -1390,7 +1456,87 @@ class DevEditor {
     );
     this.render();
     this.autosave(
-      `Pasted ${placedObjects.length} copied asset${placedObjects.length === 1 ? "" : "s"} on ${level.name}.`,
+      `${isCut ? "Moved" : "Pasted"} ${placedObjects.length} asset${placedObjects.length === 1 ? "" : "s"} on ${level.name}.`,
+    );
+    return true;
+  }
+
+  async duplicateSelectedPlacedAssets() {
+    if (this.copiedPlacedGroup) {
+      this.cancelCopyPlacement();
+    }
+    const level = getCurrentLevel(this.project);
+    const { selectedIds, selectedObjects } = this.getEligibleSelectedPlacedAssets();
+    if (selectedObjects.length === 0) {
+      this.setStatus("No unlocked visible assets selected to duplicate.");
+      return false;
+    }
+
+    const group = this.createPlacedAssetGroup(selectedObjects, "copy");
+    const origin = this.getDuplicatePlacementOrigin(group);
+    const sourceIds = new Set(group.objects.map((copy) => copy.sourceObject.id));
+    const targetCopies = group.objects.map((copy) => ({
+      sourceObject: copy.sourceObject,
+      x: origin.x + copy.offsetX,
+      y: origin.y + copy.offsetY,
+      width: Math.max(1, Number(copy.sourceObject.width) || 1),
+      height: Math.max(1, Number(copy.sourceObject.height) || 1),
+    }));
+    const existingById = new Map();
+    targetCopies.forEach((copy) => {
+      findObjectsInRange(level, copy.x, copy.y, copy.width, copy.height).forEach(
+        (placedObject) => {
+          if (!sourceIds.has(placedObject.id)) {
+            existingById.set(placedObject.id, placedObject);
+          }
+        },
+      );
+    });
+    const existing = Array.from(existingById.values());
+
+    if (this.blockActionForLockedOverlaps(existing, "Duplicate placement")) {
+      return false;
+    }
+
+    if (existing.length > 0) {
+      const confirmed = await this.showConfirmModal({
+        title: "Overlap Existing Assets?",
+        message: this.createOverlapWarningMessage(
+          `Duplicating ${targetCopies.length === 1 ? "this asset" : "these assets"} will overlap existing assets. Continue?`,
+          existing,
+        ),
+        confirmLabel: targetCopies.length === 1 ? "Duplicate Asset" : "Duplicate Group",
+      });
+      if (!confirmed) {
+        this.setStatus("Duplicate cancelled. Existing assets were unchanged.");
+        return false;
+      }
+    }
+
+    const placedObjects = duplicatePlacedAssetGroup(
+      level,
+      targetCopies,
+      existing.map((placedObject) => placedObject.id),
+    );
+    if (!placedObjects) {
+      this.setStatus("Unable to duplicate the selected assets.");
+      return false;
+    }
+
+    const primaryIndex = group.objects.findIndex(
+      (copy) => copy.sourceObject.id === group.primarySourceId,
+    );
+    const primaryPlacedObject = placedObjects[Math.max(0, primaryIndex)] || placedObjects[0];
+    this.setPlacedObjectSelection(
+      placedObjects.map((placedObject) => placedObject.id),
+      primaryPlacedObject.id,
+    );
+    this.render();
+    const skippedCount = selectedIds.length - selectedObjects.length;
+    this.autosave(
+      `Duplicated ${placedObjects.length} asset${placedObjects.length === 1 ? "" : "s"}${
+        skippedCount > 0 ? `; skipped ${skippedCount} hidden or locked selection${skippedCount === 1 ? "" : "s"}` : ""
+      }.`,
     );
     return true;
   }
@@ -1645,15 +1791,83 @@ class DevEditor {
     };
   }
 
+  getDuplicatePlacementOrigin(group) {
+    const level = getCurrentLevel(this.project);
+    const maximumX = Math.max(1, level.gridWidth - group.width + 1);
+    const maximumY = Math.max(1, level.gridHeight - group.height + 1);
+    const preferred = {
+      x: clamp(group.sourceOrigin.x + 1, 1, maximumX),
+      y: clamp(group.sourceOrigin.y + 1, 1, maximumY),
+    };
+    if (
+      preferred.x !== group.sourceOrigin.x ||
+      preferred.y !== group.sourceOrigin.y
+    ) {
+      return preferred;
+    }
+    return {
+      x: clamp(group.sourceOrigin.x - 1, 1, maximumX),
+      y: clamp(group.sourceOrigin.y - 1, 1, maximumY),
+    };
+  }
+
+  getEligibleSelectedPlacedAssets() {
+    const level = getCurrentLevel(this.project);
+    const selectedIds = this.selectedPlacedObjectIds.size > 0
+      ? Array.from(this.selectedPlacedObjectIds)
+      : [this.selectedPlacedObjectId].filter(Boolean);
+    const selectedIdSet = new Set(selectedIds);
+    const selectedObjects = getPlacedObjects(level).filter(
+      (placedObject) =>
+        selectedIdSet.has(placedObject.id) &&
+        this.isLayerVisible(placedObject.layer) &&
+        !this.isLayerLocked(placedObject.layer) &&
+        placedObject.editorLocked !== true,
+    );
+    return { selectedIds, selectedObjects };
+  }
+
+  createPlacedAssetGroup(selectedObjects, mode) {
+    const minimumX = Math.min(...selectedObjects.map((placedObject) => Number(placedObject.x) || 1));
+    const minimumY = Math.min(...selectedObjects.map((placedObject) => Number(placedObject.y) || 1));
+    const maximumX = Math.max(
+      ...selectedObjects.map(
+        (placedObject) =>
+          (Number(placedObject.x) || 1) + (Number(placedObject.width) || 1) - 1,
+      ),
+    );
+    const maximumY = Math.max(
+      ...selectedObjects.map(
+        (placedObject) =>
+          (Number(placedObject.y) || 1) + (Number(placedObject.height) || 1) - 1,
+      ),
+    );
+    return {
+      mode,
+      width: maximumX - minimumX + 1,
+      height: maximumY - minimumY + 1,
+      sourceOrigin: { x: minimumX, y: minimumY },
+      primarySourceId: this.selectedPlacedObjectId || selectedObjects[0].id,
+      objects: selectedObjects.map((placedObject) => ({
+        sourceObject: cloneEditorData(placedObject),
+        offsetX: (Number(placedObject.x) || 1) - minimumX,
+        offsetY: (Number(placedObject.y) || 1) - minimumY,
+      })),
+    };
+  }
+
   createCopyPreview() {
     if (!this.copiedPlacedGroup || !this.copyPreviewOrigin) {
       return null;
     }
 
     return {
-      key: this.copiedPlacedGroup.objects
+      mode: this.copiedPlacedGroup.mode,
+      key: `${this.copiedPlacedGroup.mode}:${
+        this.copiedPlacedGroup.objects
         .map((copy) => `${copy.sourceObject.id}:${copy.sourceObject.assetId}`)
-        .join("|"),
+        .join("|")
+      }`,
       range: {
         ...this.copyPreviewOrigin,
         width: this.copiedPlacedGroup.width,
@@ -2797,6 +3011,9 @@ class DevEditor {
   }
 
   syncAssetMenu() {
+    const hasEligiblePlacedSelection =
+      this.activeTool === "move" &&
+      this.getEligibleSelectedPlacedAssets().selectedObjects.length > 0;
     const isEnabled =
       this.activeTool === "move" &&
       Boolean(this.selectedPlacedObjectId) &&
@@ -2805,6 +3022,9 @@ class DevEditor {
     this.ui.assetMenu.querySelector("summary").setAttribute("aria-disabled", String(!isEnabled));
     this.ui.assetMenu.querySelector("button").disabled = !isEnabled;
     this.ui.editPropertiesButton.disabled = !isEnabled;
+    this.ui.copySelectedAssetsButton.disabled = !hasEligiblePlacedSelection;
+    this.ui.cutSelectedAssetsButton.disabled = !hasEligiblePlacedSelection;
+    this.ui.duplicateSelectedAssetsButton.disabled = !hasEligiblePlacedSelection;
     if (!isEnabled) {
       this.ui.assetMenu.removeAttribute("open");
     }

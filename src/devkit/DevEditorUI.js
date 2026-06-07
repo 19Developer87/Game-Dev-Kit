@@ -92,6 +92,11 @@ export function createEditorLayout(root) {
                 <div class="menu-panel">
                   <button type="button" data-action="copy-level">Copy Level</button>
                   <button type="button" data-action="paste-level">Paste Level</button>
+                  <div class="menu-panel-divider"></div>
+                  <button type="button" data-action="copy-selected-assets" title="Ctrl+C">Copy Selected Assets</button>
+                  <button type="button" data-action="cut-selected-assets" title="Ctrl+X">Cut Selected Assets</button>
+                  <button type="button" data-action="duplicate-selected-assets" title="Ctrl+D">Duplicate Selected Assets</button>
+                  <div class="menu-panel-divider"></div>
                   <button type="button" data-action="edit-placed-asset-properties">Properties</button>
                 </div>
               </details>
@@ -159,6 +164,9 @@ export function createEditorLayout(root) {
     customSize: root.querySelector('[data-role="custom-size"]'),
     customWidth: root.querySelector('[data-role="custom-width"]'),
     coordinateStatus: root.querySelector('[data-role="coordinate-status"]'),
+    copySelectedAssetsButton: root.querySelector('[data-action="copy-selected-assets"]'),
+    cutSelectedAssetsButton: root.querySelector('[data-action="cut-selected-assets"]'),
+    duplicateSelectedAssetsButton: root.querySelector('[data-action="duplicate-selected-assets"]'),
     editPropertiesButton: root.querySelector('[data-action="edit-placed-asset-properties"]'),
     gridSize: root.querySelector('[data-role="grid-size"]'),
     gridStage: root.querySelector('[data-role="grid-stage"]'),
