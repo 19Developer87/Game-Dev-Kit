@@ -13,6 +13,10 @@ export class GridEditor {
     onPlacedObjectTransform,
     onPlacedObjectGroupMoveStart,
     onCopyPreviewMove,
+    onDragPaintStart,
+    onDragPaintCell,
+    onDragPaintEnd,
+    onDragPaintCancel,
     onLockedLayerInteraction,
     onLockedAssetInteraction,
   }) {
@@ -27,9 +31,15 @@ export class GridEditor {
     this.onPlacedObjectTransform = onPlacedObjectTransform;
     this.onPlacedObjectGroupMoveStart = onPlacedObjectGroupMoveStart;
     this.onCopyPreviewMove = onCopyPreviewMove;
+    this.onDragPaintStart = onDragPaintStart;
+    this.onDragPaintCell = onDragPaintCell;
+    this.onDragPaintEnd = onDragPaintEnd;
+    this.onDragPaintCancel = onDragPaintCancel;
     this.onLockedLayerInteraction = onLockedLayerInteraction;
     this.onLockedAssetInteraction = onLockedAssetInteraction;
     this.interactionMode = "move";
+    this.dragPaintModeActive = false;
+    this.paintGesture = null;
     this.copyModeActive = false;
     this.copyMode = "copy";
     this.gesture = null;
@@ -40,6 +50,7 @@ export class GridEditor {
     this.selectionBox = null;
     this.dropPreviewBox = null;
     this.copyPreviewBox = null;
+    this.paintPreviewLayer = null;
     this.selectedPlacedObjectId = null;
     this.selectedPlacedObjectIds = new Set();
     this.lastPlacedObjectPointerDown = null;
@@ -59,6 +70,16 @@ export class GridEditor {
 
   setInteractionMode(mode) {
     this.interactionMode = mode;
+    this.surface?.classList.toggle("is-move-mode", this.interactionMode === "move");
+  }
+
+  setDragPaintModeActive(isActive) {
+    this.dragPaintModeActive = Boolean(isActive);
+    this.surface?.classList.toggle("is-drag-paint-mode", this.dragPaintModeActive);
+    if (!this.dragPaintModeActive) {
+      this.cancelPaintGesture();
+      this.updatePaintPreview([]);
+    }
   }
 
   setCopyModeActive(isActive, mode = "copy") {
@@ -230,6 +251,7 @@ export class GridEditor {
     this.surface.className = "grid-surface";
     this.surface.tabIndex = 0;
     this.surface.classList.toggle("is-move-mode", this.interactionMode === "move");
+    this.surface.classList.toggle("is-drag-paint-mode", this.dragPaintModeActive);
     this.surface.classList.toggle("is-multi-select-mode", this.isCtrlPressed);
     this.surface.classList.toggle("is-copy-mode", this.copyModeActive);
     this.surface.classList.toggle(
@@ -259,11 +281,14 @@ export class GridEditor {
     this.dropPreviewBox.className = "drop-preview-box";
     this.copyPreviewBox = document.createElement("div");
     this.copyPreviewBox.className = "copy-preview-box";
+    this.paintPreviewLayer = document.createElement("div");
+    this.paintPreviewLayer.className = "paint-preview-layer";
     selectionLayer.append(
       this.multiSelectionLayer,
       this.selectionBox,
       this.dropPreviewBox,
       this.copyPreviewBox,
+      this.paintPreviewLayer,
     );
 
     this.surface.append(cells, this.hoverBox, assetsLayer, selectionLayer);
@@ -291,6 +316,19 @@ export class GridEditor {
       }
 
       event.preventDefault();
+
+      if (this.dragPaintModeActive && this.interactionMode === "move" && !this.copyModeActive) {
+        this.cancelPendingSelectionFrame();
+        this.gesture = null;
+        this.paintGesture = {
+          pointerId: event.pointerId,
+          current: target,
+        };
+        this.surface.setPointerCapture(event.pointerId);
+        this.onDragPaintStart?.(target);
+        return;
+      }
+
       if (this.gesture?.moved) {
         this.completeGesture();
       }
@@ -319,6 +357,10 @@ export class GridEditor {
       }
 
       if (!this.gesture || event.pointerId !== this.gesture.pointerId) {
+        if (this.paintGesture && event.pointerId === this.paintGesture.pointerId && target) {
+          this.paintGesture.current = target;
+          this.onDragPaintCell?.(target);
+        }
         return;
       }
 
@@ -341,18 +383,29 @@ export class GridEditor {
     });
 
     this.surface.addEventListener("pointerup", (event) => {
+      if (this.paintGesture && event.pointerId === this.paintGesture.pointerId) {
+        this.completePaintGesture();
+        return;
+      }
+
       if (this.gesture && event.pointerId === this.gesture.pointerId) {
         this.completeGesture();
       }
     });
 
     this.surface.addEventListener("mouseup", () => {
+      if (this.paintGesture) {
+        this.completePaintGesture();
+        return;
+      }
+
       if (this.gesture) {
         this.completeGesture();
       }
     });
 
     this.surface.addEventListener("pointercancel", () => {
+      this.cancelPaintGesture();
       this.cancelPendingSelectionFrame();
       this.gesture = null;
     });
@@ -471,6 +524,30 @@ export class GridEditor {
   cancelGesture() {
     this.cancelPendingSelectionFrame();
     this.gesture = null;
+    this.cancelPaintGesture();
+  }
+
+  completePaintGesture() {
+    const paintGesture = this.paintGesture;
+    this.paintGesture = null;
+    if (!paintGesture) {
+      return;
+    }
+
+    if (this.surface.hasPointerCapture?.(paintGesture.pointerId)) {
+      this.surface.releasePointerCapture(paintGesture.pointerId);
+    }
+
+    this.onDragPaintEnd?.();
+  }
+
+  cancelPaintGesture() {
+    const paintGesture = this.paintGesture;
+    this.paintGesture = null;
+    if (paintGesture && this.surface?.hasPointerCapture?.(paintGesture.pointerId)) {
+      this.surface.releasePointerCapture(paintGesture.pointerId);
+    }
+    this.onDragPaintCancel?.();
   }
 
   updateDropPreview(range) {
@@ -520,6 +597,20 @@ export class GridEditor {
 
   updateCopyPreviewPosition(range) {
     this.positionFeedbackBox(this.copyPreviewBox, range);
+  }
+
+  updatePaintPreview(cells = []) {
+    if (!this.paintPreviewLayer) {
+      return;
+    }
+
+    this.paintPreviewLayer.replaceChildren();
+    cells.forEach((cell) => {
+      const box = document.createElement("div");
+      box.className = "paint-preview-cell";
+      this.positionFeedbackBox(box, { x: cell.x, y: cell.y, width: 1, height: 1 });
+      this.paintPreviewLayer.append(box);
+    });
   }
 
   scheduleSelectionUpdate(current) {
@@ -671,6 +762,10 @@ export class GridEditor {
             return;
           }
 
+          if (this.dragPaintModeActive && !this.copyModeActive) {
+            return;
+          }
+
           if ((event.ctrlKey || this.isCtrlPressed) && !this.copyModeActive) {
             return;
           }
@@ -759,6 +854,10 @@ export class GridEditor {
       handle.setAttribute("aria-hidden", "true");
       handle.addEventListener("pointerdown", (event) => {
         if (event.button !== 0) {
+          return;
+        }
+
+        if (this.dragPaintModeActive && !this.copyModeActive) {
           return;
         }
 

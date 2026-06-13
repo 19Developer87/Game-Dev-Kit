@@ -46,6 +46,7 @@ Update this current-state file whenever working behaviour changes.
 - Phase 6C Fill Selected Area and Clear Selected Area are implemented on the Phase 6 branch.
 - Phase 6D Replace Matching Assets Inside Selected Area is implemented on the Phase 6 branch.
 - Phase 6D multi-area grid selection is implemented on the Phase 6 branch.
+- Phase 6E Drag Painting is implemented on the Phase 6 branch.
 
 ## 4. Current Working Features
 
@@ -90,6 +91,10 @@ The editor currently supports:
 - Edit > Clear Selected Area removes visible, unlocked placed grid copies intersecting the active grid selection without deleting palette assets, categories, or registry entries.
 - Edit > Replace Matching Assets uses the active grid selection, an app-owned source-choice modal, and the currently selected palette asset to replace only matching placed-object `assetId` values.
 - Fill Selected Area, Clear Selected Area, Replace Matching Assets, and Delete/Backspace selected-area deletion can operate across multiple Ctrl-selected grid areas as one combined area selection.
+- Edit > Drag Paint Mode toggles editor drag painting from Select/Move mode. When enabled, holding and dragging on the grid paints repeated separate `1x1` copies of the selected asset along the dragged path.
+- Drag Painting is different from stretched placement: stretched placement creates one fitted object across a selected range, while Drag Painting creates individual `1x1` placed objects.
+- Drag Painting skips occupied cells, including cells covered by hidden-layer, locked-layer, or individually locked assets. It does not overwrite or delete existing placed assets.
+- Drag Painting tracks unique cells in memory during the drag, shows lightweight preview boxes, commits once on mouse release, refreshes placed markers once, and autosaves once.
 - Tool hotkeys: `Q` for Select/Move, `W` for Select/Move compatibility, and `E` for Delete outside text-entry/modal contexts.
 - Eight resize handles on an asset selected in Select/Move mode.
 - Delete and Backspace remove the currently selected placed object or selected placed-object group in Select/Move mode when focus is not in editable UI.
@@ -129,7 +134,7 @@ Current limitations:
 
 - This is still an editor only; it does not run player movement, NPC logic, battles, doors, or game integration.
 - Full Phase 5 layer behaviour is not implemented yet. Solo layer, layer reordering, active placement layers, and runtime visibility are not implemented yet.
-- Later Phase 6 tools remain unimplemented: drag painting, paint brushes, brush sizes, random brushes, replace-by-category/layer/all-levels, and `Ctrl+A`.
+- Later Phase 6 tools remain unimplemented: paint brushes, brush sizes, random brushes, replace-by-category/layer/all-levels, and `Ctrl+A`.
 - Play Mode, runtime collision, trigger execution, doors/exits, spawn runtime, NPC/enemy/item gameplay systems, chunked maps, animated character import, audio/music systems, and multilayer/parallax background tools are not implemented yet.
 - Palette asset deletion is blocked while that asset is placed on any level. Remove placed copies first.
 - A category that contains assets is not deleted automatically; its assets must be removed or reorganised first.
@@ -506,7 +511,12 @@ For one imported file while a grid range is already selected, the editor may off
 - Replace Matching Assets confirms once with an app-owned modal before mutation, refreshes only placed markers after the data change, and autosaves once after a completed replacement.
 - Replace Matching Assets supports multiple selected areas by de-duplicating placed object IDs intersecting any selected rectangle and replacing only the chosen matching `assetId` inside those rectangles.
 - Stretched placement remains single-active-area only. If multiple areas are selected and an asset is dragged from the palette or Place Selected Asset is clicked, the editor tells the user to use Fill Selected Area for multi-area placement.
-- Drag painting, paint brushes, brush sizes, random brushes, undo/redo, persistent/cross-level placed-object clipboard, replace-by-category/layer/all-levels, and later Phase 6 tools are not implemented yet.
+- Edit > Drag Paint Mode is a menu toggle for repeated `1x1` placement from Select/Move mode. It does not add or restore a toolbar Paint button.
+- Drag Paint Mode uses the currently selected palette asset. Holding the left mouse button on the grid and dragging records each unique grid cell under the pointer and shows lightweight paint preview boxes.
+- Drag Paint Mode skips cells already covered by any known-layer placed asset, including hidden-layer, locked-layer, and individually locked assets. It does not overwrite, delete, or modify occupied/protected cells.
+- Drag Paint Mode commits all newly painted cells on mouse release with one data operation, refreshes placed markers once, autosaves once, and reports painted/skipped counts.
+- Drag Paint Mode is transient editor state. It is not saved to project JSON, level JSON, `assetRegistry.json`, backups, or localStorage.
+- Paint brushes, brush sizes, random brushes, undo/redo, persistent/cross-level placed-object clipboard, replace-by-category/layer/all-levels, and later Phase 6 tools are not implemented yet.
 - In Select/Move mode, Delete or Backspace removes the selected placed copy from the current level only, clears its selection, and does not ask for confirmation.
 - In Select/Move mode, Delete or Backspace removes all multi-selected placed copies from the current level only when a group is selected.
 - In Select/Move mode, if no placed copy is selected but a grid area is selected, Delete or Backspace immediately deletes every current-level placed copy that intersects that area.
@@ -784,6 +794,11 @@ Before accepting changes to existing editor behaviour, verify:
 - [ ] Use Clear Selected Area with multiple selected areas and confirm visible unlocked assets intersecting any selected area are cleared once while hidden/locked assets are skipped and reported.
 - [ ] Use Replace Matching Assets with multiple selected areas and confirm only matching `assetId` values inside those areas are replaced once; non-matching and outside-area assets remain unchanged.
 - [ ] Drag an asset from the palette while multiple areas are selected and confirm the editor directs the user to use Fill Selected Area for multi-area placement.
+- [ ] Enable Edit > Drag Paint Mode, select an imported asset, drag across several grid cells, and confirm separate `1x1` placed objects are created on mouse release.
+- [ ] Drag Paint over the same cell more than once during one drag and confirm only one placed object is created for that cell.
+- [ ] Drag Paint over occupied, hidden-layer, locked-layer, and individually locked cells and confirm they are skipped without overwriting or deleting existing assets.
+- [ ] Confirm Drag Paint preview movement does not autosave, mutate level data, rebuild grid cells/headers, or refresh placed markers until mouse release.
+- [ ] Disable Drag Paint Mode and confirm normal Select/Move, Delete, Fill, Clear, and Replace Matching Assets still work.
 - [ ] Select an area containing repeated copies of one source asset and other non-matching assets, then use Edit > Replace Matching Assets and confirm only matching `assetId` values are replaced.
 - [ ] Confirm Replace Matching Assets uses the currently selected palette asset as the replacement and keeps the source choice inside an app-owned modal with no Chrome-native dialog.
 - [ ] Confirm replaced objects keep their IDs, positions, dimensions, grid/range refs, layer, visible/opacity/blocking fields, notes, `editorLocked`, `layerOptions`, and unknown fields.

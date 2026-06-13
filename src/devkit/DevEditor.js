@@ -30,6 +30,7 @@ import {
   hasLevelContent,
   pasteLevelContent,
   placeAsset,
+  findObjectsAtCell,
   findObjectsInRange,
   fillAreaWithAsset,
   fillCellsWithAsset,
@@ -74,6 +75,8 @@ class DevEditor {
     this.copiedLevel = this.loadCopiedLevel();
     this.selectedRange = null;
     this.selectedRanges = [];
+    this.isDragPaintMode = false;
+    this.dragPaintSession = null;
     this.isCtrlPressed = false;
     this.selectionState = "idle";
     this.selectionConfirmationTimer = null;
@@ -102,6 +105,10 @@ class DevEditor {
       onPlacedObjectTransform: (transform) => this.transformPlacedObject(transform),
       onPlacedObjectGroupMoveStart: () => this.clearGridAreaSelection(),
       onCopyPreviewMove: (cell) => this.moveCopyPreview(cell),
+      onDragPaintStart: (cell) => this.startDragPaint(cell),
+      onDragPaintCell: (cell) => this.addDragPaintCell(cell),
+      onDragPaintEnd: () => this.finishDragPaint(),
+      onDragPaintCancel: () => this.cancelDragPaint(),
       onLockedLayerInteraction: (layerName) => {
         this.setStatus(`Layer "${layerName}" is locked.`);
       },
@@ -278,6 +285,12 @@ class DevEditor {
       }
 
       if (event.key === "Escape") {
+        if (this.dragPaintSession) {
+          event.preventDefault();
+          this.cancelDragPaint({ showStatus: true });
+          return;
+        }
+
         if (this.copiedPlacedGroup) {
           event.preventDefault();
           const cancelledMode = this.copiedPlacedGroup.mode;
@@ -350,6 +363,11 @@ class DevEditor {
 
     this.ui.replaceMatchingAssetsButton.addEventListener("click", async () => {
       await this.replaceMatchingAssetsInSelectedArea();
+      this.closeMenus();
+    });
+
+    this.ui.dragPaintModeButton.addEventListener("click", () => {
+      this.toggleDragPaintMode();
       this.closeMenus();
     });
 
@@ -660,6 +678,9 @@ class DevEditor {
     }
 
     this.activeTool = tool;
+    if (tool !== "move" && this.isDragPaintMode) {
+      this.setDragPaintMode(false);
+    }
     if (tool !== "move" && this.copiedPlacedGroup) {
       this.cancelCopyPlacement();
     }
@@ -672,7 +693,11 @@ class DevEditor {
     this.gridEditor.setInteractionMode(tool);
     this.syncToolButtons();
     this.render();
-    this.setStatus(`${getToolLabel(tool)} tool active.`);
+    this.setStatus(
+      this.isDragPaintMode && tool === "move"
+        ? "Drag Paint Mode: On. Hold and drag on the grid to paint the selected asset."
+        : `${getToolLabel(tool)} tool active.`,
+    );
   }
 
   selectPlacedObject(placedObjectId) {
@@ -2426,6 +2451,155 @@ class DevEditor {
     return true;
   }
 
+  toggleDragPaintMode() {
+    this.setDragPaintMode(!this.isDragPaintMode);
+    this.setStatus(
+      this.isDragPaintMode
+        ? "Drag Paint Mode: On. Hold and drag on the grid to paint the selected asset."
+        : "Drag Paint Mode: Off. Select/Move restored.",
+    );
+  }
+
+  setDragPaintMode(isEnabled) {
+    this.isDragPaintMode = Boolean(isEnabled);
+    if (!this.isDragPaintMode) {
+      this.cancelDragPaint();
+    }
+    if (this.isDragPaintMode) {
+      this.activeTool = "move";
+      this.cancelCopyPlacement();
+    }
+    this.gridEditor.setInteractionMode(this.activeTool);
+    this.gridEditor.setDragPaintModeActive(this.isDragPaintMode);
+    this.syncToolButtons();
+    this.syncDragPaintModeButton();
+    this.syncModeStatus();
+  }
+
+  startDragPaint(cell) {
+    if (!this.isDragPaintMode) {
+      return;
+    }
+
+    if (!this.selectedAsset) {
+      this.dragPaintSession = null;
+      this.gridEditor.updatePaintPreview([]);
+      this.setStatus("Select an asset to drag paint.");
+      return;
+    }
+
+    if (
+      this.selectedAsset.isImported &&
+      (!this.selectedAsset.src || typeof this.selectedAsset.src !== "string")
+    ) {
+      this.dragPaintSession = null;
+      this.gridEditor.updatePaintPreview([]);
+      this.setStatus("Asset image data missing.");
+      return;
+    }
+
+    const targetLayer = this.selectedAsset.defaultLayer || "objects";
+    if (this.isLayerLocked(targetLayer)) {
+      this.dragPaintSession = null;
+      this.gridEditor.updatePaintPreview([]);
+      this.setStatus(
+        `Drag paint blocked: layer "${normalizePlacedLayer(targetLayer)}" is locked.`,
+      );
+      return;
+    }
+
+    this.selectedRange = null;
+    this.selectedRanges = [];
+    this.selectionState = "idle";
+    this.dropPreviewRange = null;
+    this.gridEditor.updateSelection(null);
+    this.gridEditor.updateMultiSelections([]);
+    this.gridEditor.updateDropPreview(null);
+    this.syncCoordinateStatus();
+    this.syncPlacementButton();
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    this.dragPaintSession = {
+      asset: this.selectedAsset,
+      paintedCells: new Map(),
+      skippedCells: new Set(),
+    };
+    this.addDragPaintCell(cell);
+  }
+
+  addDragPaintCell(cell) {
+    if (!this.dragPaintSession || !cell) {
+      return;
+    }
+
+    const key = `${cell.x}:${cell.y}`;
+    if (
+      this.dragPaintSession.paintedCells.has(key) ||
+      this.dragPaintSession.skippedCells.has(key)
+    ) {
+      return;
+    }
+
+    const level = getCurrentLevel(this.project);
+    const existingObjects = findObjectsAtCell(level, cell.x, cell.y);
+    if (existingObjects.length > 0) {
+      this.dragPaintSession.skippedCells.add(key);
+      return;
+    }
+
+    this.dragPaintSession.paintedCells.set(key, { x: cell.x, y: cell.y });
+    this.gridEditor.updatePaintPreview(
+      Array.from(this.dragPaintSession.paintedCells.values()),
+    );
+  }
+
+  finishDragPaint() {
+    const session = this.dragPaintSession;
+    this.dragPaintSession = null;
+    this.gridEditor.updatePaintPreview([]);
+
+    if (!session) {
+      return false;
+    }
+
+    const cells = Array.from(session.paintedCells.values());
+    const skippedCount = session.skippedCells.size;
+    if (cells.length === 0) {
+      this.setStatus(
+        skippedCount > 0
+          ? `Painted 0 cells. Skipped ${skippedCount} occupied cell${skippedCount === 1 ? "" : "s"}.`
+          : "No cells painted.",
+      );
+      return false;
+    }
+
+    const level = getCurrentLevel(this.project);
+    const placedObjects = fillCellsWithAsset(level, session.asset, cells, []);
+    if (!placedObjects) {
+      this.setStatus("Unable to drag paint selected asset.");
+      return false;
+    }
+
+    this.refreshPlacedAssetMarkers();
+    this.autosave(
+      `Painted ${placedObjects.length} cell${placedObjects.length === 1 ? "" : "s"}.${
+        skippedCount > 0
+          ? ` Skipped ${skippedCount} occupied cell${skippedCount === 1 ? "" : "s"}.`
+          : ""
+      }`,
+    );
+    return true;
+  }
+
+  cancelDragPaint({ showStatus = false } = {}) {
+    const hadSession = Boolean(this.dragPaintSession);
+    this.dragPaintSession = null;
+    this.gridEditor?.updatePaintPreview([]);
+    if (showStatus && hadSession) {
+      this.setStatus("Drag paint cancelled. No cells were painted.");
+    }
+  }
+
   getReplaceMatchingCandidates(rangeOrRanges) {
     const ranges = Array.isArray(rangeOrRanges) ? rangeOrRanges : [rangeOrRanges].filter(Boolean);
     const candidateObjects = this.findObjectsInSelectedAreas(ranges).filter(
@@ -3352,6 +3526,18 @@ class DevEditor {
     this.root.querySelectorAll("[data-tool]").forEach((button) => {
       button.classList.toggle("is-active", button.dataset.tool === this.activeTool);
     });
+    this.syncDragPaintModeButton();
+  }
+
+  syncDragPaintModeButton() {
+    if (!this.ui.dragPaintModeButton) {
+      return;
+    }
+    this.ui.dragPaintModeButton.textContent = this.isDragPaintMode
+      ? "Drag Paint Mode: On"
+      : "Drag Paint Mode: Off";
+    this.ui.dragPaintModeButton.setAttribute("aria-pressed", String(this.isDragPaintMode));
+    this.ui.dragPaintModeButton.classList.toggle("is-active", this.isDragPaintMode);
   }
 
   loadLayerVisibility() {
@@ -4036,8 +4222,19 @@ class DevEditor {
   setCtrlPressed(isPressed) {
     this.isCtrlPressed = Boolean(isPressed);
     this.gridEditor?.setCtrlPressed(this.isCtrlPressed);
-    this.ui.modeStatus.hidden = !this.isCtrlPressed;
-    this.ui.modeStatus.textContent = this.isCtrlPressed ? "Multi-select mode" : "";
+    this.syncModeStatus();
+  }
+
+  syncModeStatus() {
+    const messages = [];
+    if (this.isDragPaintMode) {
+      messages.push("Drag Paint Mode: On");
+    }
+    if (this.isCtrlPressed) {
+      messages.push("Multi-select mode");
+    }
+    this.ui.modeStatus.hidden = messages.length === 0;
+    this.ui.modeStatus.textContent = messages.join(" / ");
   }
 
   setStatus(message) {

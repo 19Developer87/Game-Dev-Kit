@@ -749,10 +749,18 @@ body.is-sidebar-resizing * {
   pointer-events: none;
 }
 
+.paint-preview-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+
 .hover-box,
 .selection-box,
 .drop-preview-box,
-.copy-preview-box {
+.copy-preview-box,
+.paint-preview-cell {
   position: absolute;
   pointer-events: none;
   will-change: left, top, width, height;
@@ -804,6 +812,12 @@ body.is-sidebar-resizing * {
   opacity: 0.82;
 }
 
+.paint-preview-cell {
+  border: 2px solid #edc949;
+  background: rgba(237, 201, 73, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(16, 19, 22, 0.55);
+}
+
 .placed-asset {
   position: absolute;
   display: flex;
@@ -826,6 +840,11 @@ body.is-sidebar-resizing * {
 .grid-surface.is-move-mode .placed-asset {
   pointer-events: auto;
   cursor: move;
+}
+
+.grid-surface.is-drag-paint-mode,
+.grid-surface.is-drag-paint-mode .placed-asset {
+  cursor: crosshair;
 }
 
 .placed-asset.is-selected {
