@@ -89,11 +89,11 @@ The editor currently supports:
 - Edit > Fill Selected Area creates one separate `1x1` placed object in every cell of the active grid selection.
 - Edit > Clear Selected Area removes visible, unlocked placed grid copies intersecting the active grid selection without deleting palette assets, categories, or registry entries.
 - Edit > Replace Matching Assets uses the active grid selection, an app-owned source-choice modal, and the currently selected palette asset to replace only matching placed-object `assetId` values.
-- Fill Selected Area, Clear Selected Area, and Replace Matching Assets can operate across multiple Ctrl-selected grid areas.
+- Fill Selected Area, Clear Selected Area, Replace Matching Assets, and Delete/Backspace selected-area deletion can operate across multiple Ctrl-selected grid areas as one combined area selection.
 - Tool hotkeys: `Q` for Select/Move, `W` for Select/Move compatibility, and `E` for Delete outside text-entry/modal contexts.
 - Eight resize handles on an asset selected in Select/Move mode.
 - Delete and Backspace remove the currently selected placed object or selected placed-object group in Select/Move mode when focus is not in editable UI.
-- Delete and Backspace bulk delete placed assets intersecting the selected grid area immediately when no placed asset is selected.
+- Delete and Backspace bulk delete placed assets intersecting selected grid areas immediately, including multiple Ctrl-selected areas, while skipping hidden and locked assets.
 - The separate Paint toolbar button has been removed; placement now happens through Select/Move grid selections or asset drag/drop.
 - A compact Placed Asset Properties modal opened with `Asset > Properties`, `Edit > Properties`, or by double-clicking a placed asset in Select/Move mode.
 - Placed instance properties for Grid Ref, Width/Height, Visible, Opacity, Layer, Blocks Movement, Notes, and layer-specific metadata stored under `layerOptions`.
@@ -113,7 +113,7 @@ The editor currently supports:
 - Placed asset move, group move, and resize previews are requestAnimationFrame-throttled during dragging and commit level data once on release.
 - Select/Move supports multi-selecting placed assets by dragging a grid area across them.
 - Multi-selected placed assets can be moved together as a snapped group while preserving relative spacing.
-- Every selected asset in a multi-selection uses a yellow outline; the primary selection may use a stronger yellow accent, but secondary selections do not use blue.
+- Every selected asset in a multi-selection uses a yellow outline; the primary selection may use a stronger yellow accent, but secondary selections do not use blue. Visible, unlocked assets intersecting Ctrl-selected grid areas receive the same yellow selected-asset outline.
 - Overwrite confirmation before a new placement removes overlapping objects.
 - Browser-native alert/confirm/prompt dialogs have been replaced with in-app Game Dev Kit modals so the editor can later be packaged in an `.exe` or WebView shell without depending on Chrome-native dialog behaviour.
 - In-app modals are used for Create New Level, Rename Level, Delete Level, Clear Level, Create Category, Delete Category, Delete Palette Asset, grid resize warnings, paste warnings, placement overwrite warnings, and other editor warnings that previously used browser-native dialogs.
@@ -498,8 +498,8 @@ For one imported file while a grid range is already selected, the editor may off
 - Multi-area selected rectangles render as lightweight overlay boxes, one element per rectangle. The live drag rectangle remains a separate requestAnimationFrame-throttled overlay and grid cells/headers are not rebuilt during dragging.
 - Pressing Escape clears all selected areas. Clicking the grid without Ctrl after a multi-area selection clears the multi-area highlights and returns to normal single-area behaviour.
 - Fill Selected Area supports multiple selected areas by de-duplicating all selected cells first, then creating one `1x1` placed asset per unique cell. Overlapping selected rectangles do not duplicate filled cells.
-- Clear Selected Area supports multiple selected areas by de-duplicating placed object IDs intersecting any selected rectangle, then applying the existing hidden/locked skip rules once across the combined selection.
-- Replace Matching Assets uses Edit > Replace Matching Assets, requires an active selected grid area and a selected replacement palette asset, and opens an app-owned modal listing unique visible/unlocked source `assetId` types found in the selected area. The default source is the most common eligible source asset in the range.
+- Clear Selected Area and Delete/Backspace selected-area deletion support multiple selected areas by de-duplicating placed object IDs intersecting any selected rectangle, then applying the existing hidden/locked skip rules once across the combined selection.
+- Replace Matching Assets uses Edit > Replace Matching Assets, requires an active selected grid area and a selected replacement palette asset, and opens an app-owned modal listing unique visible/unlocked source `assetId` types found in the selected area. The default source is the most common eligible source asset in the range, and every dropdown option is backed by the exact source `assetId` rather than by its label or row index.
 - Replace Matching Assets matches by placed-object `assetId` only. It does not replace by name, category, layer, size, or visual similarity.
 - Replace Matching Assets updates only `assetId`, `type`, and `name` to the selected replacement palette asset. It preserves each replaced placed object's ID, position, dimensions, `gridRef`, `rangeRef`, layer, visibility/opacity/blocking fields, notes, `editorLocked`, `layerOptions`, and unknown/custom fields.
 - Replace Matching Assets skips hidden-layer, locked-layer, and individually locked matches and reports the skipped counts. Non-matching placed assets and unknown layer arrays are untouched.

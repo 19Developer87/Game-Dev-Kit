@@ -258,6 +258,12 @@ class DevEditor {
         (event.key === "Delete" || event.key === "Backspace") &&
         this.activeTool === "move"
       ) {
+        if (this.selectedRanges.length > 0 && this.selectionState === "selectionReady") {
+          event.preventDefault();
+          this.deleteAssetsInSelectedRange();
+          return;
+        }
+
         if (this.selectedPlacedObjectIds.size > 0 || this.selectedPlacedObjectId) {
           event.preventDefault();
           this.deleteSelectedPlacedObjects();
@@ -589,8 +595,8 @@ class DevEditor {
     if (state === "selectionReady") {
       if (isAdditiveSelection) {
         this.addSelectedArea(range, { seedRange: previousSelectedRange });
-        this.clearPlacedObjectSelection();
-        this.render();
+        this.syncPlacedObjectSelectionForSelectedAreas();
+        this.refreshPlacedAssetMarkers();
         this.setStatus(this.createMultiAreaSelectionStatus());
         return;
       }
@@ -598,6 +604,7 @@ class DevEditor {
       this.selectedRanges = [];
       this.gridEditor.updateMultiSelections([]);
       this.gridEditor.updateSelection(this.selectedRange);
+      this.syncCoordinateStatus();
       const selectedObjects = findObjectsInRange(
         getCurrentLevel(this.project),
         range.x,
@@ -1181,11 +1188,58 @@ class DevEditor {
   }
 
   deleteAssetsInSelectedRange() {
-    if (!this.selectedRange || this.selectionState !== "selectionReady") {
+    const selectedAreas = this.getSelectedAreaRanges();
+    if (selectedAreas.length === 0 || this.selectionState !== "selectionReady") {
       return false;
     }
 
-    return this.deleteAssetsInRange(this.selectedRange);
+    if (selectedAreas.length === 1) {
+      return this.deleteAssetsInRange(selectedAreas[0]);
+    }
+
+    const level = getCurrentLevel(this.project);
+    const selectedObjects = this.findObjectsInSelectedAreas(selectedAreas);
+    const removable = selectedObjects.filter(
+      (placedObject) =>
+        this.isLayerVisible(placedObject.layer) &&
+        !this.isPlacedObjectProtected(placedObject),
+    );
+    const hiddenCount = selectedObjects.filter(
+      (placedObject) => !this.isLayerVisible(placedObject.layer),
+    ).length;
+    const lockedCount = selectedObjects.filter(
+      (placedObject) =>
+        this.isLayerVisible(placedObject.layer) &&
+        this.isPlacedObjectProtected(placedObject),
+    ).length;
+
+    if (removable.length === 0) {
+      const skippedParts = this.createSkippedAssetParts(hiddenCount, lockedCount);
+      this.setStatus(
+        skippedParts.length > 0
+          ? `No editable visible assets deleted. ${skippedParts.join(" and ")} asset${hiddenCount + lockedCount === 1 ? " was" : "s were"} skipped.`
+          : "No placed assets found in the selected areas.",
+      );
+      return false;
+    }
+
+    const removedObjects = removeKnownPlacedObjectsByIds(
+      level,
+      removable.map((placedObject) => placedObject.id),
+    );
+    this.cancelCopyPlacement();
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    this.refreshPlacedAssetMarkers();
+    const skippedParts = this.createSkippedAssetParts(hiddenCount, lockedCount);
+    this.autosave(
+      `Deleted ${removedObjects.length} asset${removedObjects.length === 1 ? "" : "s"} across ${selectedAreas.length} areas.${
+        skippedParts.length > 0
+          ? ` ${skippedParts.join(" and ")} asset${hiddenCount + lockedCount === 1 ? " was" : "s were"} skipped.`
+          : ""
+      }`,
+    );
+    return true;
   }
 
   deleteAssetsInRange(range, { clearSelection = false } = {}) {
@@ -2254,16 +2308,22 @@ class DevEditor {
       return false;
     }
 
-    if (!this.selectedAsset) {
+    const replacementAsset = this.selectedAsset;
+    if (!replacementAsset) {
       this.setStatus("No replacement asset selected.");
       return false;
     }
 
     if (
-      this.selectedAsset.isImported &&
-      (!this.selectedAsset.src || typeof this.selectedAsset.src !== "string")
+      replacementAsset.isImported &&
+      (!replacementAsset.src || typeof replacementAsset.src !== "string")
     ) {
       this.setStatus("Replacement asset image data missing.");
+      return false;
+    }
+
+    if (!replacementAsset.id || !this.project.assets.some((asset) => asset.id === replacementAsset.id)) {
+      this.setStatus("Replacement asset was not found in the asset registry.");
       return false;
     }
 
@@ -2292,7 +2352,7 @@ class DevEditor {
       return false;
     }
 
-    if (sourceAssetId === this.selectedAsset.id) {
+    if (sourceAssetId === replacementAsset.id) {
       this.setStatus("Source and replacement assets are the same. No changes made.");
       return false;
     }
@@ -2343,7 +2403,7 @@ class DevEditor {
     const replacedObjects = replacePlacedObjectAssetSources(
       level,
       replaceableObjects.map((placedObject) => placedObject.id),
-      this.selectedAsset,
+      replacementAsset,
     );
     if (replacedObjects.length === 0) {
       this.setStatus("Unable to replace matching assets.");
@@ -2355,7 +2415,7 @@ class DevEditor {
     this.closePlacedPropertiesDialog();
     this.refreshPlacedAssetMarkers();
     this.autosave(
-      `Replaced ${replacedObjects.length} matching asset${replacedObjects.length === 1 ? "" : "s"} with ${this.selectedAsset.name}${
+      `Replaced ${replacedObjects.length} matching asset${replacedObjects.length === 1 ? "" : "s"} with ${replacementAsset.name || replacementAsset.id}${
         isMultiAreaReplace ? ` across ${selectedAreas.length} areas` : ""
       }.${
         skippedText.length > 0
@@ -2400,9 +2460,16 @@ class DevEditor {
   }
 
   formatReplaceMatchingCandidateLabel(candidate) {
-    const assetName = candidate.asset?.name || candidate.fallbackName || candidate.assetId;
-    const categoryName = candidate.asset?.category || "Unknown category";
-    return `${assetName} (${categoryName}) - ${candidate.count} match${candidate.count === 1 ? "" : "es"}`;
+    const matchText = `${candidate.count} match${candidate.count === 1 ? "" : "es"}`;
+    if (!candidate.asset) {
+      return `Missing asset [${candidate.assetId}] - ${matchText}`;
+    }
+
+    const assetName = candidate.asset.name || candidate.fallbackName || candidate.assetId;
+    const categoryName = candidate.asset.category || "Unknown category";
+    const fileName = candidate.asset.fileName || candidate.asset.filename || candidate.asset.originalName;
+    const fileText = fileName ? ` - ${fileName}` : "";
+    return `${assetName} (${categoryName})${fileText} [${candidate.assetId}] - ${matchText}`;
   }
 
   createSkippedAssetParts(hiddenCount, lockedCount) {
@@ -2574,6 +2641,27 @@ class DevEditor {
       );
     });
     return Array.from(objectsById.values());
+  }
+
+  findSelectableObjectsInSelectedAreas(ranges = this.getSelectedAreaRanges()) {
+    return this.findObjectsInSelectedAreas(ranges).filter(
+      (placedObject) =>
+        this.isLayerVisible(placedObject.layer) &&
+        !this.isPlacedObjectProtected(placedObject),
+    );
+  }
+
+  syncPlacedObjectSelectionForSelectedAreas(ranges = this.getSelectedAreaRanges()) {
+    const selectedObjects = this.findSelectableObjectsInSelectedAreas(ranges);
+    if (selectedObjects.length === 0) {
+      this.selectedPlacedObjectId = null;
+      this.selectedPlacedObjectIds = new Set();
+      return [];
+    }
+
+    this.selectedPlacedObjectId = selectedObjects[0].id;
+    this.selectedPlacedObjectIds = new Set(selectedObjects.map((placedObject) => placedObject.id));
+    return selectedObjects;
   }
 
   createMultiAreaSelectionStatus(ranges = this.selectedRanges) {
