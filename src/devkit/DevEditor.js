@@ -62,6 +62,7 @@ const GRID_SIZE_PRESETS = ["10", "20", "30", "40", "50", "75", "100", "150", "20
 const LARGE_GRID_WARNING_SIZE = 100;
 const VERY_LARGE_GRID_WARNING_SIZE = 250;
 const MAX_GRID_SIZE = 500;
+const MIXED_VALUE = "__mixed";
 
 class DevEditor {
   constructor(root, loaded) {
@@ -130,9 +131,10 @@ class DevEditor {
       selectedAssetId: this.selectedAsset?.id || null,
       onSelect: (asset) => {
         this.selectedAsset = asset;
-        this.activateTool("move");
         this.syncAreaToolMenu();
-        if (this.selectionState === "selectionReady") {
+        if (this.activeTool === "paint") {
+          this.setStatus(`Paint mode: drag across the grid to paint ${asset.name}.`);
+        } else if (this.selectionState === "selectionReady") {
           this.setSelectionReadyStatus();
         } else {
           this.setStatus(`Selected ${asset.name}.`);
@@ -156,10 +158,6 @@ class DevEditor {
       button.addEventListener("click", () => {
         this.activateTool(button.dataset.tool);
       });
-    });
-
-    this.root.querySelector('[data-action="place-selected-asset"]').addEventListener("click", async () => {
-      await this.placeSelectedAssetInRange();
     });
 
     window.addEventListener("keydown", (event) => {
@@ -251,7 +249,7 @@ class DevEditor {
 
       const hotkeyTool = {
         q: "move",
-        w: "move",
+        w: "paint",
         e: "delete",
       }[event.key.toLowerCase()];
 
@@ -363,11 +361,6 @@ class DevEditor {
 
     this.ui.replaceMatchingAssetsButton.addEventListener("click", async () => {
       await this.replaceMatchingAssetsInSelectedArea();
-      this.closeMenus();
-    });
-
-    this.ui.dragPaintModeButton.addEventListener("click", () => {
-      this.toggleDragPaintMode();
       this.closeMenus();
     });
 
@@ -630,7 +623,7 @@ class DevEditor {
         range.width,
         range.height,
         this.getEditableLayerNames(),
-      ).filter((placedObject) => placedObject.editorLocked !== true);
+      ).filter((placedObject) => this.canSelectPlacedObject(placedObject));
       if (selectedObjects.length > 0) {
         this.setPlacedObjectSelection(
           selectedObjects.map((placedObject) => placedObject.id),
@@ -673,31 +666,30 @@ class DevEditor {
   }
 
   activateTool(tool) {
-    if (!["move", "delete"].includes(tool)) {
+    if (!["move", "paint", "delete"].includes(tool)) {
       return;
     }
 
     this.activeTool = tool;
-    if (tool !== "move" && this.isDragPaintMode) {
-      this.setDragPaintMode(false);
+    this.isDragPaintMode = tool === "paint";
+    if (tool !== "paint") {
+      this.cancelDragPaint();
     }
     if (tool !== "move" && this.copiedPlacedGroup) {
       this.cancelCopyPlacement();
     }
-    if (tool === "delete") {
+    if (tool === "delete" || tool === "paint") {
       this.clearSelection();
     }
     if (tool !== "move") {
       this.clearPlacedObjectSelection();
     }
-    this.gridEditor.setInteractionMode(tool);
+    this.gridEditor.setInteractionMode(tool === "paint" ? "move" : tool);
+    this.gridEditor.setDragPaintModeActive(this.isDragPaintMode);
     this.syncToolButtons();
+    this.syncModeStatus();
     this.render();
-    this.setStatus(
-      this.isDragPaintMode && tool === "move"
-        ? "Drag Paint Mode: On. Hold and drag on the grid to paint the selected asset."
-        : `${getToolLabel(tool)} tool active.`,
-    );
+    this.setStatus(this.getToolStatusMessage(tool));
   }
 
   selectPlacedObject(placedObjectId) {
@@ -708,11 +700,7 @@ class DevEditor {
     const placedObject = getPlacedObjects(
       getCurrentLevel(this.project),
       this.getEditableLayerNames(),
-    ).find(
-      (candidate) =>
-        candidate.id === placedObjectId &&
-        candidate.editorLocked !== true,
-    );
+    ).find((candidate) => candidate.id === placedObjectId);
     if (!placedObject) {
       const unavailableObject = getPlacedObjects(getCurrentLevel(this.project)).find(
         (candidate) => candidate.id === placedObjectId,
@@ -729,13 +717,25 @@ class DevEditor {
     this.clearSelection();
     this.setPlacedObjectSelection([placedObjectId], placedObjectId);
     this.render();
-    this.setStatus("Placed asset selected. Drag to move or use a handle to resize.");
+    this.setStatus(
+      placedObject.editorLocked === true
+        ? "Locked placed asset selected. Open Properties to unlock it."
+        : "Placed asset selected. Drag to move or use a handle to resize.",
+    );
   }
 
   openPlacedAssetProperties(placedObjectId = this.selectedPlacedObjectId) {
     const explicitPlacedObject = arguments.length > 0;
+    if (
+      explicitPlacedObject &&
+      this.selectedPlacedObjectIds.size > 1 &&
+      this.selectedPlacedObjectIds.has(placedObjectId)
+    ) {
+      this.openMultiPlacedAssetProperties();
+      return;
+    }
     if (this.selectedPlacedObjectIds.size > 1 && !explicitPlacedObject) {
-      this.setStatus("Select one asset to edit properties.");
+      this.openMultiPlacedAssetProperties();
       return;
     }
 
@@ -765,11 +765,7 @@ class DevEditor {
 
     this.cancelCopyPlacement();
     this.clearSelection();
-    if (placedObject.editorLocked === true) {
-      this.clearPlacedObjectSelection();
-    } else {
-      this.setPlacedObjectSelection([placedObjectId], placedObjectId);
-    }
+    this.setPlacedObjectSelection([placedObjectId], placedObjectId);
     this.render();
     this.showPlacedAssetPropertiesDialog(level, placedObject);
   }
@@ -981,6 +977,303 @@ class DevEditor {
 
     dialog.showModal();
     this.restorePlacedPropertiesDialogBounds(dialog);
+  }
+
+  openMultiPlacedAssetProperties() {
+    if (this.activeTool !== "move" || this.selectedPlacedObjectIds.size <= 1) {
+      this.setStatus("Select multiple assets first.");
+      return;
+    }
+
+    const level = getCurrentLevel(this.project);
+    const selection = this.getSelectedPlacedAssetsForProperties();
+    if (selection.editableObjects.length > 0) {
+      this.cancelCopyPlacement();
+      this.clearSelection();
+      this.render();
+      this.showMultiPlacedAssetPropertiesDialog(level, selection);
+      return;
+    }
+
+    if (selection.lockableObjects.length > 0) {
+      this.openMultiPlacedAssetLockProperties();
+      return;
+    }
+
+    this.setStatus("No selected assets can be edited.");
+  }
+
+  showMultiPlacedAssetPropertiesDialog(level, selection) {
+    const editableObjects = selection.editableObjects;
+    const lockableObjects = selection.lockableObjects;
+    const layerValue = getCommonValue(editableObjects, (placedObject) =>
+      normalizePlacedLayer(placedObject.layer),
+    );
+    const visibleValue = getCommonValue(editableObjects, (placedObject) =>
+      placedObject.visible !== false,
+    );
+    const opacityValue = getCommonValue(editableObjects, (placedObject) =>
+      normalizeOpacity(placedObject.opacity),
+    );
+    const blocksMovementValue = getCommonValue(editableObjects, (placedObject) =>
+      Boolean(placedObject.blocksMovement),
+    );
+    const notesValue = getCommonValue(editableObjects, (placedObject) =>
+      String(placedObject.notes || ""),
+    );
+    const lockValue = getCommonValue(lockableObjects, (placedObject) =>
+      placedObject.editorLocked === true,
+    );
+    const skippedText =
+      selection.protectedCount > 0
+        ? `<p class="properties-hint">${selection.protectedCount} protected selected asset${selection.protectedCount === 1 ? "" : "s"} will be skipped.</p>`
+        : "";
+    const dialog = document.createElement("dialog");
+
+    dialog.className = "placed-properties-dialog";
+    dialog.innerHTML = `
+      <form class="placed-properties-form" method="dialog">
+        <header class="properties-dialog-header">
+          <h2>Multi-Asset Properties &mdash; ${editableObjects.length} editable selected assets</h2>
+        </header>
+        <div class="properties-scroll-content">
+          <fieldset class="properties-info">
+            <legend>Selection</legend>
+            <p class="properties-hint">Editing ${editableObjects.length} selected asset${editableObjects.length === 1 ? "" : "s"}. Only changed fields will be applied.</p>
+            ${selection.lockedCount > 0 ? `<p class="properties-hint">${selection.lockedCount} individually locked selected asset${selection.lockedCount === 1 ? "" : "s"} can be unlocked with the Locked field.</p>` : ""}
+            ${skippedText}
+          </fieldset>
+          <div class="properties-fields">
+            <fieldset class="properties-position">
+              <legend>Position / Size</legend>
+              <p class="properties-hint">Position and size are not edited in multi-asset Properties. Use group move for positions or single-asset Properties for size.</p>
+            </fieldset>
+            <fieldset>
+              <legend>Display</legend>
+              <label>Visible
+                <select name="visible" data-track-change>
+                  ${createMixedBooleanOptions(visibleValue)}
+                </select>
+              </label>
+              <label>Opacity (0 to 100)
+                <input name="opacity" type="number" min="0" max="100" value="${opacityValue === MIXED_VALUE ? "" : opacityValue}" placeholder="${opacityValue === MIXED_VALUE ? "Mixed" : ""}" data-track-change />
+              </label>
+              <p class="properties-hint">Mixed values are preserved unless you change the field.</p>
+            </fieldset>
+            <fieldset>
+              <legend>Layer / Behaviour</legend>
+              <label>Layer
+                <select name="layer" data-track-change>
+                  ${createMixedLayerOptions(layerValue)}
+                </select>
+              </label>
+              <label>Blocks Movement
+                <select name="blocksMovement" data-track-change>
+                  ${createMixedBooleanOptions(blocksMovementValue)}
+                </select>
+              </label>
+              <label>Locked
+                <select name="editorLocked" data-track-change>
+                  ${createMixedBooleanOptions(lockValue)}
+                </select>
+              </label>
+              <label class="properties-notes">Notes
+                <textarea name="notes" rows="4" placeholder="${notesValue === MIXED_VALUE ? "Mixed" : ""}" data-track-change>${notesValue === MIXED_VALUE ? "" : escapeHtml(notesValue)}</textarea>
+              </label>
+              <p class="properties-hint">Layer changes use the same layer reassignment path as single-asset Properties. Layer-specific metadata is preserved.</p>
+            </fieldset>
+          </div>
+          <p class="form-error" role="alert" hidden></p>
+        </div>
+        <div class="dialog-actions properties-dialog-actions">
+          <button type="button" data-action="cancel-properties">Cancel / Close</button>
+          <button type="submit">Apply / Save Changes</button>
+        </div>
+      </form>
+    `;
+
+    document.body.append(dialog);
+    const form = dialog.querySelector("form");
+    const error = dialog.querySelector(".form-error");
+    const releaseDialogBehavior = this.bindPlacedPropertiesDialogBehavior(dialog);
+
+    form.querySelectorAll("[data-track-change]").forEach((field) => {
+      const markDirty = () => {
+        field.dataset.changed = "true";
+      };
+      field.addEventListener("change", markDirty);
+      field.addEventListener("input", markDirty);
+    });
+
+    dialog.querySelector('[data-action="cancel-properties"]').addEventListener("click", () => {
+      dialog.close();
+    });
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const result = this.readMultiPlacedAssetPropertyValues(new FormData(form), form);
+      if (result.error) {
+        error.hidden = false;
+        error.textContent = result.error;
+        return;
+      }
+
+      if (Object.keys(result.values).length === 0) {
+        error.hidden = false;
+        error.textContent = "No property changes were selected.";
+        return;
+      }
+
+      const applyResult = this.applyMultiPlacedAssetProperties(result.values);
+      dialog.close();
+      this.render();
+      this.autosave(this.createMultiPropertiesStatusMessage(applyResult, result.values));
+    });
+
+    dialog.addEventListener("close", () => {
+      releaseDialogBehavior();
+      dialog.remove();
+    });
+
+    dialog.showModal();
+    this.restorePlacedPropertiesDialogBounds(dialog);
+  }
+
+  openMultiPlacedAssetLockProperties() {
+    if (this.activeTool !== "move" || this.selectedPlacedObjectIds.size <= 1) {
+      this.setStatus("Select multiple assets first.");
+      return;
+    }
+
+    const { selectedObjects, protectedCount } = this.getSelectedPlacedAssetsForLocking();
+    if (selectedObjects.length === 0) {
+      this.setStatus("No selected assets can be locked or unlocked.");
+      return;
+    }
+
+    const lockedCount = selectedObjects.filter((placedObject) => placedObject.editorLocked === true).length;
+    const initialLockValue = lockedCount === selectedObjects.length;
+    const mixedText =
+      lockedCount > 0 && lockedCount < selectedObjects.length
+        ? `<p class="properties-hint">Selected assets have mixed lock states. Choose Yes or No to apply one state to all editable selected assets.</p>`
+        : "";
+    const skippedText =
+      protectedCount > 0
+        ? `<p class="properties-hint">${protectedCount} protected selected asset${protectedCount === 1 ? "" : "s"} will be skipped.</p>`
+        : "";
+    const dialog = document.createElement("dialog");
+    dialog.className = "placed-properties-dialog";
+    dialog.innerHTML = `
+      <form class="placed-properties-form" method="dialog">
+        <header class="properties-dialog-header">
+          <h2>Placed Asset Properties &mdash; ${selectedObjects.length} selected assets</h2>
+        </header>
+        <div class="properties-scroll-content">
+          <div class="properties-fields">
+            <fieldset>
+              <legend>Individual Lock</legend>
+              <label>Locked
+                <select name="editorLocked">
+                  <option value="false" ${!initialLockValue ? "selected" : ""}>No</option>
+                  <option value="true" ${initialLockValue ? "selected" : ""}>Yes</option>
+                </select>
+              </label>
+              <p class="properties-hint">This changes only the individual lock field for editable selected placed assets.</p>
+              ${mixedText}
+              ${skippedText}
+            </fieldset>
+          </div>
+          <p class="form-error" role="alert" hidden></p>
+        </div>
+        <div class="dialog-actions properties-dialog-actions">
+          <button type="button" data-action="cancel-properties">Cancel / Close</button>
+          <button type="submit">Apply / Save Changes</button>
+        </div>
+      </form>
+    `;
+
+    document.body.append(dialog);
+    const form = dialog.querySelector("form");
+    const releaseDialogBehavior = this.bindPlacedPropertiesDialogBehavior(dialog);
+
+    dialog.querySelector('[data-action="cancel-properties"]').addEventListener("click", () => {
+      dialog.close();
+    });
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const data = new FormData(form);
+      const shouldLock = data.get("editorLocked") === "true";
+      const result = this.applySelectedPlacedAssetLockState(shouldLock);
+      dialog.close();
+      this.render();
+      this.autosave(this.createMultiLockStatusMessage(result, shouldLock));
+    });
+
+    dialog.addEventListener("close", () => {
+      releaseDialogBehavior();
+      dialog.remove();
+    });
+
+    dialog.showModal();
+    this.restorePlacedPropertiesDialogBounds(dialog);
+  }
+
+  readMultiPlacedAssetPropertyValues(data, form) {
+    const values = {};
+    const isChanged = (name) =>
+      form.elements[name]?.dataset?.changed === "true";
+
+    if (isChanged("layer")) {
+      const layer = String(data.get("layer") || "");
+      if (layer && layer !== MIXED_VALUE) {
+        if (!LAYERS.includes(layer)) {
+          return { error: "Choose a valid layer." };
+        }
+        if (this.isLayerLocked(layer)) {
+          return { error: `Layer "${normalizePlacedLayer(layer)}" is locked. Unlock it before applying Properties changes.` };
+        }
+        values.layer = layer;
+      }
+    }
+
+    if (isChanged("visible")) {
+      const visible = String(data.get("visible") || "");
+      if (visible !== MIXED_VALUE) {
+        values.visible = visible === "true";
+      }
+    }
+
+    if (isChanged("opacity")) {
+      const rawOpacity = String(data.get("opacity") || "").trim();
+      if (rawOpacity !== "") {
+        const opacity = Number(rawOpacity);
+        if (!Number.isInteger(opacity) || opacity < 0 || opacity > 100) {
+          return { error: "Opacity must be a whole number from 0 to 100." };
+        }
+        values.opacity = opacity;
+      }
+    }
+
+    if (isChanged("blocksMovement")) {
+      const blocksMovement = String(data.get("blocksMovement") || "");
+      if (blocksMovement !== MIXED_VALUE) {
+        values.blocksMovement = blocksMovement === "true";
+      }
+    }
+
+    if (isChanged("editorLocked")) {
+      const editorLocked = String(data.get("editorLocked") || "");
+      if (editorLocked !== MIXED_VALUE) {
+        values.editorLocked = editorLocked === "true";
+      }
+    }
+
+    if (isChanged("notes")) {
+      values.notes = String(data.get("notes") || "");
+    }
+
+    return { values };
   }
 
   readPlacedAssetPropertyValues(data, level, placedObject) {
@@ -2053,6 +2346,217 @@ class DevEditor {
     return { selectedIds, selectedObjects };
   }
 
+  getSelectedPlacedAssetsForLocking() {
+    const selection = this.getSelectedPlacedAssetsForProperties();
+
+    return {
+      selectedIds: selection.selectedIds,
+      selectedObjects: selection.lockableObjects,
+      protectedCount: selection.protectedCount,
+    };
+  }
+
+  getSelectedPlacedAssetsForProperties() {
+    const level = getCurrentLevel(this.project);
+    const selectedIds = this.selectedPlacedObjectIds.size > 0
+      ? Array.from(this.selectedPlacedObjectIds)
+      : [this.selectedPlacedObjectId].filter(Boolean);
+    const selectedIdSet = new Set(selectedIds);
+    const allSelectedObjects = getPlacedObjects(level).filter(
+      (placedObject) => selectedIdSet.has(placedObject.id),
+    );
+    const visibleLayerObjects = allSelectedObjects.filter(
+      (placedObject) => this.canUnlockPlacedObject(placedObject),
+    );
+    const editableObjects = allSelectedObjects.filter(
+      (placedObject) => this.canEditPlacedObject(placedObject),
+    );
+    const individuallyLockedObjects = visibleLayerObjects.filter(
+      (placedObject) => placedObject.editorLocked === true,
+    );
+
+    return {
+      selectedIds,
+      allSelectedObjects,
+      editableObjects,
+      individuallyLockedObjects,
+      lockableObjects: visibleLayerObjects,
+      lockedCount: individuallyLockedObjects.length,
+      protectedCount: allSelectedObjects.length - visibleLayerObjects.length,
+    };
+  }
+
+  applySelectedPlacedAssetLockState(shouldLock) {
+    const level = getCurrentLevel(this.project);
+    const { selectedObjects, protectedCount } = this.getSelectedPlacedAssetsForLocking();
+    let changedCount = 0;
+
+    selectedObjects.forEach((placedObject) => {
+      const result = this.setPlacedObjectLockState(level, placedObject.id, shouldLock);
+      if (result?.changed) {
+        changedCount += 1;
+      }
+    });
+
+    const selectableIds = selectedObjects
+      .filter(
+        (placedObject) =>
+          this.isLayerVisible(placedObject.layer) &&
+          !this.isLayerLocked(placedObject.layer),
+      )
+      .map((placedObject) => placedObject.id);
+    const previousPrimaryId = this.selectedPlacedObjectId;
+    this.setPlacedObjectSelection(
+      selectableIds,
+      selectableIds.includes(previousPrimaryId) ? previousPrimaryId : selectableIds[0] || null,
+    );
+
+    return {
+      appliedCount: selectedObjects.length,
+      changedCount,
+      selectedCount: selectedObjects.length,
+      protectedCount,
+    };
+  }
+
+  createMultiLockStatusMessage(result, shouldLock) {
+    const action = shouldLock ? "Locked" : "Unlocked";
+    const skippedText =
+      result.protectedCount > 0
+        ? ` Skipped ${result.protectedCount} protected asset${result.protectedCount === 1 ? "" : "s"}.`
+        : "";
+
+    if (result.appliedCount === 0) {
+      return `No selected assets changed.${skippedText}`;
+    }
+
+    return `${action} ${result.appliedCount} selected asset${result.appliedCount === 1 ? "" : "s"}.${skippedText}`;
+  }
+
+  setPlacedObjectLockState(level, placedObjectId, shouldLock) {
+    for (const layerName of LAYERS) {
+      const placedObject = (level.layers[layerName] || []).find(
+        (candidate) => candidate.id === placedObjectId,
+      );
+      if (!placedObject) {
+        continue;
+      }
+
+      const changed = placedObject.editorLocked !== shouldLock;
+      placedObject.editorLocked = shouldLock;
+      return { placedObject, changed };
+    }
+
+    return null;
+  }
+
+  applyMultiPlacedAssetProperties(values) {
+    const level = getCurrentLevel(this.project);
+    const selection = this.getSelectedPlacedAssetsForProperties();
+    const changedFields = Object.keys(values);
+    const hasEditableChanges = changedFields.some((fieldName) => fieldName !== "editorLocked");
+    let editedCount = 0;
+    let lockAppliedCount = 0;
+    let lockChangedCount = 0;
+
+    if (hasEditableChanges) {
+      selection.editableObjects.forEach((placedObject) => {
+        const nextProperties = {
+          x: Number(placedObject.x) || 1,
+          y: Number(placedObject.y) || 1,
+          width: Math.max(1, Number(placedObject.width) || 1),
+          height: Math.max(1, Number(placedObject.height) || 1),
+          layer: values.layer ?? normalizePlacedLayer(placedObject.layer),
+        };
+        if (Object.prototype.hasOwnProperty.call(values, "visible")) {
+          nextProperties.visible = values.visible;
+        }
+        if (Object.prototype.hasOwnProperty.call(values, "opacity")) {
+          nextProperties.opacity = values.opacity;
+        }
+        if (Object.prototype.hasOwnProperty.call(values, "blocksMovement")) {
+          nextProperties.blocksMovement = values.blocksMovement;
+        }
+        if (Object.prototype.hasOwnProperty.call(values, "notes")) {
+          nextProperties.notes = values.notes;
+        }
+        const updatedObject = updatePlacedAssetProperties(level, placedObject.id, nextProperties);
+        if (updatedObject) {
+          editedCount += 1;
+        }
+      });
+    }
+
+    if (values.editorLocked !== undefined) {
+      selection.lockableObjects.forEach((placedObject) => {
+        const result = this.setPlacedObjectLockState(
+          level,
+          placedObject.id,
+          values.editorLocked,
+        );
+        if (result?.changed) {
+          lockChangedCount += 1;
+        }
+      });
+      lockAppliedCount = selection.lockableObjects.length;
+    }
+
+    const selectableIds = selection.selectedIds.filter((placedObjectId) => {
+      const placedObject = getPlacedObjects(level).find(
+        (candidate) => candidate.id === placedObjectId,
+      );
+      return (
+        placedObject &&
+        this.isLayerVisible(placedObject.layer) &&
+        !this.isLayerLocked(placedObject.layer)
+      );
+    });
+    const previousPrimaryId = this.selectedPlacedObjectId;
+    this.setPlacedObjectSelection(
+      selectableIds,
+      selectableIds.includes(previousPrimaryId) ? previousPrimaryId : selectableIds[0] || null,
+    );
+
+    return {
+      changedFields,
+      editedCount,
+      lockAppliedCount,
+      lockChangedCount,
+      lockState: values.editorLocked,
+      editableCount: selection.editableObjects.length,
+      lockableCount: selection.lockableObjects.length,
+      protectedCount: selection.protectedCount,
+    };
+  }
+
+  createMultiPropertiesStatusMessage(result, values) {
+    const parts = [];
+    const changedSharedFields = result.changedFields.filter(
+      (fieldName) => fieldName !== "editorLocked",
+    );
+
+    if (changedSharedFields.length > 0) {
+      parts.push(
+        `Updated ${changedSharedFields.join(", ")} for ${result.editedCount} selected asset${result.editedCount === 1 ? "" : "s"}.`,
+      );
+    }
+
+    if (values.editorLocked !== undefined) {
+      const action = values.editorLocked ? "Locked" : "Unlocked";
+      parts.push(
+        `${action} ${result.lockAppliedCount} selected asset${result.lockAppliedCount === 1 ? "" : "s"}.`,
+      );
+    }
+
+    if (result.protectedCount > 0) {
+      parts.push(
+        `Skipped ${result.protectedCount} protected asset${result.protectedCount === 1 ? "" : "s"}.`,
+      );
+    }
+
+    return parts.length > 0 ? parts.join(" ") : "No selected assets changed.";
+  }
+
   createPlacedAssetGroup(selectedObjects, mode) {
     const minimumX = Math.min(...selectedObjects.map((placedObject) => Number(placedObject.x) || 1));
     const minimumY = Math.min(...selectedObjects.map((placedObject) => Number(placedObject.y) || 1));
@@ -2451,31 +2955,6 @@ class DevEditor {
     return true;
   }
 
-  toggleDragPaintMode() {
-    this.setDragPaintMode(!this.isDragPaintMode);
-    this.setStatus(
-      this.isDragPaintMode
-        ? "Drag Paint Mode: On. Hold and drag on the grid to paint the selected asset."
-        : "Drag Paint Mode: Off. Select/Move restored.",
-    );
-  }
-
-  setDragPaintMode(isEnabled) {
-    this.isDragPaintMode = Boolean(isEnabled);
-    if (!this.isDragPaintMode) {
-      this.cancelDragPaint();
-    }
-    if (this.isDragPaintMode) {
-      this.activeTool = "move";
-      this.cancelCopyPlacement();
-    }
-    this.gridEditor.setInteractionMode(this.activeTool);
-    this.gridEditor.setDragPaintModeActive(this.isDragPaintMode);
-    this.syncToolButtons();
-    this.syncDragPaintModeButton();
-    this.syncModeStatus();
-  }
-
   startDragPaint(cell) {
     if (!this.isDragPaintMode) {
       return;
@@ -2598,6 +3077,21 @@ class DevEditor {
     if (showStatus && hadSession) {
       this.setStatus("Drag paint cancelled. No cells were painted.");
     }
+  }
+
+  getToolStatusMessage(tool = this.activeTool) {
+    if (tool === "paint") {
+      return this.selectedAsset
+        ? `Paint mode: drag across the grid to paint ${this.selectedAsset.name}.`
+        : "Paint mode: select an asset to paint.";
+    }
+    if (tool === "move") {
+      return "Select/Move mode.";
+    }
+    if (tool === "delete") {
+      return "Delete mode.";
+    }
+    return `${getToolLabel(tool)} mode.`;
   }
 
   getReplaceMatchingCandidates(rangeOrRanges) {
@@ -2819,9 +3313,7 @@ class DevEditor {
 
   findSelectableObjectsInSelectedAreas(ranges = this.getSelectedAreaRanges()) {
     return this.findObjectsInSelectedAreas(ranges).filter(
-      (placedObject) =>
-        this.isLayerVisible(placedObject.layer) &&
-        !this.isPlacedObjectProtected(placedObject),
+      (placedObject) => this.canSelectPlacedObject(placedObject),
     );
   }
 
@@ -2887,7 +3379,7 @@ class DevEditor {
       this.selectedRange.x + this.selectedRange.width - 1,
       this.selectedRange.y + this.selectedRange.height - 1,
     )}`;
-    this.setStatus(`Selected: ${selected}. Click Place Selected Asset or drag an asset here.`);
+    this.setStatus(`Selected: ${selected}. Drag an asset here to place one stretched asset.`);
     this.syncPlacementButton();
   }
 
@@ -3047,7 +3539,7 @@ class DevEditor {
         await this.placeAssetInRange(importedAsset, pendingPlacementRange, "import");
       } else {
         this.setStatus(
-          `Asset added to ${importedAsset.category}. Click Place Selected Asset or drag the asset onto the grid to place it.`,
+          `Asset added to ${importedAsset.category}. Drag it from the asset panel onto the grid or use Paint mode to drag-paint it.`,
         );
       }
       return;
@@ -3420,7 +3912,7 @@ class DevEditor {
     this.assetPalette.assetRegistry = this.project.assetRegistry;
     this.assetPalette.selectedAssetId = this.selectedAsset?.id || null;
     this.assetPalette.render();
-    this.gridEditor.setInteractionMode(this.activeTool);
+    this.gridEditor.setInteractionMode(this.activeTool === "paint" ? "move" : this.activeTool);
     this.gridEditor.render(
       level,
       this.project.assets,
@@ -3526,18 +4018,6 @@ class DevEditor {
     this.root.querySelectorAll("[data-tool]").forEach((button) => {
       button.classList.toggle("is-active", button.dataset.tool === this.activeTool);
     });
-    this.syncDragPaintModeButton();
-  }
-
-  syncDragPaintModeButton() {
-    if (!this.ui.dragPaintModeButton) {
-      return;
-    }
-    this.ui.dragPaintModeButton.textContent = this.isDragPaintMode
-      ? "Drag Paint Mode: On"
-      : "Drag Paint Mode: Off";
-    this.ui.dragPaintModeButton.setAttribute("aria-pressed", String(this.isDragPaintMode));
-    this.ui.dragPaintModeButton.classList.toggle("is-active", this.isDragPaintMode);
   }
 
   loadLayerVisibility() {
@@ -3635,6 +4115,25 @@ class DevEditor {
         placedObject.editorLocked === true
       ),
     );
+  }
+
+  canSelectPlacedObject(placedObject) {
+    return Boolean(
+      placedObject &&
+      this.isLayerVisible(placedObject.layer) &&
+      !this.isLayerLocked(placedObject.layer),
+    );
+  }
+
+  canEditPlacedObject(placedObject) {
+    return Boolean(
+      this.canSelectPlacedObject(placedObject) &&
+      placedObject.editorLocked !== true,
+    );
+  }
+
+  canUnlockPlacedObject(placedObject) {
+    return this.canSelectPlacedObject(placedObject);
   }
 
   getPlacedObjectLockMessage(placedObject) {
@@ -3887,12 +4386,6 @@ class DevEditor {
   }
 
   syncPlacementButton() {
-    this.ui.placeSelectedAssetButton.disabled = !(
-      this.selectedAsset &&
-      this.selectedRange &&
-      this.selectionState === "selectionReady" &&
-      this.activeTool !== "delete"
-    );
     this.syncAreaToolMenu();
   }
 
@@ -3900,10 +4393,15 @@ class DevEditor {
     const hasEligiblePlacedSelection =
       this.activeTool === "move" &&
       this.getEligibleSelectedPlacedAssets().selectedObjects.length > 0;
+    const hasPropertiesSelection =
+      this.activeTool === "move" &&
+      (
+        Boolean(this.selectedPlacedObjectId) ||
+        this.selectedPlacedObjectIds.size > 0
+      );
     const isEnabled =
       this.activeTool === "move" &&
-      Boolean(this.selectedPlacedObjectId) &&
-      this.selectedPlacedObjectIds.size <= 1;
+      hasPropertiesSelection;
     this.ui.assetMenu.classList.toggle("is-disabled", !isEnabled);
     this.ui.assetMenu.querySelector("summary").setAttribute("aria-disabled", String(!isEnabled));
     this.ui.assetMenu.querySelector("button").disabled = !isEnabled;
@@ -4228,7 +4726,7 @@ class DevEditor {
   syncModeStatus() {
     const messages = [];
     if (this.isDragPaintMode) {
-      messages.push("Drag Paint Mode: On");
+      messages.push("Paint mode");
     }
     if (this.isCtrlPressed) {
       messages.push("Multi-select mode");
@@ -4294,7 +4792,13 @@ function clamp(value, minimum, maximum) {
 }
 
 function getToolLabel(tool) {
-  return tool === "move" ? "Select/Move" : "Delete";
+  if (tool === "move") {
+    return "Select/Move";
+  }
+  if (tool === "paint") {
+    return "Paint";
+  }
+  return "Delete";
 }
 
 const LAYER_LABELS = {
@@ -4322,6 +4826,38 @@ function createLayerOptions(selectedLayer) {
     (layerName) =>
       `<option value="${layerName}" ${layerName === selectedLayer ? "selected" : ""}>${LAYER_LABELS[layerName] || toTitleCase(layerName)}</option>`,
   ).join("");
+}
+
+function createMixedLayerOptions(selectedLayer) {
+  const mixedOption =
+    selectedLayer === MIXED_VALUE
+      ? `<option value="${MIXED_VALUE}" selected>Mixed</option>`
+      : "";
+  return `${mixedOption}${createLayerOptions(selectedLayer)}`;
+}
+
+function createMixedBooleanOptions(selectedValue) {
+  const mixedOption =
+    selectedValue === MIXED_VALUE
+      ? `<option value="${MIXED_VALUE}" selected>Mixed</option>`
+      : "";
+  return `
+    ${mixedOption}
+    <option value="false" ${selectedValue === false ? "selected" : ""}>No</option>
+    <option value="true" ${selectedValue === true ? "selected" : ""}>Yes</option>
+  `;
+}
+
+function getCommonValue(items, getValue) {
+  if (!items.length) {
+    return MIXED_VALUE;
+  }
+
+  const [firstItem, ...remainingItems] = items;
+  const firstValue = getValue(firstItem);
+  return remainingItems.every((item) => getValue(item) === firstValue)
+    ? firstValue
+    : MIXED_VALUE;
 }
 
 function normalizeLayerOptions(layerOptions) {

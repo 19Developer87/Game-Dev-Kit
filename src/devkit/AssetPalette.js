@@ -112,7 +112,7 @@ export class AssetPalette {
     const help = document.createElement("p");
     help.className = "help-text";
     help.textContent =
-      "Select an imported asset, click a cell, or drag from a category onto the grid. In Select/Move, drag on the grid first to place one stretched asset.";
+      "Select an imported asset, then drag it from a category onto the grid or a highlighted area. Use Paint mode to drag-paint repeated 1x1 assets. In Select/Move, drag on the grid to select areas or move placed assets.";
 
     this.root.append(heading, actions, search, list, help);
   }

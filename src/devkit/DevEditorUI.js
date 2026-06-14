@@ -49,8 +49,8 @@ export function createEditorLayout(root) {
           </div>
           <div class="toolbar-group">
             <button type="button" data-tool="move" class="is-active" title="Select/Move (Q)">Select/Move</button>
+            <button type="button" data-tool="paint" title="Paint (W)">Paint</button>
             <button type="button" data-tool="delete" title="Delete (E)">Delete</button>
-            <button type="button" data-action="place-selected-asset">Place Selected Asset</button>
           </div>
         </div>
       </header>
@@ -100,7 +100,6 @@ export function createEditorLayout(root) {
                   <button type="button" data-action="fill-selected-area">Fill Selected Area</button>
                   <button type="button" data-action="clear-selected-area">Clear Selected Area</button>
                   <button type="button" data-action="replace-matching-assets">Replace Matching Assets</button>
-                  <button type="button" data-action="toggle-drag-paint" aria-pressed="false">Drag Paint Mode: Off</button>
                   <div class="menu-panel-divider"></div>
                   <button type="button" data-action="edit-placed-asset-properties">Properties</button>
                 </div>
@@ -177,7 +176,6 @@ export function createEditorLayout(root) {
     fillSelectedAreaButton: root.querySelector('[data-action="fill-selected-area"]'),
     clearSelectedAreaButton: root.querySelector('[data-action="clear-selected-area"]'),
     replaceMatchingAssetsButton: root.querySelector('[data-action="replace-matching-assets"]'),
-    dragPaintModeButton: root.querySelector('[data-action="toggle-drag-paint"]'),
     gridSize: root.querySelector('[data-role="grid-size"]'),
     gridStage: root.querySelector('[data-role="grid-stage"]'),
     layerVisibilityInputs: Array.from(
@@ -191,7 +189,6 @@ export function createEditorLayout(root) {
     levelPickerPanel: root.querySelector('[data-role="level-picker-panel"]'),
     levelSummary: root.querySelector('[data-role="level-summary"]'),
     modeStatus: root.querySelector('[data-role="mode-status"]'),
-    placeSelectedAssetButton: root.querySelector('[data-action="place-selected-asset"]'),
     selectedLevelName: root.querySelector('[data-role="selected-level-name"]'),
     sidebar: root.querySelector('[data-role="sidebar"]'),
     sidebarResizer: root.querySelector('[data-role="sidebar-resizer"]'),

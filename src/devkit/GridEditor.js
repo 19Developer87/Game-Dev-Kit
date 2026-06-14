@@ -177,8 +177,7 @@ export class GridEditor {
         this.interactionMode === "move" &&
         this.selectedPlacedObjectIds.has(placedObjectId) &&
         this.isLayerVisible(marker.dataset.layer) &&
-        !this.isLayerLocked(marker.dataset.layer) &&
-        this.placedObjectsById.get(placedObjectId)?.editorLocked !== true;
+        !this.isLayerLocked(marker.dataset.layer);
       if (!isSelected) {
         return;
       }
@@ -190,7 +189,7 @@ export class GridEditor {
       );
       if (this.selectedPlacedObjectIds.size <= 1) {
         const placedObject = this.placedObjectsById.get(placedObjectId);
-        if (placedObject) {
+        if (placedObject && placedObject.editorLocked !== true) {
           this.appendResizeHandles(marker, placedObject);
         }
       }
@@ -719,7 +718,6 @@ export class GridEditor {
         this.interactionMode === "move" &&
         this.isLayerVisible(placedObject.layer) &&
         !this.isLayerLocked(placedObject.layer) &&
-        placedObject.editorLocked !== true &&
         (placedObject.id === selectedPlacedObjectId || this.selectedPlacedObjectIds.has(placedObject.id));
       const isPrimarySelected = isSelected && placedObject.id === selectedPlacedObjectId;
       const isVisible = placedObject.visible !== false;
@@ -787,6 +785,10 @@ export class GridEditor {
             return;
           }
           if (placedObject.editorLocked === true) {
+            if (!isSelected) {
+              this.selectedPlacedObjectIds = new Set([placedObject.id]);
+              this.onPlacedObjectSelect?.(placedObject.id);
+            }
             this.scheduleLockedAssetInteraction(placedObject);
             return;
           }
@@ -830,7 +832,7 @@ export class GridEditor {
         });
       }
 
-      if (isSelected && this.selectedPlacedObjectIds.size <= 1) {
+      if (isSelected && this.selectedPlacedObjectIds.size <= 1 && placedObject.editorLocked !== true) {
         this.appendResizeHandles(marker, placedObject);
       }
 
