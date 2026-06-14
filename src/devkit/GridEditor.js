@@ -412,6 +412,9 @@ export class GridEditor {
     this.surface.addEventListener("pointerleave", () => {
       this.lastHoveredCellKey = null;
       this.positionFeedbackBox(this.hoverBox, null);
+      if (!this.paintGesture) {
+        this.updatePaintPreview([]);
+      }
     });
   }
 

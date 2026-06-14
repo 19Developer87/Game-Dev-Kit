@@ -186,9 +186,24 @@ textarea {
 .toolbar-group {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding-left: 10px;
   border-left: 1px solid #2d373f;
+}
+
+.brush-size-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #d5dde2;
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+.brush-size-control select {
+  min-height: 34px;
+  width: 78px;
 }
 
 .workspace {

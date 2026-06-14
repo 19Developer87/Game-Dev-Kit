@@ -51,6 +51,15 @@ export function createEditorLayout(root) {
             <button type="button" data-tool="move" class="is-active" title="Select/Move (Q)">Select/Move</button>
             <button type="button" data-tool="paint" title="Paint (W)">Paint</button>
             <button type="button" data-tool="delete" title="Delete (E)">Delete</button>
+            <label class="brush-size-control">
+              <span>Brush Size</span>
+              <select data-role="paint-brush-size" aria-label="Paint brush size">
+                <option value="1">1x1</option>
+                <option value="2">2x2</option>
+                <option value="3">3x3</option>
+                <option value="5">5x5</option>
+              </select>
+            </label>
           </div>
         </div>
       </header>
@@ -184,6 +193,7 @@ export function createEditorLayout(root) {
     layerLockInputs: Array.from(
       root.querySelectorAll('[data-role="layer-lock-toggle"]'),
     ),
+    paintBrushSize: root.querySelector('[data-role="paint-brush-size"]'),
     levelPicker: root.querySelector('[data-role="level-picker"]'),
     levelPickerButton: root.querySelector('[data-role="level-picker-button"]'),
     levelPickerPanel: root.querySelector('[data-role="level-picker-panel"]'),

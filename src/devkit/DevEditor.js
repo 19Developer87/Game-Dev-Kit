@@ -4,6 +4,7 @@ import {
   LAYER_LOCKS_STORAGE_KEY,
   LAYER_VISIBILITY_STORAGE_KEY,
   LAYERS,
+  PAINT_BRUSH_SIZE_STORAGE_KEY,
   PLACED_PROPERTIES_DIALOG_STORAGE_KEY,
   SIDEBAR_COLLAPSED_STORAGE_KEY,
   SIDEBAR_WIDTH_STORAGE_KEY,
@@ -77,6 +78,7 @@ class DevEditor {
     this.selectedRange = null;
     this.selectedRanges = [];
     this.isDragPaintMode = false;
+    this.paintBrushSize = this.loadPaintBrushSize();
     this.dragPaintSession = null;
     this.isCtrlPressed = false;
     this.selectionState = "idle";
@@ -133,7 +135,9 @@ class DevEditor {
         this.selectedAsset = asset;
         this.syncAreaToolMenu();
         if (this.activeTool === "paint") {
-          this.setStatus(`Paint mode: drag across the grid to paint ${asset.name}.`);
+          this.setStatus(
+            `Paint mode: drag to paint ${asset.name} with ${this.getBrushSizeLabel()} brush.`,
+          );
         } else if (this.selectionState === "selectionReady") {
           this.setSelectionReadyStatus();
         } else {
@@ -158,6 +162,17 @@ class DevEditor {
       button.addEventListener("click", () => {
         this.activateTool(button.dataset.tool);
       });
+    });
+
+    this.ui.paintBrushSize.value = String(this.paintBrushSize);
+    this.ui.paintBrushSize.addEventListener("change", () => {
+      this.paintBrushSize = normalizePaintBrushSize(this.ui.paintBrushSize.value);
+      this.savePaintBrushSize();
+      if (!this.dragPaintSession && this.activeTool === "paint") {
+        this.gridEditor.updatePaintPreview([]);
+      }
+      this.setStatus(this.getToolStatusMessage("paint"));
+      this.syncModeStatus();
     });
 
     window.addEventListener("keydown", (event) => {
@@ -557,6 +572,10 @@ class DevEditor {
 
     if (isDropTarget) {
       this.gridEditor.updateDropPreview(this.dropPreviewRange);
+    }
+
+    if (this.activeTool === "paint" && !this.dragPaintSession) {
+      this.updatePaintBrushFootprintPreview({ x, y });
     }
   }
 
@@ -3000,6 +3019,7 @@ class DevEditor {
     this.closePlacedPropertiesDialog();
     this.dragPaintSession = {
       asset: this.selectedAsset,
+      brushSize: this.paintBrushSize,
       paintedCells: new Map(),
       skippedCells: new Set(),
     };
@@ -3011,22 +3031,34 @@ class DevEditor {
       return;
     }
 
-    const key = `${cell.x}:${cell.y}`;
-    if (
-      this.dragPaintSession.paintedCells.has(key) ||
-      this.dragPaintSession.skippedCells.has(key)
-    ) {
-      return;
-    }
-
     const level = getCurrentLevel(this.project);
-    const existingObjects = findObjectsAtCell(level, cell.x, cell.y);
-    if (existingObjects.length > 0) {
-      this.dragPaintSession.skippedCells.add(key);
+    const brushCells = this.getPaintBrushCells(cell, this.dragPaintSession.brushSize);
+    let changed = false;
+
+    brushCells.forEach((brushCell) => {
+      const key = createCellKey(brushCell);
+      if (
+        this.dragPaintSession.paintedCells.has(key) ||
+        this.dragPaintSession.skippedCells.has(key)
+      ) {
+        return;
+      }
+
+      const existingObjects = findObjectsAtCell(level, brushCell.x, brushCell.y);
+      if (existingObjects.length > 0) {
+        this.dragPaintSession.skippedCells.add(key);
+        changed = true;
+        return;
+      }
+
+      this.dragPaintSession.paintedCells.set(key, { x: brushCell.x, y: brushCell.y });
+      changed = true;
+    });
+
+    if (!changed) {
       return;
     }
 
-    this.dragPaintSession.paintedCells.set(key, { x: cell.x, y: cell.y });
     this.gridEditor.updatePaintPreview(
       Array.from(this.dragPaintSession.paintedCells.values()),
     );
@@ -3046,7 +3078,7 @@ class DevEditor {
     if (cells.length === 0) {
       this.setStatus(
         skippedCount > 0
-          ? `Painted 0 cells. Skipped ${skippedCount} occupied cell${skippedCount === 1 ? "" : "s"}.`
+          ? `Painted 0 cells with ${this.getBrushSizeLabel(session.brushSize)} brush. Skipped ${skippedCount} occupied/protected cell${skippedCount === 1 ? "" : "s"}.`
           : "No cells painted.",
       );
       return false;
@@ -3061,9 +3093,9 @@ class DevEditor {
 
     this.refreshPlacedAssetMarkers();
     this.autosave(
-      `Painted ${placedObjects.length} cell${placedObjects.length === 1 ? "" : "s"}.${
+      `Painted ${placedObjects.length} cell${placedObjects.length === 1 ? "" : "s"} with ${this.getBrushSizeLabel(session.brushSize)} brush.${
         skippedCount > 0
-          ? ` Skipped ${skippedCount} occupied cell${skippedCount === 1 ? "" : "s"}.`
+          ? ` Skipped ${skippedCount} occupied/protected cell${skippedCount === 1 ? "" : "s"}.`
           : ""
       }`,
     );
@@ -3079,10 +3111,43 @@ class DevEditor {
     }
   }
 
+  updatePaintBrushFootprintPreview(cell) {
+    if (this.activeTool !== "paint" || !this.selectedAsset || this.dragPaintSession) {
+      this.gridEditor.updatePaintPreview([]);
+      return;
+    }
+
+    this.gridEditor.updatePaintPreview(this.getPaintBrushCells(cell, this.paintBrushSize));
+  }
+
+  getPaintBrushCells(cell, brushSize = this.paintBrushSize) {
+    if (!cell) {
+      return [];
+    }
+
+    const size = normalizePaintBrushSize(brushSize);
+    const offset = size === 2 ? 0 : Math.floor(size / 2);
+    const startX = cell.x - offset;
+    const startY = cell.y - offset;
+    const level = getCurrentLevel(this.project);
+    const cells = [];
+
+    for (let y = startY; y < startY + size; y += 1) {
+      for (let x = startX; x < startX + size; x += 1) {
+        if (x < 1 || y < 1 || x > level.gridWidth || y > level.gridHeight) {
+          continue;
+        }
+        cells.push({ x, y });
+      }
+    }
+
+    return cells;
+  }
+
   getToolStatusMessage(tool = this.activeTool) {
     if (tool === "paint") {
       return this.selectedAsset
-        ? `Paint mode: drag across the grid to paint ${this.selectedAsset.name}.`
+        ? `Paint mode: drag to paint ${this.selectedAsset.name} with ${this.getBrushSizeLabel()} brush.`
         : "Paint mode: select an asset to paint.";
     }
     if (tool === "move") {
@@ -4018,6 +4083,29 @@ class DevEditor {
     this.root.querySelectorAll("[data-tool]").forEach((button) => {
       button.classList.toggle("is-active", button.dataset.tool === this.activeTool);
     });
+    this.ui.paintBrushSize.value = String(this.paintBrushSize);
+  }
+
+  loadPaintBrushSize() {
+    try {
+      return normalizePaintBrushSize(localStorage.getItem(PAINT_BRUSH_SIZE_STORAGE_KEY));
+    } catch (error) {
+      console.warn("Paint brush size preference could not be loaded.", error);
+      return 1;
+    }
+  }
+
+  savePaintBrushSize() {
+    try {
+      localStorage.setItem(PAINT_BRUSH_SIZE_STORAGE_KEY, String(this.paintBrushSize));
+    } catch (error) {
+      console.warn("Paint brush size preference could not be saved.", error);
+    }
+  }
+
+  getBrushSizeLabel(size = this.paintBrushSize) {
+    const brushSize = normalizePaintBrushSize(size);
+    return `${brushSize}x${brushSize}`;
   }
 
   loadLayerVisibility() {
@@ -4726,7 +4814,7 @@ class DevEditor {
   syncModeStatus() {
     const messages = [];
     if (this.isDragPaintMode) {
-      messages.push("Paint mode");
+      messages.push(`Paint mode ${this.getBrushSizeLabel()}`);
     }
     if (this.isCtrlPressed) {
       messages.push("Multi-select mode");
@@ -4789,6 +4877,15 @@ function createDeletedPlacedAssetsMessage(count) {
 
 function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
+}
+
+function normalizePaintBrushSize(value) {
+  const size = Number(value);
+  return [1, 2, 3, 5].includes(size) ? size : 1;
+}
+
+function createCellKey(cell) {
+  return `${cell.x}:${cell.y}`;
 }
 
 function getToolLabel(tool) {
