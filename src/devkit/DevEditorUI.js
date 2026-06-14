@@ -60,6 +60,7 @@ export function createEditorLayout(root) {
                 <option value="5">5x5</option>
               </select>
             </label>
+            <button type="button" data-action="paint-variants" title="Choose random paint variants">Variants: Off</button>
           </div>
         </div>
       </header>
@@ -194,6 +195,7 @@ export function createEditorLayout(root) {
       root.querySelectorAll('[data-role="layer-lock-toggle"]'),
     ),
     paintBrushSize: root.querySelector('[data-role="paint-brush-size"]'),
+    paintVariantsButton: root.querySelector('[data-action="paint-variants"]'),
     levelPicker: root.querySelector('[data-role="level-picker"]'),
     levelPickerButton: root.querySelector('[data-role="level-picker-button"]'),
     levelPickerPanel: root.querySelector('[data-role="level-picker-panel"]'),

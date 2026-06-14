@@ -551,6 +551,68 @@ export function fillCellsWithAsset(level, asset, cells, replacedObjectIds = []) 
   return placedObjects;
 }
 
+export function fillCellsWithAssets(level, cellAssets, replacedObjectIds = []) {
+  if (!Array.isArray(cellAssets) || cellAssets.length === 0) {
+    return null;
+  }
+
+  const normalizedCells = [];
+  const occupiedCells = new Set();
+  cellAssets.forEach((entry) => {
+    const asset = entry?.asset;
+    const x = Number(entry?.x);
+    const y = Number(entry?.y);
+    if (!asset?.id || !Number.isFinite(x) || !Number.isFinite(y)) {
+      return;
+    }
+    const key = `${x}:${y}`;
+    if (occupiedCells.has(key)) {
+      return;
+    }
+    occupiedCells.add(key);
+    normalizedCells.push({ asset, x, y });
+  });
+
+  if (normalizedCells.length === 0) {
+    return null;
+  }
+
+  const timestamp = Date.now();
+  const placedObjects = normalizedCells.map(({ asset, x, y }, index) => {
+    const layerName = getLayerArrayName(asset.defaultLayer || "objects");
+    return {
+      id: `placed-${asset.id}-paint-${timestamp}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+      assetId: asset.id,
+      type: asset.type || asset.id,
+      name: asset.name,
+      x,
+      y,
+      gridRef: toGridRef(x, y),
+      rangeRef: toRangeRef(x, y, 1, 1),
+      layer: layerName,
+      width: 1,
+      height: 1,
+      visible: asset.visible !== false,
+      transparent: asset.transparent !== false,
+      solid: Boolean(asset.solid),
+      blocksMovement: Boolean(asset.blocksMovement),
+      collisionEnabled: Boolean(asset.collisionEnabled),
+      opacity: 100,
+      notes: "",
+    };
+  });
+
+  removeKnownPlacedObjectsByIds(level, replacedObjectIds);
+  placedObjects.forEach((placedObject) => {
+    const layerName = getLayerArrayName(placedObject.layer);
+    level.layers[layerName] = Array.isArray(level.layers[layerName])
+      ? level.layers[layerName]
+      : [];
+    level.layers[layerName].push(placedObject);
+  });
+  return placedObjects;
+}
+
 export function removeKnownPlacedObjectsByIds(level, placedObjectIds) {
   const removedIds = new Set(placedObjectIds);
   const removedObjects = [];

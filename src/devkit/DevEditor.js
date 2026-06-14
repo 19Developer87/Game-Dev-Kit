@@ -5,6 +5,7 @@ import {
   LAYER_VISIBILITY_STORAGE_KEY,
   LAYERS,
   PAINT_BRUSH_SIZE_STORAGE_KEY,
+  PAINT_VARIANT_ASSET_IDS_STORAGE_KEY,
   PLACED_PROPERTIES_DIALOG_STORAGE_KEY,
   SIDEBAR_COLLAPSED_STORAGE_KEY,
   SIDEBAR_WIDTH_STORAGE_KEY,
@@ -35,6 +36,7 @@ import {
   findObjectsInRange,
   fillAreaWithAsset,
   fillCellsWithAsset,
+  fillCellsWithAssets,
   findAssetCategoryByName,
   deleteAssetCategory,
   deleteImportedAsset,
@@ -79,6 +81,7 @@ class DevEditor {
     this.selectedRanges = [];
     this.isDragPaintMode = false;
     this.paintBrushSize = this.loadPaintBrushSize();
+    this.paintVariantAssetIds = this.loadPaintVariantAssetIds();
     this.dragPaintSession = null;
     this.isCtrlPressed = false;
     this.selectionState = "idle";
@@ -136,7 +139,7 @@ class DevEditor {
         this.syncAreaToolMenu();
         if (this.activeTool === "paint") {
           this.setStatus(
-            `Paint mode: drag to paint ${asset.name} with ${this.getBrushSizeLabel()} brush.`,
+            this.getToolStatusMessage("paint"),
           );
         } else if (this.selectionState === "selectionReady") {
           this.setSelectionReadyStatus();
@@ -173,6 +176,10 @@ class DevEditor {
       }
       this.setStatus(this.getToolStatusMessage("paint"));
       this.syncModeStatus();
+    });
+
+    this.ui.paintVariantsButton.addEventListener("click", () => {
+      this.openPaintVariantsDialog();
     });
 
     window.addEventListener("keydown", (event) => {
@@ -2986,23 +2993,22 @@ class DevEditor {
       return;
     }
 
-    if (
-      this.selectedAsset.isImported &&
-      (!this.selectedAsset.src || typeof this.selectedAsset.src !== "string")
-    ) {
-      this.dragPaintSession = null;
-      this.gridEditor.updatePaintPreview([]);
-      this.setStatus("Asset image data missing.");
-      return;
-    }
-
-    const targetLayer = this.selectedAsset.defaultLayer || "objects";
-    if (this.isLayerLocked(targetLayer)) {
+    const activePaintAssets = this.getActivePaintAssets();
+    if (activePaintAssets.length === 0) {
       this.dragPaintSession = null;
       this.gridEditor.updatePaintPreview([]);
       this.setStatus(
-        `Drag paint blocked: layer "${normalizePlacedLayer(targetLayer)}" is locked.`,
+        this.getActivePaintVariantCount() > 0
+          ? "No usable paint variants available."
+          : "Asset image data missing.",
       );
+      return;
+    }
+
+    if (activePaintAssets.some((asset) => this.isLayerLocked(asset.defaultLayer || "objects"))) {
+      this.dragPaintSession = null;
+      this.gridEditor.updatePaintPreview([]);
+      this.setStatus("Drag paint blocked: one or more paint source layers are locked.");
       return;
     }
 
@@ -3019,6 +3025,8 @@ class DevEditor {
     this.closePlacedPropertiesDialog();
     this.dragPaintSession = {
       asset: this.selectedAsset,
+      paintAssets: activePaintAssets,
+      variantsActive: this.getActivePaintVariantCount() > 0,
       brushSize: this.paintBrushSize,
       paintedCells: new Map(),
       skippedCells: new Set(),
@@ -3051,7 +3059,12 @@ class DevEditor {
         return;
       }
 
-      this.dragPaintSession.paintedCells.set(key, { x: brushCell.x, y: brushCell.y });
+      const asset = this.pickPaintAsset(this.dragPaintSession.paintAssets);
+      this.dragPaintSession.paintedCells.set(key, {
+        x: brushCell.x,
+        y: brushCell.y,
+        asset,
+      });
       changed = true;
     });
 
@@ -3085,7 +3098,9 @@ class DevEditor {
     }
 
     const level = getCurrentLevel(this.project);
-    const placedObjects = fillCellsWithAsset(level, session.asset, cells, []);
+    const placedObjects = session.variantsActive
+      ? fillCellsWithAssets(level, cells, [])
+      : fillCellsWithAsset(level, session.asset, cells, []);
     if (!placedObjects) {
       this.setStatus("Unable to drag paint selected asset.");
       return false;
@@ -3093,7 +3108,7 @@ class DevEditor {
 
     this.refreshPlacedAssetMarkers();
     this.autosave(
-      `Painted ${placedObjects.length} cell${placedObjects.length === 1 ? "" : "s"} with ${this.getBrushSizeLabel(session.brushSize)} brush.${
+      `Painted ${placedObjects.length} cell${placedObjects.length === 1 ? "" : "s"}${this.createPaintVariantStatusSuffix(session)} with ${this.getBrushSizeLabel(session.brushSize)} brush.${
         skippedCount > 0
           ? ` Skipped ${skippedCount} occupied/protected cell${skippedCount === 1 ? "" : "s"}.`
           : ""
@@ -3109,6 +3124,288 @@ class DevEditor {
     if (showStatus && hadSession) {
       this.setStatus("Drag paint cancelled. No cells were painted.");
     }
+  }
+
+  openPaintVariantsDialog() {
+    const availableAssets = this.getAvailablePaintVariantAssets();
+    const activeIds = new Set(this.getValidatedPaintVariantAssetIds());
+    const categoryGroups = this.getPaintVariantCategoryGroups(availableAssets);
+    const currentAssetText = this.selectedAsset
+      ? `${this.selectedAsset.name || this.selectedAsset.id} (${this.selectedAsset.category || "Uncategorised"})`
+      : "No selected asset";
+    const dialog = document.createElement("dialog");
+    dialog.className = "editor-modal paint-variants-dialog";
+    dialog.innerHTML = `
+      <form class="editor-modal-form paint-variants-form" method="dialog">
+        <h2>Paint Variants</h2>
+        <p class="properties-hint">Current selected asset: ${escapeHtml(currentAssetText)}</p>
+        <p class="properties-hint" data-role="paint-variant-selected-count"></p>
+        <div class="paint-variant-list" data-role="paint-variant-list">
+          ${
+            availableAssets.length > 0
+              ? categoryGroups.map((group) => this.createPaintVariantCategorySection(group, activeIds)).join("")
+              : `<p class="properties-hint">No usable imported assets are available.</p>`
+          }
+        </div>
+        <p class="properties-hint">Tick a category to include its imported assets, then untick individual assets to exclude them. Paint randomly chooses one selected asset per painted cell.</p>
+        <div class="dialog-actions">
+          <button type="button" data-action="clear-paint-variants">Clear Variants</button>
+          <button type="button" data-action="cancel-paint-variants">Cancel</button>
+          <button type="submit">Apply</button>
+        </div>
+      </form>
+    `;
+
+    document.body.append(dialog);
+    const form = dialog.querySelector("form");
+    const list = dialog.querySelector('[data-role="paint-variant-list"]');
+    const countLabel = dialog.querySelector('[data-role="paint-variant-selected-count"]');
+    const closeDialog = () => dialog.close();
+    const updateCategoryStates = () => {
+      dialog.querySelectorAll("[data-role='paint-variant-category']").forEach((section) => {
+        const categoryToggle = section.querySelector("[data-role='paint-variant-category-toggle']");
+        const assetToggles = Array.from(section.querySelectorAll("[data-role='paint-variant-toggle']"));
+        const checkedCount = assetToggles.filter((input) => input.checked).length;
+        const totalCount = assetToggles.length;
+        const countText = section.querySelector("[data-role='paint-variant-category-count']");
+
+        categoryToggle.checked = totalCount > 0 && checkedCount === totalCount;
+        categoryToggle.indeterminate = checkedCount > 0 && checkedCount < totalCount;
+        if (countText) {
+          countText.textContent = `${checkedCount} / ${totalCount} selected`;
+        }
+      });
+
+      const selectedAssetCount = dialog.querySelectorAll("[data-role='paint-variant-toggle']:checked").length;
+      const selectedCategoryCount = Array.from(dialog.querySelectorAll("[data-role='paint-variant-category']"))
+        .filter((section) => section.querySelector("[data-role='paint-variant-toggle']:checked"))
+        .length;
+      countLabel.textContent = selectedAssetCount > 0
+        ? `${selectedAssetCount} asset${selectedAssetCount === 1 ? "" : "s"} selected across ${selectedCategoryCount} categor${selectedCategoryCount === 1 ? "y" : "ies"}.`
+        : "No variant assets selected.";
+    };
+    const setCategoryExpanded = (section, expanded) => {
+      const expandButton = section.querySelector("[data-role='paint-variant-category-expand']");
+      const assetList = section.querySelector("[data-role='paint-variant-category-assets']");
+      section.classList.toggle("is-expanded", expanded);
+      section.classList.toggle("paint-variant-category--collapsed", !expanded);
+      expandButton?.setAttribute("aria-expanded", String(expanded));
+      if (expandButton) {
+        expandButton.textContent = expanded ? "v" : ">";
+      }
+      if (assetList) {
+        assetList.hidden = !expanded;
+      }
+    };
+
+    dialog.querySelector('[data-action="cancel-paint-variants"]').addEventListener("click", closeDialog);
+    dialog.querySelector('[data-action="clear-paint-variants"]').addEventListener("click", () => {
+      dialog.querySelectorAll("[data-role='paint-variant-toggle']").forEach((input) => {
+        input.checked = false;
+      });
+      updateCategoryStates();
+      this.paintVariantAssetIds = [];
+      this.savePaintVariantAssetIds();
+      dialog.close();
+      this.syncPaintVariantsButton();
+      this.setStatus("Paint variants cleared. Using selected asset only.");
+    });
+    list?.addEventListener("click", (event) => {
+      const expandButton = event.target.closest("[data-role='paint-variant-category-expand']");
+      if (!expandButton) {
+        return;
+      }
+      const section = expandButton.closest("[data-role='paint-variant-category']");
+      setCategoryExpanded(section, !section.classList.contains("is-expanded"));
+    });
+    list?.addEventListener("change", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) {
+        return;
+      }
+      if (target.dataset.role === "paint-variant-category-toggle") {
+        const section = target.closest("[data-role='paint-variant-category']");
+        section?.querySelectorAll("[data-role='paint-variant-toggle']").forEach((input) => {
+          input.checked = target.checked;
+        });
+      }
+      updateCategoryStates();
+    });
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const selectedIds = Array.from(
+        form.querySelectorAll('[data-role="paint-variant-toggle"]:checked'),
+      ).map((input) => input.value);
+      this.paintVariantAssetIds = this.validatePaintVariantAssetIds(selectedIds);
+      this.savePaintVariantAssetIds();
+      dialog.close();
+      this.syncPaintVariantsButton();
+      const count = this.paintVariantAssetIds.length;
+      this.setStatus(
+        count > 0
+          ? `Paint variants active: ${count}.`
+          : "Paint variants cleared. Using selected asset only.",
+      );
+    });
+    updateCategoryStates();
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog.showModal();
+  }
+
+  createPaintVariantCategorySection(group, activeIds) {
+    return `
+      <section class="paint-variant-category paint-variant-category--collapsed" data-role="paint-variant-category">
+        <div class="paint-variant-category-summary">
+          <button
+            type="button"
+            class="paint-variant-category-expand"
+            data-role="paint-variant-category-expand"
+            aria-expanded="false"
+            aria-label="Expand ${escapeAttribute(group.name)} variants"
+          >&gt;</button>
+          <label class="paint-variant-category-toggle">
+            <input
+              type="checkbox"
+              data-role="paint-variant-category-toggle"
+              value="${escapeAttribute(group.id)}"
+            />
+            <span>${escapeHtml(group.name)}</span>
+          </label>
+          <span class="paint-variant-category-count" data-role="paint-variant-category-count"></span>
+        </div>
+        <div class="paint-variant-category-assets" data-role="paint-variant-category-assets" hidden>
+          ${group.assets.map((asset) => this.createPaintVariantOption(asset, activeIds)).join("")}
+        </div>
+      </section>
+    `;
+  }
+
+  createPaintVariantOption(asset, activeIds) {
+    const label = this.getPaintVariantAssetLabel(asset);
+    const thumbnail = asset.src
+      ? `<img class="paint-variant-thumbnail" src="${escapeAttribute(asset.src)}" alt="" />`
+      : `<span class="paint-variant-thumbnail is-empty" aria-hidden="true"></span>`;
+    return `
+      <label class="paint-variant-option">
+        <input
+          type="checkbox"
+          data-role="paint-variant-toggle"
+          value="${escapeAttribute(asset.id)}"
+          ${activeIds.has(asset.id) ? "checked" : ""}
+        />
+        ${thumbnail}
+        <span>${escapeHtml(label)}</span>
+      </label>
+    `;
+  }
+
+  getPaintVariantCategoryGroups(assets) {
+    const categories = this.project.assetRegistry?.categories || [];
+    const usedAssetIds = new Set();
+    const groups = [];
+
+    categories.forEach((category) => {
+      const categoryAssets = assets.filter((asset) =>
+        !usedAssetIds.has(asset.id) && (asset.categoryId === category.id || asset.category === category.name),
+      );
+      if (categoryAssets.length === 0) {
+        return;
+      }
+      categoryAssets.forEach((asset) => usedAssetIds.add(asset.id));
+      groups.push({
+        id: category.id || category.name,
+        name: category.name || "Uncategorised",
+        assets: categoryAssets,
+      });
+    });
+
+    const uncategorisedAssets = assets.filter((asset) => !usedAssetIds.has(asset.id));
+    if (uncategorisedAssets.length > 0) {
+      groups.push({
+        id: "uncategorised",
+        name: "Uncategorised",
+        assets: uncategorisedAssets,
+      });
+    }
+
+    return groups;
+  }
+
+  getPaintVariantAssetLabel(asset) {
+    const name = asset.name || asset.id;
+    const fileName = asset.fileName || asset.filename || asset.originalName;
+    const suffixParts = [];
+    if (asset.category) {
+      suffixParts.push(asset.category);
+    }
+    if (fileName && fileName !== name) {
+      suffixParts.push(fileName);
+    }
+    if (suffixParts.length === 0) {
+      return name;
+    }
+    return `${name} (${suffixParts.join(" - ")})`;
+  }
+
+  getAvailablePaintVariantAssets() {
+    return (this.project.assetRegistry?.assets || this.project.assets || [])
+      .filter((asset) => this.isUsablePaintVariantAsset(asset));
+  }
+
+  isUsablePaintVariantAsset(asset) {
+    return Boolean(
+      asset?.id &&
+      asset.isImported === true &&
+      typeof asset.src === "string" &&
+      asset.src.length > 0,
+    );
+  }
+
+  getValidatedPaintVariantAssetIds() {
+    const validatedIds = this.validatePaintVariantAssetIds(this.paintVariantAssetIds);
+    if (validatedIds.length !== this.paintVariantAssetIds.length) {
+      this.paintVariantAssetIds = validatedIds;
+      this.savePaintVariantAssetIds();
+    }
+    return validatedIds;
+  }
+
+  validatePaintVariantAssetIds(assetIds) {
+    const availableIds = new Set(this.getAvailablePaintVariantAssets().map((asset) => asset.id));
+    const validatedIds = [];
+    (Array.isArray(assetIds) ? assetIds : []).forEach((assetId) => {
+      if (availableIds.has(assetId) && !validatedIds.includes(assetId)) {
+        validatedIds.push(assetId);
+      }
+    });
+    return validatedIds;
+  }
+
+  getActivePaintVariantCount() {
+    return this.getValidatedPaintVariantAssetIds().length;
+  }
+
+  getActivePaintAssets() {
+    const variantIds = this.getValidatedPaintVariantAssetIds();
+    const sourceAssets = variantIds.length > 0
+      ? variantIds.map((assetId) => this.project.assets.find((asset) => asset.id === assetId))
+      : [this.selectedAsset];
+    return sourceAssets.filter((asset) => this.isUsablePaintVariantAsset(asset));
+  }
+
+  pickPaintAsset(assets) {
+    if (!Array.isArray(assets) || assets.length === 0) {
+      return this.selectedAsset;
+    }
+    return assets[Math.floor(Math.random() * assets.length)];
+  }
+
+  createPaintVariantStatusSuffix(session) {
+    if (!session?.variantsActive) {
+      return "";
+    }
+    const variantCount = session.paintAssets?.length || 0;
+    return ` using ${variantCount} variant${variantCount === 1 ? "" : "s"}`;
   }
 
   updatePaintBrushFootprintPreview(cell) {
@@ -3146,6 +3443,10 @@ class DevEditor {
 
   getToolStatusMessage(tool = this.activeTool) {
     if (tool === "paint") {
+      const variantCount = this.getActivePaintVariantCount();
+      if (variantCount > 0) {
+        return `Paint mode: drag to paint using ${variantCount} variants with ${this.getBrushSizeLabel()} brush.`;
+      }
       return this.selectedAsset
         ? `Paint mode: drag to paint ${this.selectedAsset.name} with ${this.getBrushSizeLabel()} brush.`
         : "Paint mode: select an asset to paint.";
@@ -4084,6 +4385,7 @@ class DevEditor {
       button.classList.toggle("is-active", button.dataset.tool === this.activeTool);
     });
     this.ui.paintBrushSize.value = String(this.paintBrushSize);
+    this.syncPaintVariantsButton();
   }
 
   loadPaintBrushSize() {
@@ -4101,6 +4403,35 @@ class DevEditor {
     } catch (error) {
       console.warn("Paint brush size preference could not be saved.", error);
     }
+  }
+
+  loadPaintVariantAssetIds() {
+    try {
+      const storedIds = JSON.parse(localStorage.getItem(PAINT_VARIANT_ASSET_IDS_STORAGE_KEY));
+      return Array.isArray(storedIds)
+        ? storedIds.filter((assetId) => typeof assetId === "string")
+        : [];
+    } catch (error) {
+      console.warn("Paint variant preference could not be loaded.", error);
+      return [];
+    }
+  }
+
+  savePaintVariantAssetIds() {
+    try {
+      localStorage.setItem(
+        PAINT_VARIANT_ASSET_IDS_STORAGE_KEY,
+        JSON.stringify(this.paintVariantAssetIds),
+      );
+    } catch (error) {
+      console.warn("Paint variant preference could not be saved.", error);
+    }
+  }
+
+  syncPaintVariantsButton() {
+    const count = this.getActivePaintVariantCount();
+    this.ui.paintVariantsButton.textContent = count > 0 ? `Variants: ${count} assets` : "Variants: Off";
+    this.ui.paintVariantsButton.classList.toggle("is-active", count > 0);
   }
 
   getBrushSizeLabel(size = this.paintBrushSize) {

@@ -206,6 +206,12 @@ textarea {
   width: 78px;
 }
 
+[data-action="paint-variants"].is-active {
+  border-color: #edc949;
+  background: #3c341a;
+  color: #f5df7a;
+}
+
 .workspace {
   --sidebar-width: 260px;
   --sidebar-collapsed-width: 42px;
@@ -1058,6 +1064,149 @@ body.is-sidebar-resizing * {
 .editor-modal-form {
   display: grid;
   gap: 12px;
+}
+
+.paint-variants-dialog {
+  width: min(760px, calc(100vw - 32px));
+  height: min(680px, calc(100vh - 32px));
+  min-width: min(520px, calc(100vw - 32px));
+  min-height: min(520px, calc(100vh - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
+  overflow: hidden;
+  resize: both;
+}
+
+.paint-variants-form {
+  height: 100%;
+  min-height: 0;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+}
+
+.paint-variant-list {
+  min-height: 260px;
+  max-height: none;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  align-items: start;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid #2d373f;
+  border-radius: 6px;
+  background: #131a20;
+}
+
+.paint-variants-form .dialog-actions {
+  position: sticky;
+  bottom: 0;
+  padding-top: 8px;
+  background: #151b20;
+}
+
+.paint-variant-category {
+  border: 1px solid #26313a;
+  border-radius: 6px;
+  background: #172029;
+  align-self: start;
+}
+
+.paint-variant-category-summary {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+}
+
+.paint-variant-category-expand {
+  width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #35434d;
+  border-radius: 4px;
+  color: #d7e2e8;
+  background: #101820;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.paint-variant-category-expand:hover {
+  border-color: #4f8fb8;
+  background: #1d2b35;
+}
+
+.editor-modal-form .paint-variant-category-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-weight: 700;
+  color: #e8f0f5;
+}
+
+.editor-modal-form .paint-variant-category-toggle input {
+  width: 14px;
+  height: 14px;
+  min-height: 14px;
+  max-height: 14px;
+  flex: 0 0 14px;
+  margin: 0;
+}
+
+.paint-variant-category-count {
+  color: #9fb0bb;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.paint-variant-category-assets {
+  display: grid;
+  gap: 4px;
+  padding: 0 8px 8px 28px;
+}
+
+.paint-variant-category--collapsed .paint-variant-category-assets,
+.paint-variant-category-assets[hidden] {
+  display: none;
+}
+
+.editor-modal-form .paint-variant-option {
+  display: grid;
+  grid-template-columns: 22px 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 5px;
+}
+
+.editor-modal-form .paint-variant-option input {
+  width: 14px;
+  height: 14px;
+  min-height: 14px;
+  max-height: 14px;
+  align-self: center;
+  margin: 0;
+}
+
+.paint-variant-thumbnail {
+  width: 30px;
+  height: 30px;
+  border: 1px solid #34424d;
+  border-radius: 5px;
+  object-fit: contain;
+  background: #0d1216;
+}
+
+.paint-variant-thumbnail.is-empty {
+  display: inline-block;
+}
+
+.paint-variant-option:hover {
+  background: #1e2931;
 }
 
 .asset-import-form h2,
