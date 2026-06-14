@@ -210,12 +210,20 @@ export class AssetPalette {
     button.append(preview, label, deleteAsset);
     button.addEventListener("click", () => {
       this.selectedAssetId = asset.id;
+      this.root.querySelectorAll(".asset-button.is-active").forEach((activeButton) => {
+        activeButton.classList.remove("is-active");
+      });
+      button.classList.add("is-active");
       this.onSelect(asset);
     });
     button.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         this.selectedAssetId = asset.id;
+        this.root.querySelectorAll(".asset-button.is-active").forEach((activeButton) => {
+          activeButton.classList.remove("is-active");
+        });
+        button.classList.add("is-active");
         this.onSelect(asset);
       }
     });

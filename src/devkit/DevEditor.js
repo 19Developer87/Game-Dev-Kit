@@ -6,6 +6,7 @@ import {
   LAYERS,
   PAINT_BRUSH_SIZE_STORAGE_KEY,
   PAINT_VARIANT_ASSET_IDS_STORAGE_KEY,
+  PAINT_VARIANT_EXPANDED_CATEGORIES_STORAGE_KEY,
   PLACED_PROPERTIES_DIALOG_STORAGE_KEY,
   SIDEBAR_COLLAPSED_STORAGE_KEY,
   SIDEBAR_WIDTH_STORAGE_KEY,
@@ -3128,8 +3129,9 @@ class DevEditor {
 
   openPaintVariantsDialog() {
     const availableAssets = this.getAvailablePaintVariantAssets();
-    const activeIds = new Set(this.getValidatedPaintVariantAssetIds());
     const categoryGroups = this.getPaintVariantCategoryGroups(availableAssets);
+    const selectedVariantIds = new Set(this.getValidatedPaintVariantAssetIds());
+    const expandedCategoryIds = new Set(this.loadPaintVariantExpandedCategoryIds());
     const currentAssetText = this.selectedAsset
       ? `${this.selectedAsset.name || this.selectedAsset.id} (${this.selectedAsset.category || "Uncategorised"})`
       : "No selected asset";
@@ -3139,13 +3141,12 @@ class DevEditor {
       <form class="editor-modal-form paint-variants-form" method="dialog">
         <h2>Paint Variants</h2>
         <p class="properties-hint">Current selected asset: ${escapeHtml(currentAssetText)}</p>
+        <label class="paint-variant-search">
+          <span>Search assets</span>
+          <input type="search" data-role="paint-variant-search" placeholder="Search assets..." autocomplete="off" />
+        </label>
         <p class="properties-hint" data-role="paint-variant-selected-count"></p>
         <div class="paint-variant-list" data-role="paint-variant-list">
-          ${
-            availableAssets.length > 0
-              ? categoryGroups.map((group) => this.createPaintVariantCategorySection(group, activeIds)).join("")
-              : `<p class="properties-hint">No usable imported assets are available.</p>`
-          }
         </div>
         <p class="properties-hint">Tick a category to include its imported assets, then untick individual assets to exclude them. Paint randomly chooses one selected asset per painted cell.</p>
         <div class="dialog-actions">
@@ -3159,14 +3160,37 @@ class DevEditor {
     document.body.append(dialog);
     const form = dialog.querySelector("form");
     const list = dialog.querySelector('[data-role="paint-variant-list"]');
+    const searchInput = dialog.querySelector('[data-role="paint-variant-search"]');
     const countLabel = dialog.querySelector('[data-role="paint-variant-selected-count"]');
     const closeDialog = () => dialog.close();
+    const getGroupId = (group) => String(group.id || group.name || "uncategorised");
+    const getCategoryGroupsForSearch = () => {
+      const searchTerm = searchInput.value.trim().toLowerCase();
+      if (!searchTerm) {
+        return categoryGroups.map((group) => ({
+          ...group,
+          visibleAssets: group.assets,
+        }));
+      }
+      return categoryGroups
+        .map((group) => {
+          const visibleAssets = group.assets.filter((asset) => this.doesPaintVariantAssetMatchSearch(asset, group, searchTerm));
+          return {
+            ...group,
+            visibleAssets,
+          };
+        })
+        .filter((group) => group.visibleAssets.length > 0);
+    };
     const updateCategoryStates = () => {
       dialog.querySelectorAll("[data-role='paint-variant-category']").forEach((section) => {
+        const group = categoryGroups.find((candidate) => getGroupId(candidate) === section.dataset.categoryId);
         const categoryToggle = section.querySelector("[data-role='paint-variant-category-toggle']");
         const assetToggles = Array.from(section.querySelectorAll("[data-role='paint-variant-toggle']"));
-        const checkedCount = assetToggles.filter((input) => input.checked).length;
-        const totalCount = assetToggles.length;
+        const checkedCount = group
+          ? group.assets.filter((asset) => selectedVariantIds.has(asset.id)).length
+          : assetToggles.filter((input) => input.checked).length;
+        const totalCount = group ? group.assets.length : assetToggles.length;
         const countText = section.querySelector("[data-role='paint-variant-category-count']");
 
         categoryToggle.checked = totalCount > 0 && checkedCount === totalCount;
@@ -3176,9 +3200,9 @@ class DevEditor {
         }
       });
 
-      const selectedAssetCount = dialog.querySelectorAll("[data-role='paint-variant-toggle']:checked").length;
-      const selectedCategoryCount = Array.from(dialog.querySelectorAll("[data-role='paint-variant-category']"))
-        .filter((section) => section.querySelector("[data-role='paint-variant-toggle']:checked"))
+      const selectedAssetCount = selectedVariantIds.size;
+      const selectedCategoryCount = categoryGroups
+        .filter((group) => group.assets.some((asset) => selectedVariantIds.has(asset.id)))
         .length;
       countLabel.textContent = selectedAssetCount > 0
         ? `${selectedAssetCount} asset${selectedAssetCount === 1 ? "" : "s"} selected across ${selectedCategoryCount} categor${selectedCategoryCount === 1 ? "y" : "ies"}.`
@@ -3187,6 +3211,7 @@ class DevEditor {
     const setCategoryExpanded = (section, expanded) => {
       const expandButton = section.querySelector("[data-role='paint-variant-category-expand']");
       const assetList = section.querySelector("[data-role='paint-variant-category-assets']");
+      const categoryId = section.dataset.categoryId;
       section.classList.toggle("is-expanded", expanded);
       section.classList.toggle("paint-variant-category--collapsed", !expanded);
       expandButton?.setAttribute("aria-expanded", String(expanded));
@@ -3196,13 +3221,45 @@ class DevEditor {
       if (assetList) {
         assetList.hidden = !expanded;
       }
+      if (categoryId) {
+        if (expanded) {
+          expandedCategoryIds.add(categoryId);
+        } else {
+          expandedCategoryIds.delete(categoryId);
+        }
+        this.savePaintVariantExpandedCategoryIds(Array.from(expandedCategoryIds));
+      }
+    };
+    const renderVariantList = () => {
+      const groupsForSearch = getCategoryGroupsForSearch();
+      const hasSearch = searchInput.value.trim().length > 0;
+      if (availableAssets.length === 0) {
+        list.innerHTML = `<p class="properties-hint">No usable imported assets are available.</p>`;
+        updateCategoryStates();
+        return;
+      }
+      if (groupsForSearch.length === 0) {
+        list.innerHTML = `<p class="properties-hint">No assets found.</p>`;
+        updateCategoryStates();
+        return;
+      }
+      list.innerHTML = groupsForSearch
+        .map((group) =>
+          this.createPaintVariantCategorySection(
+            group,
+            selectedVariantIds,
+            hasSearch || expandedCategoryIds.has(getGroupId(group)),
+            group.visibleAssets,
+          ),
+        )
+        .join("");
+      updateCategoryStates();
     };
 
     dialog.querySelector('[data-action="cancel-paint-variants"]').addEventListener("click", closeDialog);
     dialog.querySelector('[data-action="clear-paint-variants"]').addEventListener("click", () => {
-      dialog.querySelectorAll("[data-role='paint-variant-toggle']").forEach((input) => {
-        input.checked = false;
-      });
+      selectedVariantIds.clear();
+      renderVariantList();
       updateCategoryStates();
       this.paintVariantAssetIds = [];
       this.savePaintVariantAssetIds();
@@ -3225,18 +3282,32 @@ class DevEditor {
       }
       if (target.dataset.role === "paint-variant-category-toggle") {
         const section = target.closest("[data-role='paint-variant-category']");
-        section?.querySelectorAll("[data-role='paint-variant-toggle']").forEach((input) => {
-          input.checked = target.checked;
+        const group = categoryGroups.find((candidate) => getGroupId(candidate) === section?.dataset.categoryId);
+        group?.assets.forEach((asset) => {
+          if (target.checked) {
+            selectedVariantIds.add(asset.id);
+          } else {
+            selectedVariantIds.delete(asset.id);
+          }
         });
+        section?.querySelectorAll("[data-role='paint-variant-toggle']").forEach((input) => {
+          input.checked = selectedVariantIds.has(input.value);
+        });
+      } else if (target.dataset.role === "paint-variant-toggle") {
+        if (target.checked) {
+          selectedVariantIds.add(target.value);
+        } else {
+          selectedVariantIds.delete(target.value);
+        }
       }
       updateCategoryStates();
     });
+    searchInput.addEventListener("input", () => {
+      renderVariantList();
+    });
     form.addEventListener("submit", (event) => {
       event.preventDefault();
-      const selectedIds = Array.from(
-        form.querySelectorAll('[data-role="paint-variant-toggle"]:checked'),
-      ).map((input) => input.value);
-      this.paintVariantAssetIds = this.validatePaintVariantAssetIds(selectedIds);
+      this.paintVariantAssetIds = this.validatePaintVariantAssetIds(Array.from(selectedVariantIds));
       this.savePaintVariantAssetIds();
       dialog.close();
       this.syncPaintVariantsButton();
@@ -3247,22 +3318,24 @@ class DevEditor {
           : "Paint variants cleared. Using selected asset only.",
       );
     });
-    updateCategoryStates();
+    renderVariantList();
     dialog.addEventListener("close", () => dialog.remove());
     dialog.showModal();
   }
 
-  createPaintVariantCategorySection(group, activeIds) {
+  createPaintVariantCategorySection(group, activeIds, expanded = false, visibleAssets = group.assets) {
+    const groupId = String(group.id || group.name || "uncategorised");
+    const expandedClass = expanded ? "is-expanded" : "paint-variant-category--collapsed";
     return `
-      <section class="paint-variant-category paint-variant-category--collapsed" data-role="paint-variant-category">
+      <section class="paint-variant-category ${expandedClass}" data-role="paint-variant-category" data-category-id="${escapeAttribute(groupId)}">
         <div class="paint-variant-category-summary">
           <button
             type="button"
             class="paint-variant-category-expand"
             data-role="paint-variant-category-expand"
-            aria-expanded="false"
+            aria-expanded="${expanded ? "true" : "false"}"
             aria-label="Expand ${escapeAttribute(group.name)} variants"
-          >&gt;</button>
+          >${expanded ? "v" : "&gt;"}</button>
           <label class="paint-variant-category-toggle">
             <input
               type="checkbox"
@@ -3273,8 +3346,8 @@ class DevEditor {
           </label>
           <span class="paint-variant-category-count" data-role="paint-variant-category-count"></span>
         </div>
-        <div class="paint-variant-category-assets" data-role="paint-variant-category-assets" hidden>
-          ${group.assets.map((asset) => this.createPaintVariantOption(asset, activeIds)).join("")}
+        <div class="paint-variant-category-assets" data-role="paint-variant-category-assets" ${expanded ? "" : "hidden"}>
+          ${visibleAssets.map((asset) => this.createPaintVariantOption(asset, activeIds)).join("")}
         </div>
       </section>
     `;
@@ -3345,6 +3418,25 @@ class DevEditor {
       return name;
     }
     return `${name} (${suffixParts.join(" - ")})`;
+  }
+
+  doesPaintVariantAssetMatchSearch(asset, group, searchTerm) {
+    if (!searchTerm) {
+      return true;
+    }
+    const searchableText = [
+      asset.name,
+      asset.id,
+      asset.fileName,
+      asset.filename,
+      asset.originalName,
+      asset.category,
+      group?.name,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return searchableText.includes(searchTerm);
   }
 
   getAvailablePaintVariantAssets() {
@@ -4425,6 +4517,33 @@ class DevEditor {
       );
     } catch (error) {
       console.warn("Paint variant preference could not be saved.", error);
+    }
+  }
+
+  loadPaintVariantExpandedCategoryIds() {
+    try {
+      const storedIds = JSON.parse(localStorage.getItem(PAINT_VARIANT_EXPANDED_CATEGORIES_STORAGE_KEY));
+      if (!Array.isArray(storedIds)) {
+        return [];
+      }
+      const availableIds = new Set(this.getPaintVariantCategoryGroups(this.getAvailablePaintVariantAssets()).map(
+        (group) => String(group.id || group.name || "uncategorised"),
+      ));
+      return storedIds.filter((categoryId) => typeof categoryId === "string" && availableIds.has(categoryId));
+    } catch (error) {
+      console.warn("Paint variant category expansion preference could not be loaded.", error);
+      return [];
+    }
+  }
+
+  savePaintVariantExpandedCategoryIds(categoryIds) {
+    try {
+      localStorage.setItem(
+        PAINT_VARIANT_EXPANDED_CATEGORIES_STORAGE_KEY,
+        JSON.stringify(Array.isArray(categoryIds) ? categoryIds.filter((categoryId) => typeof categoryId === "string") : []),
+      );
+    } catch (error) {
+      console.warn("Paint variant category expansion preference could not be saved.", error);
     }
   }
 

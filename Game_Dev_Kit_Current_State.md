@@ -72,6 +72,7 @@ The editor currently supports:
 - Single-file and multiple-file asset import.
 - User-created asset categories.
 - Category sections and imported asset previews in the left asset panel.
+- Directly clicking an imported asset card in the left asset panel selects it, applies the active outline, and makes it the current source asset for Paint, Fill, Replace, and drag/drop placement workflows.
 - Asset search filtering.
 - Delete empty category controls.
 - Delete unused imported asset controls.
@@ -238,6 +239,7 @@ Storage constants currently visible in `EditorTypes.js`:
 | Editor-only known-layer locks | localStorage: `game-dev-kit-layer-locks` |
 | Editor-only Paint brush size | localStorage: `game-dev-kit-paint-brush-size` |
 | Editor-only Paint variant asset IDs | localStorage: `game-dev-kit-paint-variant-asset-ids` |
+| Editor-only Paint Variants expanded categories | localStorage: `game-dev-kit-paint-variants-expanded-categories` |
 | Imported image store database | IndexedDB database: `game-dev-kit-assets` |
 | Imported image object store | IndexedDB store: `imported-images` |
 
@@ -533,8 +535,10 @@ For one imported file while a grid range is already selected, the editor may off
 - Brush Size options are `1x1`, `2x2`, `3x3`, and `5x5`. `1x1` paints the cursor cell; `3x3` and `5x5` are centered on the cursor cell; `2x2` uses the cursor cell as the top-left of the brush square.
 - Paint Variants are editor UI preference only and are stored as selected imported asset IDs in `game-dev-kit-paint-variant-asset-ids`. Variant IDs are validated against the current asset registry on load/use and are not saved to project JSON, level JSON, `assetRegistry.json`, backups, or placed asset data.
 - The Paint Variants dialog groups imported assets by existing asset category. Categories are collapsed by default and hide their asset rows, with a compact header showing the expand arrow, category-level select-all checkbox, category name, and selected count. Expanding a category shows individual asset checkboxes with thumbnails and names. Expanding or collapsing a category does not change selected variants.
+- The Paint Variants dialog has instant asset search. Search filters immediately as the user types, matches asset names, IDs, filenames, and category text, keeps matching assets grouped inside their categories, hides non-matching categories, and does not change selected variants.
 - Ticking a Paint Variants category selects every usable imported asset in that category; individual assets inside the category can then be unticked to exclude them, leaving the category in a mixed/partial state.
 - The Paint Variants dialog is larger and CSS-resizable, with its asset/category list scrolling inside the modal and Clear Variants, Cancel, and Apply remaining visible. Clear Variants returns Paint mode to selected-asset-only behavior; the separate Use Selected Asset Only button is not present.
+- Paint Variants category expanded/collapsed state is remembered in localStorage under `game-dev-kit-paint-variants-expanded-categories`. This is editor UI preference only and is not saved to project JSON, level JSON, `assetRegistry.json`, backups, or placed asset data.
 - Multiple Paint Variant categories can be selected at once. The final random-brush variant list is always calculated from the checked stable asset IDs, not from category names, display names, row indexes, or category order.
 - When Paint Variants are active, each unique painted cell randomly chooses one selected variant asset from that final checked-ID list. Variants work with `1x1`, `2x2`, `3x3`, and `5x5` brush sizes.
 - Paint mode always creates separate normal `1x1` placed assets. It never creates stretched assets and never adds a `brushSize` field to placed objects.
@@ -824,11 +828,15 @@ Before accepting changes to existing editor behaviour, verify:
 - [ ] Drag an asset from the palette while multiple areas are selected and confirm the editor directs the user to use Fill Selected Area for multi-area placement.
 - [ ] Confirm Edit no longer contains Drag Paint Mode.
 - [ ] Confirm the Brush Size control appears near Paint and offers `1x1`, `2x2`, `3x3`, and `5x5`, defaulting safely to `1x1`.
+- [ ] Click imported asset cards in the left asset panel and confirm the active outline moves immediately while drag/drop placement still works.
 - [ ] Open Paint Variants from the top toolbar, select multiple imported assets, apply, and confirm the toolbar shows the active variant asset count.
 - [ ] Confirm the Paint Variants dialog opens larger, can be resized, keeps footer actions visible, and contains Clear Variants, Cancel, and Apply without a Use Selected Asset Only button.
 - [ ] Confirm Paint Variants categories are collapsed by default and each header shows the expand arrow, compact category checkbox, category name, and selected count.
 - [ ] Confirm collapsed Paint Variants categories hide their asset rows without leaving blank card space.
 - [ ] Expand and collapse Paint Variants categories and confirm selected counts and checked assets do not change.
+- [ ] Type into Paint Variants search and confirm results filter instantly, stay grouped by category, and hide categories with no matching assets.
+- [ ] Select variants while search is active, clear search, and confirm the selections remain.
+- [ ] Reopen Paint Variants after expanding/collapsing categories, then refresh Chrome and confirm category expansion state restores from localStorage only.
 - [ ] Tick a Paint Variants category and confirm every usable imported asset in that category becomes selected.
 - [ ] Untick one asset inside a selected Paint Variants category and confirm the category shows a mixed/partial selected count and the unticked asset is excluded from random painting.
 - [ ] Tick Paint Variant assets from multiple categories and confirm random painting uses the final checked asset-ID list across those categories.

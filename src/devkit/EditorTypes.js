@@ -10,6 +10,7 @@ export const LAYER_VISIBILITY_STORAGE_KEY = "game-dev-kit-layer-visibility";
 export const LAYER_LOCKS_STORAGE_KEY = "game-dev-kit-layer-locks";
 export const PAINT_BRUSH_SIZE_STORAGE_KEY = "game-dev-kit-paint-brush-size";
 export const PAINT_VARIANT_ASSET_IDS_STORAGE_KEY = "game-dev-kit-paint-variant-asset-ids";
+export const PAINT_VARIANT_EXPANDED_CATEGORIES_STORAGE_KEY = "game-dev-kit-paint-variants-expanded-categories";
 export const ASSET_IMAGE_DATABASE_NAME = "game-dev-kit-assets";
 export const ASSET_IMAGE_STORE_NAME = "imported-images";
 export const DEFAULT_CATEGORY_ID = "custom-imported-assets";
