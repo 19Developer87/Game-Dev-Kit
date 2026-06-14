@@ -1,5 +1,18 @@
 import { findObjectsAtCell, getPlacedObjects, numberToLetters, toGridRef } from "./LevelManager.js";
 
+const PLACED_ASSET_LAYER_ORDER = {
+  terrain: 0,
+  decorations: 10,
+  objects: 20,
+  collisions: 30,
+  spawns: 40,
+  items: 50,
+  npcs: 60,
+  enemies: 70,
+  triggers: 80,
+  overlay: 90,
+};
+
 export class GridEditor {
   constructor({
     root,
@@ -9,6 +22,7 @@ export class GridEditor {
     onAssetDrop,
     onAssetRenderError,
     onPlacedObjectSelect,
+    onPlacedObjectToggleSelection,
     onPlacedObjectProperties,
     onPlacedObjectTransform,
     onPlacedObjectGroupMoveStart,
@@ -27,6 +41,7 @@ export class GridEditor {
     this.onAssetDrop = onAssetDrop;
     this.onAssetRenderError = onAssetRenderError;
     this.onPlacedObjectSelect = onPlacedObjectSelect;
+    this.onPlacedObjectToggleSelection = onPlacedObjectToggleSelection;
     this.onPlacedObjectProperties = onPlacedObjectProperties;
     this.onPlacedObjectTransform = onPlacedObjectTransform;
     this.onPlacedObjectGroupMoveStart = onPlacedObjectGroupMoveStart;
@@ -703,8 +718,9 @@ export class GridEditor {
 
   renderPlacedObjects(layer, level, assets, selectedPlacedObjectId) {
     const assetLookup = new Map(assets.map((asset) => [asset.id, asset]));
+    const placedObjects = getPlacedObjects(level).sort(comparePlacedAssetRenderOrder);
 
-    getPlacedObjects(level).forEach((placedObject) => {
+    placedObjects.forEach((placedObject) => {
       this.placedObjectsById.set(placedObject.id, placedObject);
       const asset = assetLookup.get(placedObject.assetId);
       const marker = document.createElement("div");
@@ -767,14 +783,15 @@ export class GridEditor {
             return;
           }
 
-          if ((event.ctrlKey || this.isCtrlPressed) && !this.copyModeActive) {
-            return;
-          }
-
           event.preventDefault();
           event.stopPropagation();
           if (this.isLayerLocked(placedObject.layer)) {
             this.onLockedLayerInteraction?.(normalizePlacedLayer(placedObject.layer));
+            return;
+          }
+          if ((event.ctrlKey || this.isCtrlPressed) && !this.copyModeActive) {
+            this.cancelLockedAssetInteractionStatus();
+            this.onPlacedObjectToggleSelection?.(placedObject.id);
             return;
           }
           const now = event.timeStamp;
@@ -1227,15 +1244,33 @@ function normalizeOpacity(opacity) {
 }
 
 function getPlacedAssetLayerOrder(layer) {
-  return {
-    terrain: 0,
-    objects: 10,
-    overlay: 20,
-    triggers: 30,
-    Trigger: 30,
-  }[layer] ?? 10;
+  return PLACED_ASSET_LAYER_ORDER[normalizePlacedLayer(layer)] ?? PLACED_ASSET_LAYER_ORDER.objects;
+}
+
+function comparePlacedAssetRenderOrder(first, second) {
+  const layerOrder = getPlacedAssetLayerOrder(first.layer) - getPlacedAssetLayerOrder(second.layer);
+  if (layerOrder !== 0) {
+    return layerOrder;
+  }
+
+  const yOrder = (Number(first.y) || 1) - (Number(second.y) || 1);
+  if (yOrder !== 0) {
+    return yOrder;
+  }
+
+  const xOrder = (Number(first.x) || 1) - (Number(second.x) || 1);
+  if (xOrder !== 0) {
+    return xOrder;
+  }
+
+  return String(first.id || "").localeCompare(String(second.id || ""));
 }
 
 function normalizePlacedLayer(layer) {
-  return layer === "Trigger" ? "triggers" : layer || "objects";
+  if (layer === "Trigger") {
+    return "triggers";
+  }
+  return Object.prototype.hasOwnProperty.call(PLACED_ASSET_LAYER_ORDER, layer)
+    ? layer
+    : "objects";
 }

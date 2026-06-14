@@ -23,17 +23,18 @@ import {
   addAssetCategory,
   addImportedAsset,
   countObjectsOutsideBounds,
+  countPlacedObjectsByAssetIds,
   createAssetRegistryData,
   createCopiedLevelData,
   createLevelFileData,
   createProjectIndex,
   createNewLevel,
   deleteCurrentLevel,
+  deleteAssetCategoryWithAssets,
   getCurrentLevel,
   hasLevelContent,
   pasteLevelContent,
   placeAsset,
-  findObjectsAtCell,
   findObjectsInRange,
   fillAreaWithAsset,
   fillCellsWithAsset,
@@ -53,6 +54,7 @@ import {
   removeObjectsAtCell,
   removePlacedObjectById,
   removeKnownPlacedObjectsByIds,
+  removePlacedObjectsByAssetIds,
   resizeCurrentLevel,
   switchLevel,
   toGridRef,
@@ -108,6 +110,8 @@ class DevEditor {
       onSelectionChange: (range, state, options) => this.handleSelectionChange(range, state, options),
       onAssetDrop: (drop) => this.handleAssetDrop(drop),
       onPlacedObjectSelect: (placedObjectId) => this.selectPlacedObject(placedObjectId),
+      onPlacedObjectToggleSelection: (placedObjectId) =>
+        this.togglePlacedObjectSelection(placedObjectId),
       onPlacedObjectProperties: (placedObjectId) => this.openPlacedAssetProperties(placedObjectId),
       onPlacedObjectTransform: (transform) => this.transformPlacedObject(transform),
       onPlacedObjectGroupMoveStart: () => this.clearGridAreaSelection(),
@@ -153,6 +157,7 @@ class DevEditor {
       onCleanCategories: () => this.cleanEmptyCategories(),
       onDeleteCategory: (category) => this.deleteCategory(category),
       onDeleteAsset: (asset) => this.deleteAsset(asset),
+      onDeleteSelectedAssets: (assets) => this.deleteSelectedSourceAssets(assets),
     });
 
     this.bindEvents();
@@ -503,6 +508,13 @@ class DevEditor {
         return;
       }
 
+      if (additive) {
+        if (this.selectedPlacedObjectIds.size > 0) {
+          this.setStatus(`Selected ${this.selectedPlacedObjectIds.size} asset${this.selectedPlacedObjectIds.size === 1 ? "" : "s"}.`);
+        }
+        return;
+      }
+
       if (!additive && this.selectedRanges.length > 0) {
         this.clearSelection();
         this.render();
@@ -751,6 +763,60 @@ class DevEditor {
     );
   }
 
+  togglePlacedObjectSelection(placedObjectId) {
+    if (this.activeTool !== "move") {
+      return;
+    }
+
+    const level = getCurrentLevel(this.project);
+    const placedObject = getPlacedObjects(level).find(
+      (candidate) => candidate.id === placedObjectId,
+    );
+    if (!placedObject || !this.canSelectPlacedObject(placedObject)) {
+      this.setStatus(
+        placedObject
+          ? this.getPlacedObjectLockMessage(placedObject)
+          : "Unable to select that placed asset.",
+      );
+      return;
+    }
+
+    this.cancelCopyPlacement();
+    this.clearGridAreaSelection();
+    const nextSelection = new Set(this.selectedPlacedObjectIds);
+    if (nextSelection.has(placedObjectId)) {
+      nextSelection.delete(placedObjectId);
+      const nextIds = Array.from(nextSelection);
+      this.setPlacedObjectSelection(
+        nextIds,
+        this.selectedPlacedObjectId === placedObjectId
+          ? nextIds[0] || null
+          : this.selectedPlacedObjectId,
+      );
+      this.gridEditor.syncPlacedObjectSelection(
+        this.selectedPlacedObjectId,
+        Array.from(this.selectedPlacedObjectIds),
+      );
+      this.syncAssetMenu();
+      this.setStatus(
+        nextIds.length > 0
+          ? `Removed asset from selection. Selected ${nextIds.length} asset${nextIds.length === 1 ? "" : "s"}.`
+          : "Removed asset from selection.",
+      );
+      return;
+    }
+
+    nextSelection.add(placedObjectId);
+    const nextIds = Array.from(nextSelection);
+    this.setPlacedObjectSelection(nextIds, placedObjectId);
+    this.gridEditor.syncPlacedObjectSelection(
+      this.selectedPlacedObjectId,
+      Array.from(this.selectedPlacedObjectIds),
+    );
+    this.syncAssetMenu();
+    this.setStatus(`Selected ${nextIds.length} asset${nextIds.length === 1 ? "" : "s"}.`);
+  }
+
   openPlacedAssetProperties(placedObjectId = this.selectedPlacedObjectId) {
     const explicitPlacedObject = arguments.length > 0;
     if (
@@ -928,24 +994,30 @@ class DevEditor {
         Number(placedObject.width) !== result.values.width ||
         Number(placedObject.height) !== result.values.height;
       const overlaps = boundsChanged
-        ? findObjectsInRange(
+        ? this.findTargetLayerOverlaps(
             level,
-            result.values.x,
-            result.values.y,
-            result.values.width,
-            result.values.height,
-          ).filter((candidate) => candidate.id !== placedObject.id)
+            {
+              x: result.values.x,
+              y: result.values.y,
+              width: result.values.width,
+              height: result.values.height,
+            },
+            result.values.layer,
+            new Set([placedObject.id]),
+          )
         : [];
 
-      const lockedOverlap = overlaps.find((candidate) =>
-        this.isPlacedObjectProtected(candidate),
+      const protectedOverlap = overlaps.find((candidate) =>
+        this.isPlacedObjectProtected(candidate) || !this.isLayerVisible(candidate.layer),
       );
-      if (lockedOverlap) {
+      if (protectedOverlap) {
         error.hidden = false;
         error.textContent = `Changes were not applied because the new bounds overlap ${
-          this.isLayerLocked(lockedOverlap.layer)
-            ? `locked layer "${normalizePlacedLayer(lockedOverlap.layer)}"`
-            : "an individually locked asset"
+          !this.isLayerVisible(protectedOverlap.layer)
+            ? `hidden layer "${normalizePlacedLayer(protectedOverlap.layer)}"`
+            : this.isLayerLocked(protectedOverlap.layer)
+              ? `locked layer "${normalizePlacedLayer(protectedOverlap.layer)}"`
+              : "an individually locked asset"
         }.`;
         return;
       }
@@ -1073,7 +1145,7 @@ class DevEditor {
           <div class="properties-fields">
             <fieldset class="properties-position">
               <legend>Position / Size</legend>
-              <p class="properties-hint">Position and size are not edited in multi-asset Properties. Use group move for positions or single-asset Properties for size.</p>
+              <p class="properties-hint">Group resize is not available yet. Select one placed asset to edit Width/Height or use single-asset resize handles.</p>
             </fieldset>
             <fieldset>
               <legend>Display</legend>
@@ -1136,7 +1208,7 @@ class DevEditor {
       dialog.close();
     });
 
-    form.addEventListener("submit", (event) => {
+    form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const result = this.readMultiPlacedAssetPropertyValues(new FormData(form), form);
       if (result.error) {
@@ -1662,11 +1734,14 @@ class DevEditor {
       return this.transformPlacedObjectGroup(transform);
     }
 
-    const existing = findObjectsInRange(level, x, y, width, height).filter(
-      (placedObject) => placedObject.id !== placedObjectId,
+    const existing = this.findTargetLayerOverlaps(
+      level,
+      { x, y, width, height },
+      this.getPlacedObjectTargetLayer(sourceObject),
+      new Set([placedObjectId]),
     );
 
-    if (this.blockActionForLockedOverlaps(existing, "Move/resize")) {
+    if (this.blockActionForTargetLayerOverlaps(existing, "Move/resize")) {
       this.render();
       return false;
     }
@@ -1733,9 +1808,20 @@ class DevEditor {
 
     const overlappingObjects = [];
     updates.forEach((bounds) => {
-      findObjectsInRange(level, bounds.x, bounds.y, bounds.width, bounds.height).forEach(
+      const sourceObject = selectedObjects.find(
+        (placedObject) => placedObject.id === placedObjectId,
+      );
+      if (!sourceObject) {
+        return;
+      }
+      this.findTargetLayerOverlaps(
+        level,
+        bounds,
+        this.getPlacedObjectTargetLayer(sourceObject),
+        selectedIdSet,
+      ).forEach(
         (candidate) => {
-          if (!selectedIdSet.has(candidate.id) && !overlappingObjects.some((item) => item.id === candidate.id)) {
+          if (!overlappingObjects.some((item) => item.id === candidate.id)) {
             overlappingObjects.push(candidate);
           }
         },
@@ -1743,7 +1829,7 @@ class DevEditor {
     });
 
     if (overlappingObjects.length > 0) {
-      if (this.blockActionForLockedOverlaps(overlappingObjects, "Group move")) {
+      if (this.blockActionForTargetLayerOverlaps(overlappingObjects, "Group move")) {
         this.render();
         return false;
       }
@@ -1854,18 +1940,21 @@ class DevEditor {
     }));
     const existingById = new Map();
     targetCopies.forEach((copy) => {
-      findObjectsInRange(level, copy.x, copy.y, copy.width, copy.height).forEach(
+      this.findTargetLayerOverlaps(
+        level,
+        copy,
+        this.getPlacedObjectTargetLayer(copy.sourceObject),
+        isCut ? sourceIds : new Set(),
+      ).forEach(
         (placedObject) => {
-          if (!isCut || !sourceIds.has(placedObject.id)) {
-            existingById.set(placedObject.id, placedObject);
-          }
+          existingById.set(placedObject.id, placedObject);
         },
       );
     });
     const existing = Array.from(existingById.values());
 
     if (
-      this.blockActionForLockedOverlaps(
+      this.blockActionForTargetLayerOverlaps(
         existing,
         isCut ? "Cut group placement" : "Copied group placement",
       )
@@ -1958,17 +2047,20 @@ class DevEditor {
     }));
     const existingById = new Map();
     targetCopies.forEach((copy) => {
-      findObjectsInRange(level, copy.x, copy.y, copy.width, copy.height).forEach(
+      this.findTargetLayerOverlaps(
+        level,
+        copy,
+        this.getPlacedObjectTargetLayer(copy.sourceObject),
+        sourceIds,
+      ).forEach(
         (placedObject) => {
-          if (!sourceIds.has(placedObject.id)) {
-            existingById.set(placedObject.id, placedObject);
-          }
+          existingById.set(placedObject.id, placedObject);
         },
       );
     });
     const existing = Array.from(existingById.values());
 
-    if (this.blockActionForLockedOverlaps(existing, "Duplicate placement")) {
+    if (this.blockActionForTargetLayerOverlaps(existing, "Duplicate placement")) {
       return false;
     }
 
@@ -2552,6 +2644,9 @@ class DevEditor {
       lockState: values.editorLocked,
       editableCount: selection.editableObjects.length,
       lockableCount: selection.lockableObjects.length,
+      sharedEditSkippedCount: hasEditableChanges
+        ? selection.allSelectedObjects.length - selection.editableObjects.length
+        : 0,
       protectedCount: selection.protectedCount,
     };
   }
@@ -2566,6 +2661,11 @@ class DevEditor {
       parts.push(
         `Updated ${changedSharedFields.join(", ")} for ${result.editedCount} selected asset${result.editedCount === 1 ? "" : "s"}.`,
       );
+      if (result.sharedEditSkippedCount > 0) {
+        parts.push(
+          `Skipped ${result.sharedEditSkippedCount} protected asset${result.sharedEditSkippedCount === 1 ? "" : "s"}.`,
+        );
+      }
     }
 
     if (values.editorLocked !== undefined) {
@@ -2575,7 +2675,7 @@ class DevEditor {
       );
     }
 
-    if (result.protectedCount > 0) {
+    if (result.protectedCount > 0 && changedSharedFields.length === 0) {
       parts.push(
         `Skipped ${result.protectedCount} protected asset${result.protectedCount === 1 ? "" : "s"}.`,
       );
@@ -2687,7 +2787,7 @@ class DevEditor {
       return false;
     }
 
-    const targetLayer = this.selectedAsset.defaultLayer || "objects";
+    const targetLayer = this.getAssetPlacementLayer(this.selectedAsset);
     if (this.isLayerLocked(targetLayer)) {
       this.setStatus(
         `Fill blocked: layer "${normalizePlacedLayer(targetLayer)}" is locked.`,
@@ -2699,19 +2799,20 @@ class DevEditor {
     const isMultiAreaFill = selectedAreas.length > 1;
     const range = { ...selectedAreas[selectedAreas.length - 1] };
     const existing = isMultiAreaFill
-      ? this.findObjectsInSelectedAreas(selectedAreas)
+      ? this.findObjectsInSelectedAreas(selectedAreas, [targetLayer])
       : findObjectsInRange(
           level,
           range.x,
           range.y,
           range.width,
           range.height,
+          [targetLayer],
         );
-    if (existing.some((placedObject) => this.isPlacedObjectProtected(placedObject))) {
+    if (this.blockActionForTargetLayerOverlaps(existing, "Fill")) {
       this.setStatus(
         isMultiAreaFill
-          ? "Selected areas contain locked assets. Unlock them before filling these areas."
-          : "Selected area contains locked assets. Unlock them before filling this area.",
+          ? "Selected areas contain hidden or locked assets on the target layer. Show or unlock them before filling these areas."
+          : "Selected area contains hidden or locked assets on the target layer. Show or unlock them before filling this area.",
       );
       return false;
     }
@@ -3053,14 +3154,22 @@ class DevEditor {
         return;
       }
 
-      const existingObjects = findObjectsAtCell(level, brushCell.x, brushCell.y);
+      const asset = this.pickPaintAsset(this.dragPaintSession.paintAssets);
+      const targetLayer = this.getAssetPlacementLayer(asset);
+      const existingObjects = findObjectsInRange(
+        level,
+        brushCell.x,
+        brushCell.y,
+        1,
+        1,
+        [targetLayer],
+      );
       if (existingObjects.length > 0) {
         this.dragPaintSession.skippedCells.add(key);
         changed = true;
         return;
       }
 
-      const asset = this.pickPaintAsset(this.dragPaintSession.paintAssets);
       this.dragPaintSession.paintedCells.set(key, {
         x: brushCell.x,
         y: brushCell.y,
@@ -3651,9 +3760,17 @@ class DevEditor {
     }
 
     const level = getCurrentLevel(this.project);
-    const existing = findObjectsInRange(level, range.x, range.y, range.width, range.height);
+    const targetLayer = this.getAssetPlacementLayer(asset);
+    const existing = findObjectsInRange(
+      level,
+      range.x,
+      range.y,
+      range.width,
+      range.height,
+      [targetLayer],
+    );
 
-    if (this.blockActionForLockedOverlaps(existing, "Asset placement")) {
+    if (this.blockActionForTargetLayerOverlaps(existing, "Asset placement")) {
       return false;
     }
 
@@ -3754,11 +3871,11 @@ class DevEditor {
     return cells;
   }
 
-  findObjectsInSelectedAreas(ranges = this.getSelectedAreaRanges()) {
+  findObjectsInSelectedAreas(ranges = this.getSelectedAreaRanges(), layerNames = LAYERS) {
     const level = getCurrentLevel(this.project);
     const objectsById = new Map();
     ranges.forEach((range) => {
-      findObjectsInRange(level, range.x, range.y, range.width, range.height).forEach(
+      findObjectsInRange(level, range.x, range.y, range.width, range.height, layerNames).forEach(
         (placedObject) => {
           if (!objectsById.has(placedObject.id)) {
             objectsById.set(placedObject.id, placedObject);
@@ -3767,6 +3884,28 @@ class DevEditor {
       );
     });
     return Array.from(objectsById.values());
+  }
+
+  getAssetPlacementLayer(asset) {
+    return normalizePlacedLayer(asset?.defaultLayer || "objects");
+  }
+
+  getPlacedObjectTargetLayer(placedObject) {
+    return normalizePlacedLayer(placedObject?.layer || "objects");
+  }
+
+  findTargetLayerOverlaps(level, range, targetLayer, excludedIds = new Set()) {
+    const excluded = excludedIds instanceof Set
+      ? excludedIds
+      : new Set(Array.isArray(excludedIds) ? excludedIds : []);
+    return findObjectsInRange(
+      level,
+      range.x,
+      range.y,
+      range.width,
+      range.height,
+      [normalizePlacedLayer(targetLayer)],
+    ).filter((placedObject) => !excluded.has(placedObject.id));
   }
 
   findSelectableObjectsInSelectedAreas(ranges = this.getSelectedAreaRanges()) {
@@ -3884,9 +4023,10 @@ class DevEditor {
   }
 
   async deleteCategory(category) {
-    const assetCount = this.project.assetRegistry.assets.filter(
-      (asset) => asset.categoryId === category.id,
-    ).length;
+    const categoryAssets = this.project.assetRegistry.assets.filter(
+      (asset) => asset.categoryId === category.id || asset.category === category.name,
+    );
+    const assetCount = categoryAssets.length;
 
     if (assetCount === 0) {
       const confirmed = await this.showConfirmModal({
@@ -3906,28 +4046,51 @@ class DevEditor {
       return;
     }
 
-    this.setStatus("This category contains assets. Delete or move the assets first.");
-    await this.showAlertModal("This category contains assets. Delete or move the assets first.", {
-      title: "Category Not Empty",
+    const placedCopyCount = countPlacedObjectsByAssetIds(
+      this.project,
+      categoryAssets.map((asset) => asset.id),
+    );
+    const confirmed = await this.showConfirmModal({
+      title: `Delete category "${category.name}"?`,
+      message: `This will delete ${assetCount} source asset${assetCount === 1 ? "" : "s"} from the category and remove ${placedCopyCount} placed grid cop${placedCopyCount === 1 ? "y" : "ies"} across all levels. Continue?`,
+      confirmLabel: "Delete Category and Copies",
+      danger: true,
     });
-  }
-
-  async deleteAsset(asset) {
-    if (isAssetUsedOnAnyLevel(this.project, asset.id)) {
-      this.setStatus(
-        "This asset is currently used on a level. Remove placed copies first before deleting the asset.",
-      );
-      await this.showAlertModal(
-        "This asset is currently used on a level. Remove placed copies first before deleting the asset.",
-        { title: "Asset Is In Use" },
-      );
+    if (!confirmed) {
+      this.setStatus("Category deletion cancelled.");
       return;
     }
 
+    const removedObjects = removePlacedObjectsByAssetIds(
+      this.project,
+      categoryAssets.map((asset) => asset.id),
+    );
+    const result = deleteAssetCategoryWithAssets(this.project, category.id);
+    if (!result.deleted) {
+      this.setStatus("Category was not found.");
+      return;
+    }
+    if (categoryAssets.some((asset) => this.selectedAsset?.id === asset.id)) {
+      this.selectedAsset = this.project.assets[0] || null;
+    }
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    this.render();
+    this.autosave(
+      `Deleted category "${category.name}", ${assetCount} source asset${assetCount === 1 ? "" : "s"} and ${removedObjects.length} placed cop${removedObjects.length === 1 ? "y" : "ies"}.`,
+    );
+  }
+
+  async deleteAsset(asset) {
+    const placedCopyCount = countPlacedObjectsByAssetIds(this.project, [asset.id]);
+    const isUsed = placedCopyCount > 0 || isAssetUsedOnAnyLevel(this.project, asset.id);
+
     const confirmed = await this.showConfirmModal({
       title: `Delete "${asset.name}"?`,
-      message: "Delete this imported palette asset? Placed grid copies are not deleted by this action.",
-      confirmLabel: "Delete Asset",
+      message: isUsed
+        ? `This asset is used ${placedCopyCount} time${placedCopyCount === 1 ? "" : "s"} on the grid across all levels. Deleting it will also remove all ${placedCopyCount} placed cop${placedCopyCount === 1 ? "y" : "ies"}. Continue?`
+        : "Delete this imported palette asset? Placed grid copies are not affected.",
+      confirmLabel: isUsed ? "Delete Asset and Copies" : "Delete Asset",
       danger: true,
     });
 
@@ -3935,12 +4098,64 @@ class DevEditor {
       return;
     }
 
+    const removedObjects = removePlacedObjectsByAssetIds(this.project, [asset.id]);
     deleteImportedAsset(this.project, asset.id);
     if (this.selectedAsset?.id === asset.id) {
       this.selectedAsset = this.project.assets[0] || null;
     }
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
     this.render();
-    this.autosave(`Deleted asset ${asset.name}.`);
+    this.autosave(
+      removedObjects.length > 0
+        ? `Deleted asset and removed ${removedObjects.length} placed cop${removedObjects.length === 1 ? "y" : "ies"}.`
+        : `Deleted asset ${asset.name}.`,
+    );
+  }
+
+  async deleteSelectedSourceAssets(assets) {
+    const selectedAssets = (assets || [])
+      .map((asset) =>
+        this.project.assetRegistry.assets.find((candidate) => candidate.id === asset.id),
+      )
+      .filter(Boolean);
+    const uniqueAssets = Array.from(
+      new Map(selectedAssets.map((asset) => [asset.id, asset])).values(),
+    );
+
+    if (uniqueAssets.length <= 1) {
+      this.setStatus("Select multiple source assets to bulk delete.");
+      return false;
+    }
+
+    const assetIds = uniqueAssets.map((asset) => asset.id);
+    const placedCopyCount = countPlacedObjectsByAssetIds(this.project, assetIds);
+    const confirmed = await this.showConfirmModal({
+      title: `Delete ${uniqueAssets.length} selected source assets?`,
+      message: `This will also remove ${placedCopyCount} placed grid cop${placedCopyCount === 1 ? "y" : "ies"} across all levels. Continue?`,
+      confirmLabel: "Delete Selected Assets",
+      danger: true,
+    });
+
+    if (!confirmed) {
+      this.setStatus("Bulk source asset deletion cancelled.");
+      return false;
+    }
+
+    const removedObjects = removePlacedObjectsByAssetIds(this.project, assetIds);
+    assetIds.forEach((assetId) => {
+      deleteImportedAsset(this.project, assetId);
+    });
+    if (this.selectedAsset && assetIds.includes(this.selectedAsset.id)) {
+      this.selectedAsset = this.project.assets[0] || null;
+    }
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    this.render();
+    this.autosave(
+      `Deleted ${uniqueAssets.length} source asset${uniqueAssets.length === 1 ? "" : "s"} and removed ${removedObjects.length} placed cop${removedObjects.length === 1 ? "y" : "ies"} across all levels.`,
+    );
+    return true;
   }
 
   async importAsset() {
@@ -4879,6 +5094,27 @@ class DevEditor {
       );
     }
     this.setStatus(`${actionLabel} blocked: ${reasons.join(" and ")} cannot be replaced.`);
+    return true;
+  }
+
+  blockActionForTargetLayerOverlaps(overlappingObjects, actionLabel) {
+    if (this.blockActionForLockedOverlaps(overlappingObjects, actionLabel)) {
+      return true;
+    }
+
+    const hiddenCount = overlappingObjects.filter(
+      (placedObject) => !this.isLayerVisible(placedObject.layer),
+    ).length;
+
+    if (hiddenCount === 0) {
+      return false;
+    }
+
+    this.setStatus(
+      `${actionLabel} blocked: ${hiddenCount} hidden same-layer asset${
+        hiddenCount === 1 ? "" : "s"
+      } cannot be replaced while hidden.`,
+    );
     return true;
   }
 

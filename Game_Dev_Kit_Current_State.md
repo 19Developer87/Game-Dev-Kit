@@ -49,6 +49,7 @@ Update this current-state file whenever working behaviour changes.
 - Phase 6E Drag Painting is implemented on the Phase 6 branch.
 - Phase 6F Brush Sizes for Paint mode are implemented on the Phase 6 branch.
 - Phase 6G Random Brush / Asset Variants for Paint mode is implemented on the Phase 6 branch.
+- Phase 6H follow-up work is in progress on the Phase 6 branch: left-panel drag/category stability, left-panel source asset multi-select/delete, and Ctrl-click additive placed-asset selection. Multi-asset resize is deferred.
 
 ## 4. Current Working Features
 
@@ -73,9 +74,12 @@ The editor currently supports:
 - User-created asset categories.
 - Category sections and imported asset previews in the left asset panel.
 - Directly clicking an imported asset card in the left asset panel selects it, applies the active outline, and makes it the current source asset for Paint, Fill, Replace, and drag/drop placement workflows.
+- Dragging an imported asset card from the left asset panel does not change category expand/collapse state. Category sections expand/collapse only from their own header/arrow, and their current open state remains stable across asset selection, drag, and render refreshes.
+- Ctrl-clicking imported asset cards in the left asset panel toggles a source-asset multi-selection separate from placed grid asset selection. The last clicked source asset remains the primary asset for Paint, Fill, Replace, and drag/drop placement.
 - Asset search filtering.
-- Delete empty category controls.
-- Delete unused imported asset controls.
+- Delete category controls. If a category contains source assets, deleting it from the left panel uses an app-owned confirmation and can remove those source assets plus matching placed copies across all levels.
+- Delete imported asset controls. If a source asset is used on the grid, deleting it from the left panel uses an app-owned confirmation and can remove matching placed copies across all levels.
+- When multiple source assets are selected in the left panel and focus is in that panel, Delete or Backspace opens an app-owned bulk-delete confirmation. Confirming deletes the selected source assets and matching placed copies across all levels; cancelling changes nothing.
 - A `Clean Empty Categories` action.
 - Grid area selection by left-click drag.
 - A selected grid range that remains active after mouse release.
@@ -99,7 +103,7 @@ The editor currently supports:
 - Paint mode has a top-toolbar Brush Size selector with `1x1`, `2x2`, `3x3`, and `5x5` options. The default is `1x1`.
 - Paint mode has a top-toolbar `Variants` button that opens an app-owned Paint Variants dialog for choosing multiple imported assets as random paint variants.
 - Drag Painting is different from stretched placement: stretched placement creates one fitted object across a selected range, while Drag Painting creates individual `1x1` placed objects.
-- Drag Painting skips occupied cells, including cells covered by hidden-layer, locked-layer, or individually locked assets. It does not overwrite or delete existing placed assets.
+- Drag Painting skips occupied cells on the target placement layer, including hidden-layer, locked-layer, or individually locked assets on that same layer. Placed assets on different layers may share the same grid cells and are not overwritten or deleted by Paint.
 - Drag Painting tracks unique cells in memory during the drag, shows lightweight preview boxes, commits once on mouse release, refreshes placed markers once, and autosaves once.
 - Tool hotkeys: `Q` for Select/Move, `W` for Paint, and `E` for Delete outside text-entry/modal contexts.
 - Eight resize handles on an asset selected in Select/Move mode.
@@ -124,8 +128,10 @@ The editor currently supports:
 - Placed asset move, group move, and resize previews are requestAnimationFrame-throttled during dragging and commit level data once on release.
 - Select/Move supports multi-selecting placed assets by dragging a grid area across them.
 - Multi-selected placed assets can be moved together as a snapped group while preserving relative spacing.
+- Ctrl-clicking visible placed assets in Select/Move mode adds or removes them from the current selected placed-asset group without clearing the rest of the group. This can extend a drag-highlighted placed-asset selection, is separate from left-panel source asset multi-selection, and does not autosave because it is editor UI state only.
+- Placed assets render by known layer order rather than creation order: `terrain`, `decorations`, `objects`, `collisions`, `spawns`, `items`, `npcs`, `enemies`, `triggers`, then `overlay`. Higher layers appear and receive clicks above lower visible layers.
 - Every selected asset in a multi-selection uses a yellow outline; the primary selection may use a stronger yellow accent, but secondary selections do not use blue. Visible, unlocked assets intersecting Ctrl-selected grid areas receive the same yellow selected-asset outline.
-- Overwrite confirmation before a new placement removes overlapping objects.
+- Overwrite confirmation before a new placement removes overlapping objects only on the same target placement layer.
 - Browser-native alert/confirm/prompt dialogs have been replaced with in-app Game Dev Kit modals so the editor can later be packaged in an `.exe` or WebView shell without depending on Chrome-native dialog behaviour.
 - In-app modals are used for Create New Level, Rename Level, Delete Level, Clear Level, Create Category, Delete Category, Delete Palette Asset, grid resize warnings, paste warnings, placement overwrite warnings, and other editor warnings that previously used browser-native dialogs.
 - Placed Asset Properties includes a Layer / Behaviour section with `terrain`, `decorations`, `objects`, `collisions`, `spawns`, `items`, `npcs`, `enemies`, `triggers`, and `overlay`.
@@ -133,7 +139,8 @@ The editor currently supports:
 - Hidden editor layers keep their placed assets in saved data but hide their markers and exclude them from selection, movement, resizing, Properties, copy, and deletion.
 - Locked editor layers remain visible when visibility is on, but their placed assets are excluded from selection, movement, resizing, Properties, copy, group movement, deletion, and overlap replacement.
 - Individually locked placed assets remain visible and saved, can still be selected/highlighted for Properties and unlocking, cannot be moved, resized, copied, group-moved, deleted, cleared, painted over, or replaced, and can be double-clicked to open Properties for unlocking in Chrome and the Codex in-app browser.
-- Multi-asset Properties lock/unlock writes the chosen `editorLocked` state back to the original placed objects in `level.layers`, preserving IDs, positions, metadata, `layerOptions`, and unknown fields.
+- Multi-asset Properties can update shared fields except Width and Height. Multi-asset resize is deferred; the multi-asset Properties panel shows helper text instead of size inputs.
+- Multi-asset Properties lock/unlock writes the chosen `editorLocked` state back to the original placed objects in `level.layers`, preserving IDs, positions, metadata, `layerOptions`, and unknown fields. Protected selected assets are skipped for shared edits.
 - Browser refresh restoration of project data, levels, categories, imported image data, and placed objects.
 - No visible default placeholder asset library.
 
@@ -143,8 +150,8 @@ Current limitations:
 - Full Phase 5 layer behaviour is not implemented yet. Solo layer, layer reordering, active placement layers, and runtime visibility are not implemented yet.
 - Later Phase 6 tools remain unimplemented: weighted random brushes, replace brushes, auto-tiling, terrain blending, replace-by-category/layer/all-levels, and `Ctrl+A`.
 - Play Mode, runtime collision, trigger execution, doors/exits, spawn runtime, NPC/enemy/item gameplay systems, chunked maps, animated character import, audio/music systems, and multilayer/parallax background tools are not implemented yet.
-- Palette asset deletion is blocked while that asset is placed on any level. Remove placed copies first.
-- A category that contains assets is not deleted automatically; its assets must be removed or reorganised first.
+- Left-panel source asset/category deletion can remove matching placed copies after app-owned confirmation. This applies only to source asset/category deletion from the left panel and does not change grid Delete mode, Delete/Backspace selected placed assets, Clear Selected Area, or Replace Matching Assets.
+- Left-panel source asset/category deletion scans all levels, matching the existing all-level asset-in-use scope, and removes only placed copies whose `assetId` belongs to the deleted source asset or deleted category.
 
 ## 5. Important Rules
 
@@ -442,7 +449,7 @@ For one imported file while a grid range is already selected, the editor may off
 - Group move previews cache selected markers and update the selected group together during pointer movement, then commit all moved object bounds once on release.
 - When group dragging begins, the original grid-area selection rectangle is cleared while the selected asset borders remain visible.
 - Group move updates each moved asset's `x`, `y`, `gridRef`, and `rangeRef` in the current level only.
-- Group resize is not implemented; resize handles are shown only when a single placed asset is selected.
+- Single selected placed assets show the normal per-asset resize handles. Multi-selected placed assets do not show resize handles; multi-asset resize is deferred.
 - Moving or resizing updates only that current-level object's `x`, `y`, `width`, `height`, `gridRef`, and `rangeRef`; its `id` and `assetId` remain stable.
 - Placed Asset Properties opens from `Asset > Properties`, `Edit > Properties`, and double-clicking a placed asset in Select/Move mode. With multiple selected editable placed assets, `Edit > Properties` opens a multi-asset Properties panel for shared editable fields.
 - Placed Asset Properties shows Source asset name, Category name, Grid Ref, Width, Height, Visible, Opacity, Layer, Blocks Movement, Notes, and a conditional layer-specific metadata section.
@@ -459,7 +466,7 @@ For one imported file while a grid range is already selected, the editor may off
 - Layer visibility is stored only as the browser-wide editor preference `game-dev-kit-layer-visibility`. It is not stored in project state, level JSON, copied levels, folder exports, or backups, and changing visibility does not trigger project autosave.
 - Missing, malformed, or newly introduced known-layer preference values default to visible.
 - Hiding a layer updates existing placed-marker visibility without rebuilding the grid, coordinate headers, or placed-marker collection.
-- Hidden-layer assets remain unchanged in their original `level.layers` arrays and remain included in browser persistence, File saves, placed-asset copies, Copy Level / Paste Level, placement overlap checks, and overwrite handling.
+- Hidden-layer assets remain unchanged in their original `level.layers` arrays and remain included in browser persistence, File saves, placed-asset copies, Copy Level / Paste Level, same-layer placement overlap checks, and overwrite handling.
 - Hidden-layer assets are excluded from Select/Move clicking, drag selection, group movement/resizing, Properties, Delete click/drag/keyboard deletion, and copied placement source selection.
 - Hiding a layer clears selected assets from that layer and cancels copied placement when its source asset belongs to the newly hidden layer. Visible-layer selections are retained where possible.
 - Moving an asset into a hidden layer through Properties still applies and autosaves through the Phase 5B relocation path, then clears its selection and hides its marker.
@@ -469,12 +476,13 @@ For one imported file while a grid range is already selected, the editor may off
 - Layer locks are stored only in `game-dev-kit-layer-locks`; missing, malformed, and newly introduced known-layer values default to unlocked. Lock changes do not trigger project autosave.
 - Locked-layer markers remain visible when their visibility checkbox is on, with a lightweight locked cursor, but cannot be selected, moved, resized, copied, opened in Properties, included in group selection/movement, or deleted through click, drag-area, Delete, or Backspace.
 - Locking a layer clears selected assets from that layer, closes their Properties panel if open, and cancels copied placement sourced from that layer.
-- Placement, copied placement, Properties bounds changes, single move/resize, and group move are blocked before mutation when their destination overlaps any locked-layer asset. Locked assets are never passed into replacement removal.
+- Placement, Fill Selected Area, and Paint use the incoming asset's default placement layer for overlap checks: same-layer locked/hidden/protected assets block or skip as before, while assets on different layers may overlap. Copied placement, Properties bounds changes, single move/resize, and group move are still blocked before mutation when their destination overlaps protected assets according to their existing editor rules. Locked assets are never passed into replacement removal.
+- Render order is based on layer order, not creation order. Terrain renders below decorations, decorations render below objects, and overlay renders highest. Refresh/load preserves that order because markers are sorted and assigned layer z-indexes during rendering.
 - Hidden and locked are independent editor states. `Show All Layers` changes visibility only. `Unlock All Layers and Assets` clears every layer lock preference and every placed asset `editorLocked` value across all project levels, then autosaves once.
 - Layer lock state is not written to project JSON, level JSON, copied levels, backups, folder exports, or `assetRegistry.json`. Locked placed assets remain fully preserved in all of those data paths.
 - Individual `editorLocked` state is part of placed level data, survives browser refresh and File saves, and is preserved by Copy Level / Paste Level, placed-object cloning, and unknown-field-preserving save paths.
 - Layer locks and individual asset locks are cumulative: either one protects the asset. Layer lock status takes priority in blocked-action messages.
-- Multi-selected editable placed assets can be edited together from Properties for shared fields: Layer, Visible, Opacity, Blocks Movement, Notes, and Locked. Position and size are intentionally not multi-edited.
+- Multi-selected editable placed assets can be edited together from Properties for shared fields: Layer, Visible, Opacity, Blocks Movement, Notes, and Locked. Width and Height are intentionally unavailable in multi-asset Properties while group resize is deferred.
 - Multi-asset Properties applies only fields the user changes. Mixed values are shown as Mixed or blank placeholders and are preserved unless the user explicitly edits that field.
 - Double-clicking an asset inside a multi-selected group opens the same multi-asset Properties workflow as `Edit > Properties` for the full selected group instead of reducing the selection to one asset.
 - Multi-selected placed assets can be locked or unlocked together from Properties. The group lock path changes only `editorLocked`, preserves every selected asset's ID, source, position, size, layer, display fields, notes, `layerOptions`, and unknown fields, and skips hidden or layer-protected selections safely.
@@ -544,13 +552,14 @@ For one imported file while a grid range is already selected, the editor may off
 - Paint mode always creates separate normal `1x1` placed assets. It never creates stretched assets and never adds a `brushSize` field to placed objects.
 - Random variant-painted cells remain normal placed assets with the chosen `assetId`; no random-brush or variant fields are added to placed objects.
 - Paint mode deduplicates brush cells during each drag using cell coordinates, so overlapping brush stamps do not create duplicate placed assets in the same drag.
-- Paint mode skips cells already covered by any known-layer placed asset, including hidden-layer, locked-layer, and individually locked assets. It does not overwrite, delete, or modify occupied/protected cells.
+- Paint mode skips cells already covered by a placed asset on the same target layer, including hidden-layer, locked-layer, and individually locked assets on that layer. Different-layer assets can overlap the painted cells and are not overwritten, deleted, or modified.
+- Paint mode, Brush Size, and Paint Variants use the selected/variant asset's target placement layer for occupied-cell checks, then render the new normal placed assets according to the same layer order.
 - Paint mode commits all newly painted cells on mouse release with one data operation, refreshes placed markers once, autosaves once, and reports painted/skipped counts.
 - Weighted random, per-category weights, random rotation/scale/opacity/layer, replace brushes, auto-tiling, terrain blending, undo/redo, persistent/cross-level placed-object clipboard, replace-by-category/layer/all-levels, and later Phase 6 tools are not implemented yet.
 - In Select/Move mode, Delete or Backspace removes the selected placed copy from the current level only, clears its selection, and does not ask for confirmation.
 - In Select/Move mode, Delete or Backspace removes all multi-selected placed copies from the current level only when a group is selected.
 - In Select/Move mode, if no placed copy is selected but a grid area is selected, Delete or Backspace immediately deletes every current-level placed copy that intersects that area.
-- Asset menu Properties and Edit menu Properties open the same placed-asset properties panel for a single selected placed asset only; multi-asset properties are not implemented.
+- Asset menu Properties and Edit menu Properties open placed-asset Properties for a single selected placed asset. With multiple selected placed assets, Edit > Properties and double-clicking a selected group member open the multi-asset Properties workflow.
 - Delete mode removes placed copies from the current level only without confirmation. Clicking any covered cell removes the whole stretched object.
 - Delete mode click-and-drag shows the selected delete area and immediately removes every current-level placed copy intersecting that area on mouse release.
 - Delete mode drag-delete remains unchanged by Select/Move multi-selection behaviour.
@@ -813,7 +822,8 @@ Before accepting changes to existing editor behaviour, verify:
 - [ ] Focus Properties inputs or an app-owned modal and confirm `Ctrl+C`, `Ctrl+X`, and `Ctrl+D` do not invoke placed-asset commands.
 - [ ] Select a small grid range and use Edit > Fill Selected Area; confirm every cell receives a separate `1x1` object with a unique ID and cell-specific references rather than one stretched object.
 - [ ] Fill over editable overlaps, cancel the app-owned warning, and confirm nothing changes; confirm the operation replaces those overlaps atomically after approval.
-- [ ] Fill over a hidden editable overlap and confirm the warning identifies hidden content; fill over a locked-layer or individually locked overlap and confirm the complete operation is blocked.
+- [ ] Fill over a same-layer hidden, locked-layer, or individually locked overlap and confirm the complete operation is blocked.
+- [ ] Fill over a placed asset on a different layer and confirm both layers can occupy the same cells; fill over a same-layer hidden, locked-layer, or individually locked overlap and confirm existing protections still apply.
 - [ ] Select more than 500 cells for Fill and confirm the app-owned large-fill performance warning appears before data changes.
 - [ ] Use Edit > Clear Selected Area and confirm visible unlocked intersections are removed while hidden and locked intersections remain and are reported as skipped.
 - [ ] Confirm Fill and Clear keep the selected range active, update only placed markers, autosave once, and preserve palette assets, categories, unknown layers, and saved JSON structures.
@@ -829,6 +839,9 @@ Before accepting changes to existing editor behaviour, verify:
 - [ ] Confirm Edit no longer contains Drag Paint Mode.
 - [ ] Confirm the Brush Size control appears near Paint and offers `1x1`, `2x2`, `3x3`, and `5x5`, defaulting safely to `1x1`.
 - [ ] Click imported asset cards in the left asset panel and confirm the active outline moves immediately while drag/drop placement still works.
+- [ ] Collapse/expand left-panel categories, drag source assets to the grid, and confirm dragging does not change category open/closed state.
+- [ ] Ctrl-click several left-panel source assets, confirm each selected card is outlined, Ctrl-click one again to remove it from the selection, and confirm Paint/drag/drop still use the last clicked source asset as primary.
+- [ ] With multiple left-panel source assets selected, press Delete and Backspace in separate tests, confirm the app-owned modal reports source asset and placed-copy counts, cancel changes nothing, and confirm removes only those source assets plus matching placed copies across all levels.
 - [ ] Open Paint Variants from the top toolbar, select multiple imported assets, apply, and confirm the toolbar shows the active variant asset count.
 - [ ] Confirm the Paint Variants dialog opens larger, can be resized, keeps footer actions visible, and contains Clear Variants, Cancel, and Apply without a Use Selected Asset Only button.
 - [ ] Confirm Paint Variants categories are collapsed by default and each header shows the expand arrow, compact category checkbox, category name, and selected count.
@@ -848,6 +861,7 @@ Before accepting changes to existing editor behaviour, verify:
 - [ ] Confirm the `2x2` brush uses the cursor cell as the top-left cell, while `3x3` and `5x5` are centered on the cursor cell.
 - [ ] Drag Paint over the same cell more than once during one drag and confirm only one placed object is created for that cell, including overlapping larger brush stamps.
 - [ ] Drag Paint over occupied, hidden-layer, locked-layer, and individually locked cells and confirm they are skipped without overwriting or deleting existing assets.
+- [ ] Drag Paint over different-layer assets and confirm the painted target-layer assets can overlap them; repeat with Brush Sizes and Paint Variants.
 - [ ] Confirm Drag Paint preview movement does not autosave, mutate level data, rebuild grid cells/headers, or refresh placed markers until mouse release.
 - [ ] Refresh and confirm the chosen brush-size preference returns, while project JSON, level JSON, `assetRegistry.json`, and placed objects contain no brush-size field.
 - [ ] Refresh and confirm Paint Variant asset IDs restore as an editor preference, while project JSON, level JSON, `assetRegistry.json`, and placed objects contain no random-brush or variant field.
@@ -865,11 +879,17 @@ Before accepting changes to existing editor behaviour, verify:
 - [ ] Drag-select an area containing individually locked assets and confirm locked assets are included in the yellow selected group while keeping their red locked outline.
 - [ ] Drag one selected asset in a multi-selection and confirm the whole group moves together, snaps to grid, and remains inside grid bounds.
 - [ ] Confirm single asset move/resize and group move remain smooth on `30x30`, `50x50`, `100x100`, and `200x200` grids and persist after refresh.
-- [ ] Confirm resize handles and Asset Properties remain single-asset only and are not shown for multi-selected groups.
+- [ ] Confirm resize handles remain single-asset only and are not shown for multi-selected groups.
 - [ ] Open Asset > Properties for one selected placed asset and confirm Source asset name, Category name, Grid Ref, Width, Height, Visible, Opacity, Layer, Blocks Movement, Notes, and layer-specific options are shown.
 - [ ] Open Edit > Properties for one selected placed asset and confirm the same Placed Asset Properties panel opens.
 - [ ] Multi-select editable placed assets, open Edit > Properties, and confirm the multi-asset Properties panel opens instead of the limited lock-only panel.
 - [ ] Multi-select editable placed assets, double-click one selected group member, and confirm the same multi-asset Properties panel opens for the full group.
+- [ ] Select one placed asset and confirm normal single-asset resize handles appear and resize still works.
+- [ ] Multi-select placed assets and confirm group resize handles do not appear.
+- [ ] Multi-select editable placed assets, open multi-asset Properties, and confirm Width/Height are not editable and the panel says group resize is not available yet.
+- [ ] Drag-highlight placed assets, Ctrl-click another placed asset, and confirm it is added to the selected group.
+- [ ] Ctrl-click a selected placed asset and confirm it is removed from the selected group while other selected assets remain highlighted.
+- [ ] Ctrl-click a visible individually locked placed asset and confirm it can be selected for Properties/unlocking while retaining the red locked outline and remaining protected from destructive edits.
 - [ ] In multi-asset Properties, change Visible, Opacity, Blocks Movement, Notes, and Layer in separate tests and confirm each changed field applies to selected editable assets while unchanged mixed fields are preserved.
 - [ ] Change Layer in multi-asset Properties and confirm every edited asset moves to the correct known `level.layers` array exactly once without losing IDs, positions, sizes, metadata, `layerOptions`, or unknown fields.
 - [ ] Double-click a placed asset and confirm the same Placed Asset Properties panel opens.
@@ -939,9 +959,10 @@ Before accepting changes to existing editor behaviour, verify:
 - [ ] Scroll the grid horizontally and vertically, then place, move, and resize an asset and confirm grid alignment remains correct.
 - [ ] Use Delete mode on any covered cell of a stretched asset and confirm the whole placed copy is removed without a confirmation prompt.
 - [ ] In Delete mode, drag over a grid area containing placed assets and confirm every intersecting placed copy is removed without a confirmation prompt.
-- [ ] Attempt to delete a palette asset still used on a level and confirm deletion is blocked.
-- [ ] Delete an unused palette asset.
-- [ ] Delete an empty category.
+- [ ] Delete a left-panel source asset that is used on levels, cancel the app-owned warning, and confirm the source asset and matching placed copies remain.
+- [ ] Delete a left-panel source asset that is used on levels, confirm the app-owned warning, and confirm only matching placed copies across all levels are removed with the source asset.
+- [ ] Delete a left-panel category containing source assets, cancel the app-owned warning, and confirm the category, source assets, and matching placed copies remain.
+- [ ] Delete a left-panel category containing source assets, confirm the app-owned warning, and confirm only that category's source assets and matching placed copies across all levels are removed.
 - [ ] Save and refresh Chrome; confirm levels, categories, assets and placements persist.
 - [ ] Use File > Save with a selected project folder.
 - [ ] Confirm `project/game-dev-kit-project.json` is saved.
