@@ -29,7 +29,7 @@ Update this current-state file whenever working behaviour changes.
 
 ## 3. Current Phase Status
 
-- Current working branch: `codex/phase-7-undo-redo`.
+- Current working branch: `codex/phase-8-play-mode-preview`.
 - The project has begun Phase 4 with a focused placed-asset properties implementation.
 - Phase 1 and Phase 2 functionality is working.
 - Phase 3 has a solid asset import, categorisation, grid selection, and placement base and is being polished.
@@ -51,7 +51,8 @@ Update this current-state file whenever working behaviour changes.
 - Phase 6G Random Brush / Asset Variants for Paint mode is implemented on the Phase 6 branch.
 - Phase 6H follow-up work is in progress on the Phase 6 branch: left-panel drag/category stability, left-panel source asset multi-select/delete, and Ctrl-click additive placed-asset selection. Multi-asset resize is deferred.
 - Phase 6 is complete and merged into `main`.
-- Phase 7A Undo/Redo is in progress on the Phase 7 branch.
+- Phase 7A Undo/Redo is complete and merged into `main`.
+- Phase 8A Play Mode Preview is in progress on the Phase 8 branch.
 
 ## 4. Current Working Features
 
@@ -156,14 +157,20 @@ The editor currently supports:
 - Phase 7A undoable actions include placed asset placement, stretched placement, Delete mode removal, selected placed asset deletion, selected-area deletion, drag painting, brush-size/random-variant painting, Fill Selected Area, Clear Selected Area, Replace Matching Assets, placed asset move/resize, group move, copied group paste, cut paste, duplicate, placed asset Properties edits, multi-asset Properties edits, multi-asset lock/unlock, Clear Level, source asset delete, bulk source asset delete, category delete, and unlocking individually locked assets through View > Unlock All Layers and Assets.
 - Actions are grouped by completed editor operation: drag paint creates one undo step on mouseup, fill/clear/replace each create one undo step after confirmation, copy/cut/duplicate placement creates one undo step after commit, and properties create one undo step when Apply succeeds.
 - UI-only state is not undoable: selected cells/areas, selected placed assets, selected source assets, active tool mode, brush size, paint variant selection/search/collapse state, layer visibility preferences, layer lock preferences, panel sizes, menu open state, modal positions, copied level clipboard, and copy/cut placement preview state.
+- Phase 8A Play Mode Preview adds a temporary `Play` button that switches the current editor level into a simple preview mode without leaving the editor.
+- Play Mode shows a temporary unsaved test player marker on the existing grid. WASD and arrow keys move the player one grid cell per key press while Play Mode is active.
+- Play Mode builds a lightweight blocking-cell lookup when it starts. Any placed asset with `blocksMovement: true` blocks every covered grid cell based on its current `x`, `y`, `width`, and `height`. Layer alone does not make an asset blocking.
+- Play Mode spawn is temporary: it prefers an obvious player/spawn marker on the `spawns` layer when present, otherwise uses the first non-blocked cell, falling back to `1.A`.
+- Starting, stopping, and moving in Play Mode are runtime/editor state only. They do not mutate placed assets, do not save temporary player position or Play Mode state into project/level JSON, and do not create undo history entries.
+- While Play Mode is active, normal editor editing interactions are disabled or ignored, including grid selection, placement, drag painting, deletion, Properties access, area tools, left-panel drag/drop, and Undo/Redo.
 
 Current limitations:
 
-- This is still an editor only; it does not run player movement, NPC logic, battles, doors, or game integration.
+- This is still primarily an editor. Phase 8A includes only a temporary Play Mode Preview with grid-cell movement and `blocksMovement` blocking; it does not implement full gameplay integration.
 - Full Phase 5 layer behaviour is not implemented yet. Solo layer, layer reordering, active placement layers, and runtime visibility are not implemented yet.
 - Later Phase 6 tools remain unimplemented: weighted random brushes, replace brushes, auto-tiling, terrain blending, replace-by-category/layer/all-levels, and `Ctrl+A`.
 - Phase 7A does not implement persistent history, cross-refresh undo stacks, undo/redo for File > Save output, undo/redo for UI-only preferences, or a visible history panel.
-- Play Mode, runtime collision, trigger execution, doors/exits, spawn runtime, NPC/enemy/item gameplay systems, chunked maps, animated character import, audio/music systems, and multilayer/parallax background tools are not implemented yet.
+- Full runtime collision/physics, trigger execution, doors/exits, saved spawn runtime, NPC/enemy/item gameplay systems, combat, inventory, chunked maps, animated character import, audio/music systems, export/build systems, and multilayer/parallax background tools are not implemented yet.
 - Left-panel source asset/category deletion can remove matching placed copies after app-owned confirmation. This applies only to source asset/category deletion from the left panel and does not change grid Delete mode, Delete/Backspace selected placed assets, Clear Selected Area, or Replace Matching Assets.
 - Left-panel source asset/category deletion scans all levels, matching the existing all-level asset-in-use scope, and removes only placed copies whose `assetId` belongs to the deleted source asset or deleted category.
 
@@ -515,7 +522,7 @@ For one imported file while a grid range is already selected, the editor may off
 - Layer is a per-instance choice with the existing layer names: `terrain`, `decorations`, `objects`, `collisions`, `spawns`, `items`, `npcs`, `enemies`, `triggers`, and `overlay`.
 - Layer-specific sections are metadata only: terrain tag, decorative-only flag, object note/type, collision type/note, spawn name/direction, item ID/quantity, NPC name/dialogue ID, enemy type/spawn chance, trigger type/targets, and overlay render/note fields.
 - Terrain, decoration, object, collision, spawn, item, NPC, enemy, trigger, and overlay options are editor data only for now. They do not implement runtime collision, spawning, pickup behaviour, NPC runtime, enemy runtime, trigger/door/exit behaviour, or runtime draw-order/player layering yet.
-- Full trigger actions, runtime collision, spawn behaviour, item pickup behaviour, NPC logic, enemy logic, Play Mode, and solo/runtime layer controls remain future work.
+- Full trigger actions, runtime collision/physics beyond the Phase 8A preview blocker lookup, saved spawn behaviour, item pickup behaviour, NPC logic, enemy logic, and solo/runtime layer controls remain future work.
 - There is no standalone Layer Panel or active placement layer yet; layer changes happen only through the selected placed asset's Properties dialog.
 - A temporary left-sidebar Layer Panel was tested during Phase 5A and worked as UI state, but the chosen direction is not to keep layers as a permanent left-sidebar panel.
 - Moving or resizing into another object's rectangle warns first with an in-app modal, then uses the existing replacement policy if confirmed.

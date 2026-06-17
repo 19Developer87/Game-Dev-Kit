@@ -84,6 +84,10 @@ export class GridEditor {
     this.layerVisibility = {};
     this.layerLocks = {};
     this.placedObjectsById = new Map();
+    this.playModeActive = false;
+    this.playModePlayerCell = null;
+    this.playModeLayer = null;
+    this.playModePlayerMarker = null;
   }
 
   setInteractionMode(mode) {
@@ -98,6 +102,39 @@ export class GridEditor {
       this.cancelPaintGesture();
       this.updatePaintPreview([]);
     }
+  }
+
+  setPlayModeActive(isActive) {
+    this.playModeActive = Boolean(isActive);
+    this.surface?.classList.toggle("is-play-mode", this.playModeActive);
+    if (!this.playModeActive) {
+      this.updatePlayModePlayer(null);
+    }
+  }
+
+  updatePlayModePlayer(cell) {
+    this.playModePlayerCell = cell ? { ...cell } : null;
+    if (!this.playModeLayer) {
+      return;
+    }
+
+    if (!this.playModePlayerCell || !this.level) {
+      this.playModePlayerMarker?.remove();
+      this.playModePlayerMarker = null;
+      return;
+    }
+
+    if (!this.playModePlayerMarker) {
+      this.playModePlayerMarker = document.createElement("div");
+      this.playModePlayerMarker.className = "play-mode-player";
+      this.playModePlayerMarker.setAttribute("aria-label", "Play Mode test player");
+      this.playModeLayer.append(this.playModePlayerMarker);
+    }
+
+    this.playModePlayerMarker.style.left = `${(this.playModePlayerCell.x - 1) * this.level.tileSize}px`;
+    this.playModePlayerMarker.style.top = `${(this.playModePlayerCell.y - 1) * this.level.tileSize}px`;
+    this.playModePlayerMarker.style.width = `${this.level.tileSize}px`;
+    this.playModePlayerMarker.style.height = `${this.level.tileSize}px`;
   }
 
   setCopyModeActive(isActive, mode = "copy") {
@@ -276,6 +313,7 @@ export class GridEditor {
       "is-cut-mode",
       this.copyModeActive && this.copyMode === "cut",
     );
+    this.surface.classList.toggle("is-play-mode", this.playModeActive);
     this.surface.style.width = `${level.gridWidth * level.tileSize}px`;
     this.surface.style.height = `${level.gridHeight * level.tileSize}px`;
 
@@ -308,8 +346,11 @@ export class GridEditor {
       this.copyPreviewBox,
       this.paintPreviewLayer,
     );
+    this.playModeLayer = document.createElement("div");
+    this.playModeLayer.className = "play-mode-layer";
+    this.playModePlayerMarker = null;
 
-    this.surface.append(cells, this.hoverBox, assetsLayer, selectionLayer);
+    this.surface.append(cells, this.hoverBox, assetsLayer, selectionLayer, this.playModeLayer);
     this.bindSurfacePointerEvents();
     this.bindSurfaceDragEvents();
     layout.append(corner, columnHeaders, rowHeaders, this.surface);
@@ -320,10 +361,15 @@ export class GridEditor {
     this.updateMultiSelections(multiSelections);
     this.updateDropPreview(dropPreview);
     this.updateCopyPreview(copyPreview);
+    this.updatePlayModePlayer(this.playModeActive ? this.playModePlayerCell : null);
   }
 
   bindSurfacePointerEvents() {
     this.surface.addEventListener("pointerdown", (event) => {
+      if (this.playModeActive) {
+        return;
+      }
+
       if (event.button !== 0) {
         return;
       }
@@ -368,6 +414,10 @@ export class GridEditor {
         this.reportHoveredCell(target);
       }
 
+      if (this.playModeActive) {
+        return;
+      }
+
       if (this.copyModeActive) {
         if (target) {
           this.scheduleCopyPreviewUpdate(target);
@@ -401,6 +451,10 @@ export class GridEditor {
     });
 
     this.surface.addEventListener("pointerup", (event) => {
+      if (this.playModeActive) {
+        return;
+      }
+
       if (this.paintGesture && event.pointerId === this.paintGesture.pointerId) {
         this.completePaintGesture();
         return;
@@ -412,6 +466,10 @@ export class GridEditor {
     });
 
     this.surface.addEventListener("mouseup", () => {
+      if (this.playModeActive) {
+        return;
+      }
+
       if (this.paintGesture) {
         this.completePaintGesture();
         return;
@@ -439,6 +497,10 @@ export class GridEditor {
 
   bindSurfaceDragEvents() {
     this.surface.addEventListener("dragover", (event) => {
+      if (this.playModeActive) {
+        return;
+      }
+
       const target = this.getCellFromClientPoint(event.clientX, event.clientY);
 
       if (!target) {
@@ -459,6 +521,11 @@ export class GridEditor {
     });
 
     this.surface.addEventListener("drop", (event) => {
+      if (this.playModeActive) {
+        event.preventDefault();
+        return;
+      }
+
       const target = this.getCellFromClientPoint(event.clientX, event.clientY);
 
       if (!target) {
@@ -787,6 +854,10 @@ export class GridEditor {
 
       if (this.interactionMode === "move") {
         marker.addEventListener("pointerdown", (event) => {
+          if (this.playModeActive) {
+            return;
+          }
+
           if (event.button !== 0 || event.target.closest(".resize-handle")) {
             return;
           }

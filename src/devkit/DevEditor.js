@@ -98,6 +98,11 @@ class DevEditor {
     this.copyPreviewOrigin = null;
     this.undoStack = [];
     this.redoStack = [];
+    this.isPlayModeActive = false;
+    this.playModePreviousTool = this.activeTool;
+    this.playModePlayerCell = null;
+    this.playModeBlockedCells = new Set();
+    this.playModeLastBlockedAt = 0;
     this.layerVisibility = this.loadLayerVisibility();
     this.layerLocks = this.loadLayerLocks();
     this.ui = createEditorLayout(root);
@@ -192,6 +197,10 @@ class DevEditor {
       this.openPaintVariantsDialog();
     });
 
+    this.ui.playModeButton.addEventListener("click", () => {
+      this.togglePlayMode();
+    });
+
     window.addEventListener("keydown", (event) => {
       if (event.key !== "Control" || this.isCtrlPressed) {
         return;
@@ -240,6 +249,14 @@ class DevEditor {
         document.querySelector("dialog[open]") ||
         this.root.querySelector("[data-menu][open], [data-role='level-picker'].is-open")
       ) {
+        return;
+      }
+
+      if (this.isPlayModeActive) {
+        if (this.handlePlayModeKeyDown(event)) {
+          return;
+        }
+        event.preventDefault();
         return;
       }
 
@@ -756,6 +773,11 @@ class DevEditor {
       return;
     }
 
+    if (this.isPlayModeActive) {
+      this.setStatus("Exit Play Mode before changing editor tools.");
+      return;
+    }
+
     this.activeTool = tool;
     this.isDragPaintMode = tool === "paint";
     if (tool !== "paint") {
@@ -776,6 +798,202 @@ class DevEditor {
     this.syncModeStatus();
     this.render();
     this.setStatus(this.getToolStatusMessage(tool));
+  }
+
+  togglePlayMode() {
+    if (this.isPlayModeActive) {
+      this.stopPlayMode();
+      return;
+    }
+
+    this.startPlayMode();
+  }
+
+  startPlayMode() {
+    if (this.isPlayModeActive) {
+      return;
+    }
+
+    const level = getCurrentLevel(this.project);
+    if (!level) {
+      this.setStatus("No level available for Play Mode.");
+      return;
+    }
+
+    this.playModePreviousTool = this.activeTool;
+    this.closeMenus();
+    this.closeLevelPicker();
+    this.cancelDragPaint();
+    this.cancelCopyPlacement();
+    this.clearSelection();
+    this.clearPlacedObjectSelection();
+    this.playModeBlockedCells = this.createPlayModeBlockedCellSet(level);
+    this.playModePlayerCell = this.findPlayModeSpawnCell(level, this.playModeBlockedCells);
+    this.isPlayModeActive = true;
+    this.gridEditor.setPlayModeActive(true);
+    this.gridEditor.updateSelection(null);
+    this.gridEditor.updateMultiSelections([]);
+    this.gridEditor.updateDropPreview(null);
+    this.gridEditor.updatePaintPreview([]);
+    this.gridEditor.updatePlayModePlayer(this.playModePlayerCell);
+    this.syncPlayModeControls();
+    this.syncHistoryControls();
+    this.syncAssetMenu();
+    this.syncAreaToolMenu();
+    this.setStatus("Play Mode started. Use WASD or arrow keys to move. Press Esc to exit Play Mode.");
+    this.render();
+  }
+
+  stopPlayMode() {
+    if (!this.isPlayModeActive) {
+      return;
+    }
+
+    this.isPlayModeActive = false;
+    this.playModePlayerCell = null;
+    this.playModeBlockedCells = new Set();
+    this.gridEditor.setPlayModeActive(false);
+    this.activeTool = ["move", "paint", "delete"].includes(this.playModePreviousTool)
+      ? this.playModePreviousTool
+      : "move";
+    this.isDragPaintMode = this.activeTool === "paint";
+    this.gridEditor.setInteractionMode(this.activeTool === "paint" ? "move" : this.activeTool);
+    this.gridEditor.setDragPaintModeActive(this.isDragPaintMode);
+    this.syncPlayModeControls();
+    this.render();
+    this.setStatus("Play Mode ended.");
+  }
+
+  handlePlayModeKeyDown(event) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      this.stopPlayMode();
+      return true;
+    }
+
+    const direction = {
+      ArrowUp: { x: 0, y: -1 },
+      ArrowDown: { x: 0, y: 1 },
+      ArrowLeft: { x: -1, y: 0 },
+      ArrowRight: { x: 1, y: 0 },
+      w: { x: 0, y: -1 },
+      s: { x: 0, y: 1 },
+      a: { x: -1, y: 0 },
+      d: { x: 1, y: 0 },
+    }[event.key.length === 1 ? event.key.toLowerCase() : event.key];
+
+    if (!direction) {
+      return false;
+    }
+
+    event.preventDefault();
+    this.movePlayModePlayer(direction);
+    return true;
+  }
+
+  movePlayModePlayer(direction) {
+    if (!this.playModePlayerCell) {
+      return;
+    }
+
+    const level = getCurrentLevel(this.project);
+    const nextCell = {
+      x: this.playModePlayerCell.x + direction.x,
+      y: this.playModePlayerCell.y + direction.y,
+    };
+
+    if (
+      nextCell.x < 1 ||
+      nextCell.y < 1 ||
+      nextCell.x > level.gridWidth ||
+      nextCell.y > level.gridHeight ||
+      this.playModeBlockedCells.has(this.createPlayModeCellKey(nextCell.x, nextCell.y))
+    ) {
+      this.reportPlayModeBlocked();
+      return;
+    }
+
+    this.playModePlayerCell = nextCell;
+    this.gridEditor.updatePlayModePlayer(nextCell);
+    this.ui.coordinateStatus.textContent = `Play: ${toGridRef(nextCell.x, nextCell.y)}`;
+  }
+
+  reportPlayModeBlocked() {
+    const now = Date.now();
+    if (now - this.playModeLastBlockedAt < 450) {
+      return;
+    }
+    this.playModeLastBlockedAt = now;
+    this.setStatus("Blocked.");
+  }
+
+  createPlayModeBlockedCellSet(level) {
+    const blockedCells = new Set();
+    getPlacedObjects(level).forEach((placedObject) => {
+      if (placedObject.blocksMovement !== true) {
+        return;
+      }
+
+      const startX = Number(placedObject.x) || 1;
+      const startY = Number(placedObject.y) || 1;
+      const width = Math.max(1, Number(placedObject.width) || 1);
+      const height = Math.max(1, Number(placedObject.height) || 1);
+      for (let y = startY; y < startY + height; y += 1) {
+        for (let x = startX; x < startX + width; x += 1) {
+          if (x >= 1 && y >= 1 && x <= level.gridWidth && y <= level.gridHeight) {
+            blockedCells.add(this.createPlayModeCellKey(x, y));
+          }
+        }
+      }
+    });
+    return blockedCells;
+  }
+
+  findPlayModeSpawnCell(level, blockedCells) {
+    const placedObjects = getPlacedObjects(level);
+    const spawnObject = placedObjects.find((placedObject) => {
+      const layer = normalizePlacedLayer(placedObject.layer);
+      const searchable = [
+        placedObject.type,
+        placedObject.name,
+        placedObject.assetId,
+        placedObject.layer,
+      ].filter(Boolean).join(" ").toLowerCase();
+      return layer === "spawns" && searchable.includes("player");
+    }) || placedObjects.find((placedObject) => {
+      const layer = normalizePlacedLayer(placedObject.layer);
+      const searchable = [
+        placedObject.type,
+        placedObject.name,
+        placedObject.assetId,
+        placedObject.layer,
+      ].filter(Boolean).join(" ").toLowerCase();
+      return layer === "spawns" || searchable.includes("spawn");
+    });
+
+    if (spawnObject) {
+      const spawnCell = {
+        x: clamp(Number(spawnObject.x) || 1, 1, level.gridWidth),
+        y: clamp(Number(spawnObject.y) || 1, 1, level.gridHeight),
+      };
+      if (!blockedCells.has(this.createPlayModeCellKey(spawnCell.x, spawnCell.y))) {
+        return spawnCell;
+      }
+    }
+
+    for (let y = 1; y <= level.gridHeight; y += 1) {
+      for (let x = 1; x <= level.gridWidth; x += 1) {
+        if (!blockedCells.has(this.createPlayModeCellKey(x, y))) {
+          return { x, y };
+        }
+      }
+    }
+
+    return { x: 1, y: 1 };
+  }
+
+  createPlayModeCellKey(x, y) {
+    return `${x},${y}`;
   }
 
   selectPlacedObject(placedObjectId) {
@@ -4611,6 +4829,12 @@ class DevEditor {
   }
 
   undo() {
+    if (this.isPlayModeActive) {
+      this.setStatus("Undo is disabled in Play Mode.");
+      this.syncHistoryControls();
+      return false;
+    }
+
     const entry = this.undoStack.pop();
     if (!entry) {
       this.setStatus("Nothing to undo.");
@@ -4627,6 +4851,12 @@ class DevEditor {
   }
 
   redo() {
+    if (this.isPlayModeActive) {
+      this.setStatus("Redo is disabled in Play Mode.");
+      this.syncHistoryControls();
+      return false;
+    }
+
     const entry = this.redoStack.pop();
     if (!entry) {
       this.setStatus("Nothing to redo.");
@@ -4644,6 +4874,26 @@ class DevEditor {
 
   syncHistoryControls() {
     if (!this.ui.undoButtons?.length || !this.ui.redoButtons?.length) {
+      return;
+    }
+
+    if (this.isPlayModeActive) {
+      this.ui.undoButtons.forEach((button) => {
+        button.disabled = true;
+        button.title = "Undo disabled in Play Mode";
+        button.setAttribute("aria-label", button.title);
+        if (!button.classList.contains("quick-history-button")) {
+          button.textContent = "Undo";
+        }
+      });
+      this.ui.redoButtons.forEach((button) => {
+        button.disabled = true;
+        button.title = "Redo disabled in Play Mode";
+        button.setAttribute("aria-label", button.title);
+        if (!button.classList.contains("quick-history-button")) {
+          button.textContent = "Redo";
+        }
+      });
       return;
     }
 
@@ -4824,6 +5074,7 @@ class DevEditor {
     this.syncAreaToolMenu();
     this.syncAssetMenu();
     this.syncHistoryControls();
+    this.syncPlayModeControls();
     this.ui.levelSummary.textContent = `${level.name} · ${level.gridWidth}x${level.gridHeight} · ${level.tileSize}px tiles`;
   }
 
@@ -4903,10 +5154,44 @@ class DevEditor {
   syncToolButtons() {
     this.root.querySelectorAll("[data-tool]").forEach((button) => {
       button.classList.toggle("is-active", button.dataset.tool === this.activeTool);
+      button.disabled = this.isPlayModeActive;
     });
     this.ui.paintOnlyControls.hidden = this.activeTool !== "paint";
     this.ui.paintBrushSize.value = String(this.paintBrushSize);
     this.syncPaintVariantsButton();
+  }
+
+  syncPlayModeControls() {
+    this.root.classList.toggle("is-play-mode-active", this.isPlayModeActive);
+    this.ui.playModeButton.classList.toggle("is-active", this.isPlayModeActive);
+    this.ui.playModeButton.textContent = this.isPlayModeActive ? "Stop" : "Play";
+    this.ui.playModeButton.title = this.isPlayModeActive
+      ? "Exit Play Mode preview"
+      : "Start Play Mode preview";
+    this.ui.playModeButton.setAttribute(
+      "aria-label",
+      this.isPlayModeActive ? "Exit Play Mode preview" : "Start Play Mode preview",
+    );
+    this.ui.playModeButton.setAttribute("aria-pressed", String(this.isPlayModeActive));
+    [
+      this.ui.levelPickerButton,
+      ...this.root.querySelectorAll(".level-controls > button, .grid-controls button, .grid-controls select, .grid-controls input"),
+      this.ui.paintBrushSize,
+      this.ui.paintVariantsButton,
+      this.ui.copySelectedAssetsButton,
+      this.ui.cutSelectedAssetsButton,
+      this.ui.duplicateSelectedAssetsButton,
+      this.ui.fillSelectedAreaButton,
+      this.ui.clearSelectedAreaButton,
+      this.ui.replaceMatchingAssetsButton,
+      this.ui.editPropertiesButton,
+      ...this.ui.layerVisibilityInputs,
+      ...this.ui.layerLockInputs,
+      ...this.root.querySelectorAll("[data-action='show-all-layers'], [data-action='unlock-all-layers'], [data-action='placed-asset-properties']"),
+    ].filter(Boolean).forEach((control) => {
+      control.disabled = this.isPlayModeActive;
+    });
+    this.syncToolButtons();
   }
 
   loadPaintBrushSize() {
@@ -5381,9 +5666,11 @@ class DevEditor {
 
   syncAssetMenu() {
     const hasEligiblePlacedSelection =
+      !this.isPlayModeActive &&
       this.activeTool === "move" &&
       this.getEligibleSelectedPlacedAssets().selectedObjects.length > 0;
     const hasPropertiesSelection =
+      !this.isPlayModeActive &&
       this.activeTool === "move" &&
       (
         Boolean(this.selectedPlacedObjectId) ||
@@ -5407,9 +5694,10 @@ class DevEditor {
   syncAreaToolMenu() {
     const selectedAreas = this.getSelectedAreaRanges();
     const hasSelectedArea = selectedAreas.length > 0;
-    this.ui.fillSelectedAreaButton.disabled = !(hasSelectedArea && this.selectedAsset);
-    this.ui.clearSelectedAreaButton.disabled = !hasSelectedArea;
+    this.ui.fillSelectedAreaButton.disabled = this.isPlayModeActive || !(hasSelectedArea && this.selectedAsset);
+    this.ui.clearSelectedAreaButton.disabled = this.isPlayModeActive || !hasSelectedArea;
     this.ui.replaceMatchingAssetsButton.disabled = !(
+      !this.isPlayModeActive &&
       hasSelectedArea &&
       this.selectedAsset &&
       this.getReplaceMatchingCandidates(selectedAreas).length > 0

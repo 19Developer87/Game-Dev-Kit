@@ -187,6 +187,12 @@ export function createEditorLayout(root) {
                   </svg>
                 </button>
               </div>
+              <button
+                type="button"
+                class="play-mode-toggle"
+                data-action="toggle-play-mode"
+                title="Start Play Mode preview"
+              >Play</button>
             </nav>
           </div>
           <div class="status-bar">
@@ -228,6 +234,7 @@ export function createEditorLayout(root) {
     paintOnlyControls: root.querySelector('[data-role="paint-only-controls"]'),
     paintBrushSize: root.querySelector('[data-role="paint-brush-size"]'),
     paintVariantsButton: root.querySelector('[data-action="paint-variants"]'),
+    playModeButton: root.querySelector('[data-action="toggle-play-mode"]'),
     levelPicker: root.querySelector('[data-role="level-picker"]'),
     levelPickerButton: root.querySelector('[data-role="level-picker-button"]'),
     levelPickerPanel: root.querySelector('[data-role="level-picker-panel"]'),
