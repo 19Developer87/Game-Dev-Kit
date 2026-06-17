@@ -169,8 +169,8 @@ export function createEditorLayout(root) {
                   title="Undo"
                   aria-label="Undo"
                 >
-                  <svg viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-                    <path d="M13.5 7 6 14.5l7.5 7.5v-5h7.8a5.7 5.7 0 0 1 5.7 5.7v1.1h-4.2v-1.1a1.5 1.5 0 0 0-1.5-1.5h-7.8v5L2 14.5 13.5 3v4Z" />
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M9.7 4.7 3.1 11.3l6.6 6.6v-4.2c4.8.2 8.1 2 11 5.7C19.5 12.9 15.9 9.7 9.7 9.1V4.7Z" />
                   </svg>
                 </button>
                 <button
@@ -180,8 +180,8 @@ export function createEditorLayout(root) {
                   title="Redo"
                   aria-label="Redo"
                 >
-                  <svg viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-                    <path d="M18.5 7 26 14.5 18.5 22v-5h-7.8A5.7 5.7 0 0 0 5 22.7v1.1h4.2v-1.1a1.5 1.5 0 0 1 1.5-1.5h7.8v5L30 14.5 18.5 3v4Z" />
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M14.3 4.7v4.4C8.1 9.7 4.5 12.9 3.3 19.4c2.9-3.7 6.2-5.5 11-5.7v4.2l6.6-6.6-6.6-6.6Z" />
                   </svg>
                 </button>
               </div>

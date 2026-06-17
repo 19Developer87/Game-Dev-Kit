@@ -66,7 +66,7 @@ The editor currently supports:
 - Level reordering by drag within the level selector.
 - File menu with Choose Project Folder, Save, and Save As.
 - Edit menu with Undo, Redo, Copy Level, Paste Level, placed-asset copy/cut/duplicate commands, area tools, and Properties.
-- Quick Undo and Redo buttons sit beside the top `File`, `Edit`, `View`, and `Asset` menus. The left curved-arrow button performs Undo and the right curved-arrow button performs Redo.
+- Quick Undo and Redo buttons sit beside the top `File`, `Edit`, `View`, and `Asset` menus. The left curved-arrow button performs Undo and the right curved-arrow button performs Redo. The toolbar buttons use custom smooth curved-arrow SVG icons.
 - Undo/Redo is session-based editor history with a bounded stack of 50 meaningful data changes. It is not stored in project JSON, level JSON, `assetRegistry.json`, browser backups, or any persistent clipboard/storage key.
 - Undo/Redo shortcuts are `Ctrl+Z` for Undo, `Ctrl+Y` and `Ctrl+Shift+Z` for Redo. The shortcuts are disabled while typing in inputs, textareas, selects, modals, search boxes, and other editable UI.
 - Quick Undo/Redo buttons use the same undo/redo methods as the Edit menu and keyboard shortcuts, and disable when their matching history stack is unavailable.
@@ -136,8 +136,8 @@ The editor currently supports:
 - Placed asset move, group move, and resize previews are requestAnimationFrame-throttled during dragging and commit level data once on release.
 - Select/Move supports multi-selecting placed assets by dragging a grid area across them.
 - Multi-selected placed assets can be moved together as a snapped group while preserving relative spacing.
-- Ctrl-clicking visible placed assets in Select/Move mode adds or removes them from the current selected placed-asset group without clearing the rest of the group. This can extend a drag-highlighted placed-asset selection, is separate from left-panel source asset multi-selection, and does not autosave because it is editor UI state only.
-- Ctrl-click selected placed assets use the same group move path as drag-box selected assets. Dragging any selected editable asset in a multi-selection moves the full selected editable group together; locked or hidden selected assets remain protected and do not move.
+- Ctrl-clicking visible placed assets in Select/Move mode adds or removes them from the current selected placed-asset group without clearing the rest of the group. Ctrl-drag box selection adds placed assets to the current placed-asset selection instead of replacing it; Ctrl-click remains the way to toggle individual placed assets off. Drag-box selection without Ctrl keeps normal replace-selection behaviour.
+- Ctrl-click and Ctrl-drag selected placed assets use the same group operation path as drag-box selected assets. Dragging any selected editable asset in a multi-selection moves the full selected editable group together; locked or hidden selected assets remain protected and do not move.
 - Placed assets render by known layer order rather than creation order: `terrain`, `decorations`, `objects`, `collisions`, `spawns`, `items`, `npcs`, `enemies`, `triggers`, then `overlay`. Higher layers appear and receive clicks above lower visible layers.
 - Every selected asset in a multi-selection uses a yellow outline; the primary selection may use a stronger yellow accent, but secondary selections do not use blue. Visible, unlocked assets intersecting Ctrl-selected grid areas receive the same yellow selected-asset outline.
 - Overwrite confirmation before a new placement removes overlapping objects only on the same target placement layer.
