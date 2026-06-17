@@ -653,7 +653,7 @@ class DevEditor {
     this.selectedRange = range;
     this.selectionState = state;
     this.dropPreviewRange = null;
-    if (hadPlacedObjectSelection) {
+    if (hadPlacedObjectSelection && !isAdditiveSelection) {
       this.clearPlacedObjectSelection();
     }
     this.syncCoordinateStatus();
@@ -692,7 +692,7 @@ class DevEditor {
     if (state === "selectionReady") {
       if (isAdditiveSelection) {
         this.addSelectedArea(range, { seedRange: previousSelectedRange });
-        this.syncPlacedObjectSelectionForSelectedAreas();
+        this.syncPlacedObjectSelectionForSelectedAreas(undefined, { additive: true });
         this.refreshPlacedAssetMarkers();
         this.setStatus(this.createMultiAreaSelectionStatus());
         return;
@@ -3994,16 +3994,37 @@ class DevEditor {
     );
   }
 
-  syncPlacedObjectSelectionForSelectedAreas(ranges = this.getSelectedAreaRanges()) {
+  syncPlacedObjectSelectionForSelectedAreas(
+    ranges = this.getSelectedAreaRanges(),
+    { additive = false } = {},
+  ) {
     const selectedObjects = this.findSelectableObjectsInSelectedAreas(ranges);
     if (selectedObjects.length === 0) {
+      if (additive) {
+        return [];
+      }
       this.selectedPlacedObjectId = null;
       this.selectedPlacedObjectIds = new Set();
       return [];
     }
 
+    if (additive) {
+      const nextIds = new Set(this.selectedPlacedObjectIds);
+      selectedObjects.forEach((placedObject) => {
+        nextIds.add(placedObject.id);
+      });
+      const previousPrimaryId = this.selectedPlacedObjectId;
+      this.selectedPlacedObjectIds = nextIds;
+      this.selectedPlacedObjectId = nextIds.has(previousPrimaryId)
+        ? previousPrimaryId
+        : selectedObjects[0].id;
+      return selectedObjects;
+    }
+
     this.selectedPlacedObjectId = selectedObjects[0].id;
-    this.selectedPlacedObjectIds = new Set(selectedObjects.map((placedObject) => placedObject.id));
+    this.selectedPlacedObjectIds = new Set(
+      selectedObjects.map((placedObject) => placedObject.id),
+    );
     return selectedObjects;
   }
 
