@@ -77,6 +77,9 @@ export class GridEditor {
     this.lastHoveredCellKey = null;
     this.pendingCopyCell = null;
     this.copyAnimationFrame = null;
+    this.pendingExternalDragCell = null;
+    this.externalDragAnimationFrame = null;
+    this.lastExternalDragCellKey = null;
     this.isCtrlPressed = false;
     this.layerVisibility = {};
     this.layerLocks = {};
@@ -227,6 +230,7 @@ export class GridEditor {
     this.placedObjectsById = new Map();
     this.cancelPendingSelectionFrame();
     this.cancelPendingCopyFrame();
+    this.cancelPendingExternalDragFrame();
     this.root.innerHTML = "";
 
     const wrap = document.createElement("div");
@@ -443,15 +447,13 @@ export class GridEditor {
 
       event.preventDefault();
       event.dataTransfer.dropEffect = "copy";
-      this.onHoverCell({
-        ...target,
-        gridRef: toGridRef(target.x, target.y),
-        isDropTarget: true,
-      });
+      this.scheduleExternalDragPreviewUpdate(target);
     });
 
     this.surface.addEventListener("dragleave", (event) => {
       if (!this.surface.contains(event.relatedTarget)) {
+        this.cancelPendingExternalDragFrame();
+        this.lastExternalDragCellKey = null;
         this.updateDropPreview(null);
       }
     });
@@ -467,6 +469,8 @@ export class GridEditor {
       const assetId =
         event.dataTransfer.getData("application/x-game-dev-kit-asset") ||
         event.dataTransfer.getData("text/plain");
+      this.cancelPendingExternalDragFrame();
+      this.lastExternalDragCellKey = null;
       this.updateDropPreview(null);
       this.onAssetDrop({ assetId, ...target });
     });
@@ -682,6 +686,14 @@ export class GridEditor {
     this.pendingCopyCell = null;
   }
 
+  cancelPendingExternalDragFrame() {
+    if (this.externalDragAnimationFrame !== null) {
+      window.cancelAnimationFrame(this.externalDragAnimationFrame);
+      this.externalDragAnimationFrame = null;
+    }
+    this.pendingExternalDragCell = null;
+  }
+
   scheduleCopyPreviewUpdate(target) {
     this.pendingCopyCell = target;
 
@@ -794,6 +806,7 @@ export class GridEditor {
             this.onPlacedObjectToggleSelection?.(placedObject.id);
             return;
           }
+          const isCurrentlySelected = this.selectedPlacedObjectIds.has(placedObject.id);
           const now = event.timeStamp;
           const isDoubleClick =
             this.lastPlacedObjectPointerDown?.id === placedObject.id &&
@@ -805,7 +818,7 @@ export class GridEditor {
             return;
           }
           if (placedObject.editorLocked === true) {
-            if (!isSelected) {
+            if (!isCurrentlySelected) {
               this.selectedPlacedObjectIds = new Set([placedObject.id]);
               this.onPlacedObjectSelect?.(placedObject.id);
             }
@@ -824,12 +837,12 @@ export class GridEditor {
             return;
           }
 
-          if (isSelected && this.selectedPlacedObjectIds.size > 1) {
+          if (isCurrentlySelected && this.selectedPlacedObjectIds.size > 1) {
             this.startPlacedObjectGroupTransform(event, placedObject);
             return;
           }
 
-          if (!isSelected) {
+          if (!isCurrentlySelected) {
             this.selectedPlacedObjectIds = new Set([placedObject.id]);
           }
 
@@ -888,6 +901,34 @@ export class GridEditor {
         this.startPlacedObjectTransform(event, marker, placedObject, "resize", direction);
       });
       marker.append(handle);
+    });
+  }
+
+  scheduleExternalDragPreviewUpdate(target) {
+    const key = `${target.x}:${target.y}`;
+    if (key === this.lastExternalDragCellKey) {
+      return;
+    }
+
+    this.lastExternalDragCellKey = key;
+    this.pendingExternalDragCell = target;
+
+    if (this.externalDragAnimationFrame !== null) {
+      return;
+    }
+
+    this.externalDragAnimationFrame = window.requestAnimationFrame(() => {
+      this.externalDragAnimationFrame = null;
+      const pending = this.pendingExternalDragCell;
+      this.pendingExternalDragCell = null;
+      if (!pending) {
+        return;
+      }
+      this.onHoverCell({
+        ...pending,
+        gridRef: toGridRef(pending.x, pending.y),
+        isDropTarget: true,
+      });
     });
   }
 

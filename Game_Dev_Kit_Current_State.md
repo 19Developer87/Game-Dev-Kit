@@ -121,6 +121,7 @@ The editor currently supports:
 - Left asset/category panel resizing is requestAnimationFrame-throttled while dragging and writes the final width preference only after pointer release.
 - A minimisable left asset/category panel; when collapsed, only a restore button remains, the grid uses the freed space, and restoring returns the previous expanded width.
 - Drag/drop of imported assets from a category onto the grid.
+- Source asset drag/drop from the left panel uses a lightweight grid hover/drop preview that updates only when the hovered grid cell changes and is throttled through `requestAnimationFrame`; full placement validation still happens on drop.
 - Multi-cell placement as one stretched/fitted asset object, not one repeated asset per cell.
 - Delete mode that immediately removes a placed copy by clicking any covered grid cell, including a stretched object.
 - Delete mode supports click-and-drag area deletion for placed grid assets.
@@ -129,6 +130,7 @@ The editor currently supports:
 - Select/Move supports multi-selecting placed assets by dragging a grid area across them.
 - Multi-selected placed assets can be moved together as a snapped group while preserving relative spacing.
 - Ctrl-clicking visible placed assets in Select/Move mode adds or removes them from the current selected placed-asset group without clearing the rest of the group. This can extend a drag-highlighted placed-asset selection, is separate from left-panel source asset multi-selection, and does not autosave because it is editor UI state only.
+- Ctrl-click selected placed assets use the same group move path as drag-box selected assets. Dragging any selected editable asset in a multi-selection moves the full selected editable group together; locked or hidden selected assets remain protected and do not move.
 - Placed assets render by known layer order rather than creation order: `terrain`, `decorations`, `objects`, `collisions`, `spawns`, `items`, `npcs`, `enemies`, `triggers`, then `overlay`. Higher layers appear and receive clicks above lower visible layers.
 - Every selected asset in a multi-selection uses a yellow outline; the primary selection may use a stronger yellow accent, but secondary selections do not use blue. Visible, unlocked assets intersecting Ctrl-selected grid areas receive the same yellow selected-asset outline.
 - Overwrite confirmation before a new placement removes overlapping objects only on the same target placement layer.
@@ -888,6 +890,7 @@ Before accepting changes to existing editor behaviour, verify:
 - [ ] Multi-select placed assets and confirm group resize handles do not appear.
 - [ ] Multi-select editable placed assets, open multi-asset Properties, and confirm Width/Height are not editable and the panel says group resize is not available yet.
 - [ ] Drag-highlight placed assets, Ctrl-click another placed asset, and confirm it is added to the selected group.
+- [ ] Ctrl-click multiple placed assets, then drag any selected editable asset and confirm the full selected editable group moves together through the same group move path as drag-box selection.
 - [ ] Ctrl-click a selected placed asset and confirm it is removed from the selected group while other selected assets remain highlighted.
 - [ ] Ctrl-click a visible individually locked placed asset and confirm it can be selected for Properties/unlocking while retaining the red locked outline and remaining protected from destructive edits.
 - [ ] In multi-asset Properties, change Visible, Opacity, Blocks Movement, Notes, and Layer in separate tests and confirm each changed field applies to selected editable assets while unchanged mixed fields are preserved.
