@@ -1,5 +1,18 @@
 import { findObjectsAtCell, getPlacedObjects, numberToLetters, toGridRef } from "./LevelManager.js";
 
+const PLACED_ASSET_LAYER_ORDER = {
+  terrain: 0,
+  decorations: 10,
+  objects: 20,
+  collisions: 30,
+  spawns: 40,
+  items: 50,
+  npcs: 60,
+  enemies: 70,
+  triggers: 80,
+  overlay: 90,
+};
+
 export class GridEditor {
   constructor({
     root,
@@ -9,10 +22,15 @@ export class GridEditor {
     onAssetDrop,
     onAssetRenderError,
     onPlacedObjectSelect,
+    onPlacedObjectToggleSelection,
     onPlacedObjectProperties,
     onPlacedObjectTransform,
     onPlacedObjectGroupMoveStart,
     onCopyPreviewMove,
+    onDragPaintStart,
+    onDragPaintCell,
+    onDragPaintEnd,
+    onDragPaintCancel,
     onLockedLayerInteraction,
     onLockedAssetInteraction,
   }) {
@@ -23,21 +41,31 @@ export class GridEditor {
     this.onAssetDrop = onAssetDrop;
     this.onAssetRenderError = onAssetRenderError;
     this.onPlacedObjectSelect = onPlacedObjectSelect;
+    this.onPlacedObjectToggleSelection = onPlacedObjectToggleSelection;
     this.onPlacedObjectProperties = onPlacedObjectProperties;
     this.onPlacedObjectTransform = onPlacedObjectTransform;
     this.onPlacedObjectGroupMoveStart = onPlacedObjectGroupMoveStart;
     this.onCopyPreviewMove = onCopyPreviewMove;
+    this.onDragPaintStart = onDragPaintStart;
+    this.onDragPaintCell = onDragPaintCell;
+    this.onDragPaintEnd = onDragPaintEnd;
+    this.onDragPaintCancel = onDragPaintCancel;
     this.onLockedLayerInteraction = onLockedLayerInteraction;
     this.onLockedAssetInteraction = onLockedAssetInteraction;
     this.interactionMode = "move";
+    this.dragPaintModeActive = false;
+    this.paintGesture = null;
     this.copyModeActive = false;
+    this.copyMode = "copy";
     this.gesture = null;
     this.level = null;
     this.surface = null;
     this.hoverBox = null;
+    this.multiSelectionLayer = null;
     this.selectionBox = null;
     this.dropPreviewBox = null;
     this.copyPreviewBox = null;
+    this.paintPreviewLayer = null;
     this.selectedPlacedObjectId = null;
     this.selectedPlacedObjectIds = new Set();
     this.lastPlacedObjectPointerDown = null;
@@ -49,6 +77,10 @@ export class GridEditor {
     this.lastHoveredCellKey = null;
     this.pendingCopyCell = null;
     this.copyAnimationFrame = null;
+    this.pendingExternalDragCell = null;
+    this.externalDragAnimationFrame = null;
+    this.lastExternalDragCellKey = null;
+    this.isCtrlPressed = false;
     this.layerVisibility = {};
     this.layerLocks = {};
     this.placedObjectsById = new Map();
@@ -56,11 +88,23 @@ export class GridEditor {
 
   setInteractionMode(mode) {
     this.interactionMode = mode;
+    this.surface?.classList.toggle("is-move-mode", this.interactionMode === "move");
   }
 
-  setCopyModeActive(isActive) {
+  setDragPaintModeActive(isActive) {
+    this.dragPaintModeActive = Boolean(isActive);
+    this.surface?.classList.toggle("is-drag-paint-mode", this.dragPaintModeActive);
+    if (!this.dragPaintModeActive) {
+      this.cancelPaintGesture();
+      this.updatePaintPreview([]);
+    }
+  }
+
+  setCopyModeActive(isActive, mode = "copy") {
     this.copyModeActive = Boolean(isActive);
+    this.copyMode = mode;
     this.surface?.classList.toggle("is-copy-mode", this.copyModeActive);
+    this.surface?.classList.toggle("is-cut-mode", this.copyModeActive && mode === "cut");
   }
 
   requestPlacedObjectProperties(placedObjectId) {
@@ -117,6 +161,27 @@ export class GridEditor {
     );
   }
 
+  setCtrlPressed(isPressed) {
+    this.isCtrlPressed = Boolean(isPressed);
+    this.surface?.classList.toggle("is-multi-select-mode", this.isCtrlPressed);
+  }
+
+  refreshPlacedObjects(level, assets, selectedPlacedObjectId, selectedPlacedObjectIds = []) {
+    const currentLayer = this.surface?.querySelector(".asset-overlay-layer");
+    if (!currentLayer) {
+      return;
+    }
+
+    this.level = level;
+    this.selectedPlacedObjectId = selectedPlacedObjectId;
+    this.selectedPlacedObjectIds = new Set(selectedPlacedObjectIds);
+    this.placedObjectsById.clear();
+    const nextLayer = document.createElement("div");
+    nextLayer.className = "asset-overlay-layer";
+    this.renderPlacedObjects(nextLayer, level, assets, selectedPlacedObjectId);
+    currentLayer.replaceWith(nextLayer);
+  }
+
   syncPlacedObjectSelection(selectedPlacedObjectId, selectedPlacedObjectIds = []) {
     this.selectedPlacedObjectId = selectedPlacedObjectId;
     this.selectedPlacedObjectIds = new Set(selectedPlacedObjectIds);
@@ -130,8 +195,7 @@ export class GridEditor {
         this.interactionMode === "move" &&
         this.selectedPlacedObjectIds.has(placedObjectId) &&
         this.isLayerVisible(marker.dataset.layer) &&
-        !this.isLayerLocked(marker.dataset.layer) &&
-        this.placedObjectsById.get(placedObjectId)?.editorLocked !== true;
+        !this.isLayerLocked(marker.dataset.layer);
       if (!isSelected) {
         return;
       }
@@ -143,7 +207,7 @@ export class GridEditor {
       );
       if (this.selectedPlacedObjectIds.size <= 1) {
         const placedObject = this.placedObjectsById.get(placedObjectId);
-        if (placedObject) {
+        if (placedObject && placedObject.editorLocked !== true) {
           this.appendResizeHandles(marker, placedObject);
         }
       }
@@ -158,6 +222,7 @@ export class GridEditor {
     selectedPlacedObjectId = null,
     selectedPlacedObjectIds = [],
     copyPreview = null,
+    multiSelections = [],
   ) {
     this.level = level;
     this.selectedPlacedObjectId = selectedPlacedObjectId;
@@ -165,6 +230,7 @@ export class GridEditor {
     this.placedObjectsById = new Map();
     this.cancelPendingSelectionFrame();
     this.cancelPendingCopyFrame();
+    this.cancelPendingExternalDragFrame();
     this.root.innerHTML = "";
 
     const wrap = document.createElement("div");
@@ -201,8 +267,15 @@ export class GridEditor {
 
     this.surface = document.createElement("div");
     this.surface.className = "grid-surface";
+    this.surface.tabIndex = 0;
     this.surface.classList.toggle("is-move-mode", this.interactionMode === "move");
+    this.surface.classList.toggle("is-drag-paint-mode", this.dragPaintModeActive);
+    this.surface.classList.toggle("is-multi-select-mode", this.isCtrlPressed);
     this.surface.classList.toggle("is-copy-mode", this.copyModeActive);
+    this.surface.classList.toggle(
+      "is-cut-mode",
+      this.copyModeActive && this.copyMode === "cut",
+    );
     this.surface.style.width = `${level.gridWidth * level.tileSize}px`;
     this.surface.style.height = `${level.gridHeight * level.tileSize}px`;
 
@@ -218,13 +291,23 @@ export class GridEditor {
     selectionLayer.className = "selection-overlay-layer";
     this.hoverBox = document.createElement("div");
     this.hoverBox.className = "hover-box";
+    this.multiSelectionLayer = document.createElement("div");
+    this.multiSelectionLayer.className = "multi-selection-layer";
     this.selectionBox = document.createElement("div");
     this.selectionBox.className = "selection-box";
     this.dropPreviewBox = document.createElement("div");
     this.dropPreviewBox.className = "drop-preview-box";
     this.copyPreviewBox = document.createElement("div");
     this.copyPreviewBox.className = "copy-preview-box";
-    selectionLayer.append(this.selectionBox, this.dropPreviewBox, this.copyPreviewBox);
+    this.paintPreviewLayer = document.createElement("div");
+    this.paintPreviewLayer.className = "paint-preview-layer";
+    selectionLayer.append(
+      this.multiSelectionLayer,
+      this.selectionBox,
+      this.dropPreviewBox,
+      this.copyPreviewBox,
+      this.paintPreviewLayer,
+    );
 
     this.surface.append(cells, this.hoverBox, assetsLayer, selectionLayer);
     this.bindSurfacePointerEvents();
@@ -234,6 +317,7 @@ export class GridEditor {
     this.root.append(wrap);
 
     this.updateSelection(selection);
+    this.updateMultiSelections(multiSelections);
     this.updateDropPreview(dropPreview);
     this.updateCopyPreview(copyPreview);
   }
@@ -250,6 +334,19 @@ export class GridEditor {
       }
 
       event.preventDefault();
+
+      if (this.dragPaintModeActive && this.interactionMode === "move" && !this.copyModeActive) {
+        this.cancelPendingSelectionFrame();
+        this.gesture = null;
+        this.paintGesture = {
+          pointerId: event.pointerId,
+          current: target,
+        };
+        this.surface.setPointerCapture(event.pointerId);
+        this.onDragPaintStart?.(target);
+        return;
+      }
+
       if (this.gesture?.moved) {
         this.completeGesture();
       }
@@ -259,6 +356,7 @@ export class GridEditor {
         start: target,
         current: target,
         moved: false,
+        additive: (event.ctrlKey || this.isCtrlPressed) && this.interactionMode === "move",
       };
       this.lastLiveSelectionRange = null;
       this.surface.setPointerCapture(event.pointerId);
@@ -277,6 +375,10 @@ export class GridEditor {
       }
 
       if (!this.gesture || event.pointerId !== this.gesture.pointerId) {
+        if (this.paintGesture && event.pointerId === this.paintGesture.pointerId && target) {
+          this.paintGesture.current = target;
+          this.onDragPaintCell?.(target);
+        }
         return;
       }
 
@@ -299,18 +401,29 @@ export class GridEditor {
     });
 
     this.surface.addEventListener("pointerup", (event) => {
+      if (this.paintGesture && event.pointerId === this.paintGesture.pointerId) {
+        this.completePaintGesture();
+        return;
+      }
+
       if (this.gesture && event.pointerId === this.gesture.pointerId) {
         this.completeGesture();
       }
     });
 
     this.surface.addEventListener("mouseup", () => {
+      if (this.paintGesture) {
+        this.completePaintGesture();
+        return;
+      }
+
       if (this.gesture) {
         this.completeGesture();
       }
     });
 
     this.surface.addEventListener("pointercancel", () => {
+      this.cancelPaintGesture();
       this.cancelPendingSelectionFrame();
       this.gesture = null;
     });
@@ -318,6 +431,9 @@ export class GridEditor {
     this.surface.addEventListener("pointerleave", () => {
       this.lastHoveredCellKey = null;
       this.positionFeedbackBox(this.hoverBox, null);
+      if (!this.paintGesture) {
+        this.updatePaintPreview([]);
+      }
     });
   }
 
@@ -331,15 +447,13 @@ export class GridEditor {
 
       event.preventDefault();
       event.dataTransfer.dropEffect = "copy";
-      this.onHoverCell({
-        ...target,
-        gridRef: toGridRef(target.x, target.y),
-        isDropTarget: true,
-      });
+      this.scheduleExternalDragPreviewUpdate(target);
     });
 
     this.surface.addEventListener("dragleave", (event) => {
       if (!this.surface.contains(event.relatedTarget)) {
+        this.cancelPendingExternalDragFrame();
+        this.lastExternalDragCellKey = null;
         this.updateDropPreview(null);
       }
     });
@@ -355,6 +469,8 @@ export class GridEditor {
       const assetId =
         event.dataTransfer.getData("application/x-game-dev-kit-asset") ||
         event.dataTransfer.getData("text/plain");
+      this.cancelPendingExternalDragFrame();
+      this.lastExternalDragCellKey = null;
       this.updateDropPreview(null);
       this.onAssetDrop({ assetId, ...target });
     });
@@ -396,13 +512,14 @@ export class GridEditor {
         gesture.current.y,
       );
       this.updateSelection(range);
-      this.onSelectionChange(range, "selectionReady");
+      this.onSelectionChange(range, "selectionReady", { additive: gesture.additive });
       return;
     }
 
     this.onCellClick({
       ...gesture.start,
       existing: findObjectsAtCell(this.level, gesture.start.x, gesture.start.y),
+      additive: gesture.additive,
     });
   }
 
@@ -411,9 +528,47 @@ export class GridEditor {
     this.lastLiveSelectionRange = selection ? { ...selection } : null;
   }
 
+  updateMultiSelections(selections = []) {
+    if (!this.multiSelectionLayer) {
+      return;
+    }
+
+    this.multiSelectionLayer.replaceChildren();
+    selections.forEach((selection) => {
+      const box = document.createElement("div");
+      box.className = "selection-box multi-selection-box";
+      this.positionFeedbackBox(box, selection);
+      this.multiSelectionLayer.append(box);
+    });
+  }
+
   cancelGesture() {
     this.cancelPendingSelectionFrame();
     this.gesture = null;
+    this.cancelPaintGesture();
+  }
+
+  completePaintGesture() {
+    const paintGesture = this.paintGesture;
+    this.paintGesture = null;
+    if (!paintGesture) {
+      return;
+    }
+
+    if (this.surface.hasPointerCapture?.(paintGesture.pointerId)) {
+      this.surface.releasePointerCapture(paintGesture.pointerId);
+    }
+
+    this.onDragPaintEnd?.();
+  }
+
+  cancelPaintGesture() {
+    const paintGesture = this.paintGesture;
+    this.paintGesture = null;
+    if (paintGesture && this.surface?.hasPointerCapture?.(paintGesture.pointerId)) {
+      this.surface.releasePointerCapture(paintGesture.pointerId);
+    }
+    this.onDragPaintCancel?.();
   }
 
   updateDropPreview(range) {
@@ -427,25 +582,56 @@ export class GridEditor {
 
     if (!preview) {
       this.copyPreviewBox.hidden = true;
+      this.copyPreviewBox.classList.remove("is-cut-preview");
       return;
     }
 
-    const assetKey = preview.asset?.id || "missing";
-    if (this.copyPreviewBox.dataset.assetKey !== assetKey) {
+    this.copyPreviewBox.classList.toggle("is-cut-preview", preview.mode === "cut");
+    if (this.copyPreviewBox.dataset.previewKey !== preview.key) {
       this.copyPreviewBox.replaceChildren();
-      if (preview.asset?.src) {
-        const image = document.createElement("img");
-        image.src = preview.asset.src;
-        image.alt = "";
-        image.draggable = false;
-        this.copyPreviewBox.append(image);
-      } else {
-        this.copyPreviewBox.textContent = "?";
-      }
-      this.copyPreviewBox.dataset.assetKey = assetKey;
+      preview.items.forEach((item) => {
+        const previewItem = document.createElement("div");
+        previewItem.className = "copy-preview-item";
+        previewItem.style.left = `${(item.range.x - preview.range.x) * this.level.tileSize}px`;
+        previewItem.style.top = `${(item.range.y - preview.range.y) * this.level.tileSize}px`;
+        previewItem.style.width = `${item.range.width * this.level.tileSize}px`;
+        previewItem.style.height = `${item.range.height * this.level.tileSize}px`;
+        if (item.asset?.src) {
+          const image = document.createElement("img");
+          image.src = item.asset.src;
+          image.alt = "";
+          image.draggable = false;
+          image.style.opacity = item.placedObject.visible === false
+            ? "0.18"
+            : String(normalizeOpacity(item.placedObject.opacity) / 100);
+          previewItem.append(image);
+        } else {
+          previewItem.textContent = "?";
+        }
+        this.copyPreviewBox.append(previewItem);
+      });
+      this.copyPreviewBox.dataset.previewKey = preview.key;
     }
 
     this.positionFeedbackBox(this.copyPreviewBox, preview.range);
+  }
+
+  updateCopyPreviewPosition(range) {
+    this.positionFeedbackBox(this.copyPreviewBox, range);
+  }
+
+  updatePaintPreview(cells = []) {
+    if (!this.paintPreviewLayer) {
+      return;
+    }
+
+    this.paintPreviewLayer.replaceChildren();
+    cells.forEach((cell) => {
+      const box = document.createElement("div");
+      box.className = "paint-preview-cell";
+      this.positionFeedbackBox(box, { x: cell.x, y: cell.y, width: 1, height: 1 });
+      this.paintPreviewLayer.append(box);
+    });
   }
 
   scheduleSelectionUpdate(current) {
@@ -481,7 +667,7 @@ export class GridEditor {
     }
 
     this.updateSelection(range);
-    this.onSelectionChange(range, "draggingSelection");
+    this.onSelectionChange(range, "draggingSelection", { additive: this.gesture.additive });
   }
 
   cancelPendingSelectionFrame() {
@@ -498,6 +684,14 @@ export class GridEditor {
       this.copyAnimationFrame = null;
     }
     this.pendingCopyCell = null;
+  }
+
+  cancelPendingExternalDragFrame() {
+    if (this.externalDragAnimationFrame !== null) {
+      window.cancelAnimationFrame(this.externalDragAnimationFrame);
+      this.externalDragAnimationFrame = null;
+    }
+    this.pendingExternalDragCell = null;
   }
 
   scheduleCopyPreviewUpdate(target) {
@@ -536,8 +730,9 @@ export class GridEditor {
 
   renderPlacedObjects(layer, level, assets, selectedPlacedObjectId) {
     const assetLookup = new Map(assets.map((asset) => [asset.id, asset]));
+    const placedObjects = getPlacedObjects(level).sort(comparePlacedAssetRenderOrder);
 
-    getPlacedObjects(level).forEach((placedObject) => {
+    placedObjects.forEach((placedObject) => {
       this.placedObjectsById.set(placedObject.id, placedObject);
       const asset = assetLookup.get(placedObject.assetId);
       const marker = document.createElement("div");
@@ -554,7 +749,6 @@ export class GridEditor {
         this.interactionMode === "move" &&
         this.isLayerVisible(placedObject.layer) &&
         !this.isLayerLocked(placedObject.layer) &&
-        placedObject.editorLocked !== true &&
         (placedObject.id === selectedPlacedObjectId || this.selectedPlacedObjectIds.has(placedObject.id));
       const isPrimarySelected = isSelected && placedObject.id === selectedPlacedObjectId;
       const isVisible = placedObject.visible !== false;
@@ -597,12 +791,22 @@ export class GridEditor {
             return;
           }
 
+          if (this.dragPaintModeActive && !this.copyModeActive) {
+            return;
+          }
+
           event.preventDefault();
           event.stopPropagation();
           if (this.isLayerLocked(placedObject.layer)) {
             this.onLockedLayerInteraction?.(normalizePlacedLayer(placedObject.layer));
             return;
           }
+          if ((event.ctrlKey || this.isCtrlPressed) && !this.copyModeActive) {
+            this.cancelLockedAssetInteractionStatus();
+            this.onPlacedObjectToggleSelection?.(placedObject.id);
+            return;
+          }
+          const isCurrentlySelected = this.selectedPlacedObjectIds.has(placedObject.id);
           const now = event.timeStamp;
           const isDoubleClick =
             this.lastPlacedObjectPointerDown?.id === placedObject.id &&
@@ -614,6 +818,10 @@ export class GridEditor {
             return;
           }
           if (placedObject.editorLocked === true) {
+            if (!isCurrentlySelected) {
+              this.selectedPlacedObjectIds = new Set([placedObject.id]);
+              this.onPlacedObjectSelect?.(placedObject.id);
+            }
             this.scheduleLockedAssetInteraction(placedObject);
             return;
           }
@@ -629,12 +837,12 @@ export class GridEditor {
             return;
           }
 
-          if (isSelected && this.selectedPlacedObjectIds.size > 1) {
+          if (isCurrentlySelected && this.selectedPlacedObjectIds.size > 1) {
             this.startPlacedObjectGroupTransform(event, placedObject);
             return;
           }
 
-          if (!isSelected) {
+          if (!isCurrentlySelected) {
             this.selectedPlacedObjectIds = new Set([placedObject.id]);
           }
 
@@ -657,7 +865,7 @@ export class GridEditor {
         });
       }
 
-      if (isSelected && this.selectedPlacedObjectIds.size <= 1) {
+      if (isSelected && this.selectedPlacedObjectIds.size <= 1 && placedObject.editorLocked !== true) {
         this.appendResizeHandles(marker, placedObject);
       }
 
@@ -684,11 +892,43 @@ export class GridEditor {
           return;
         }
 
+        if (this.dragPaintModeActive && !this.copyModeActive) {
+          return;
+        }
+
         event.preventDefault();
         event.stopPropagation();
         this.startPlacedObjectTransform(event, marker, placedObject, "resize", direction);
       });
       marker.append(handle);
+    });
+  }
+
+  scheduleExternalDragPreviewUpdate(target) {
+    const key = `${target.x}:${target.y}`;
+    if (key === this.lastExternalDragCellKey) {
+      return;
+    }
+
+    this.lastExternalDragCellKey = key;
+    this.pendingExternalDragCell = target;
+
+    if (this.externalDragAnimationFrame !== null) {
+      return;
+    }
+
+    this.externalDragAnimationFrame = window.requestAnimationFrame(() => {
+      this.externalDragAnimationFrame = null;
+      const pending = this.pendingExternalDragCell;
+      this.pendingExternalDragCell = null;
+      if (!pending) {
+        return;
+      }
+      this.onHoverCell({
+        ...pending,
+        gridRef: toGridRef(pending.x, pending.y),
+        isDropTarget: true,
+      });
     });
   }
 
@@ -1045,15 +1285,33 @@ function normalizeOpacity(opacity) {
 }
 
 function getPlacedAssetLayerOrder(layer) {
-  return {
-    terrain: 0,
-    objects: 10,
-    overlay: 20,
-    triggers: 30,
-    Trigger: 30,
-  }[layer] ?? 10;
+  return PLACED_ASSET_LAYER_ORDER[normalizePlacedLayer(layer)] ?? PLACED_ASSET_LAYER_ORDER.objects;
+}
+
+function comparePlacedAssetRenderOrder(first, second) {
+  const layerOrder = getPlacedAssetLayerOrder(first.layer) - getPlacedAssetLayerOrder(second.layer);
+  if (layerOrder !== 0) {
+    return layerOrder;
+  }
+
+  const yOrder = (Number(first.y) || 1) - (Number(second.y) || 1);
+  if (yOrder !== 0) {
+    return yOrder;
+  }
+
+  const xOrder = (Number(first.x) || 1) - (Number(second.x) || 1);
+  if (xOrder !== 0) {
+    return xOrder;
+  }
+
+  return String(first.id || "").localeCompare(String(second.id || ""));
 }
 
 function normalizePlacedLayer(layer) {
-  return layer === "Trigger" ? "triggers" : layer || "objects";
+  if (layer === "Trigger") {
+    return "triggers";
+  }
+  return Object.prototype.hasOwnProperty.call(PLACED_ASSET_LAYER_ORDER, layer)
+    ? layer
+    : "objects";
 }

@@ -49,8 +49,18 @@ export function createEditorLayout(root) {
           </div>
           <div class="toolbar-group">
             <button type="button" data-tool="move" class="is-active" title="Select/Move (Q)">Select/Move</button>
+            <button type="button" data-tool="paint" title="Paint (W)">Paint</button>
             <button type="button" data-tool="delete" title="Delete (E)">Delete</button>
-            <button type="button" data-action="place-selected-asset">Place Selected Asset</button>
+            <label class="brush-size-control">
+              <span>Brush Size</span>
+              <select data-role="paint-brush-size" aria-label="Paint brush size">
+                <option value="1">1x1</option>
+                <option value="2">2x2</option>
+                <option value="3">3x3</option>
+                <option value="5">5x5</option>
+              </select>
+            </label>
+            <button type="button" data-action="paint-variants" title="Choose random paint variants">Variants: Off</button>
           </div>
         </div>
       </header>
@@ -92,6 +102,15 @@ export function createEditorLayout(root) {
                 <div class="menu-panel">
                   <button type="button" data-action="copy-level">Copy Level</button>
                   <button type="button" data-action="paste-level">Paste Level</button>
+                  <div class="menu-panel-divider"></div>
+                  <button type="button" data-action="copy-selected-assets" title="Ctrl+C">Copy Selected Assets</button>
+                  <button type="button" data-action="cut-selected-assets" title="Ctrl+X">Cut Selected Assets</button>
+                  <button type="button" data-action="duplicate-selected-assets" title="Ctrl+D">Duplicate Selected Assets</button>
+                  <div class="menu-panel-divider"></div>
+                  <button type="button" data-action="fill-selected-area">Fill Selected Area</button>
+                  <button type="button" data-action="clear-selected-area">Clear Selected Area</button>
+                  <button type="button" data-action="replace-matching-assets">Replace Matching Assets</button>
+                  <div class="menu-panel-divider"></div>
                   <button type="button" data-action="edit-placed-asset-properties">Properties</button>
                 </div>
               </details>
@@ -143,6 +162,7 @@ export function createEditorLayout(root) {
           </div>
           <div class="status-bar">
             <div class="status-message" data-role="status-message"></div>
+            <div class="mode-status" data-role="mode-status" hidden></div>
             <div class="coordinate-status" data-role="coordinate-status">Hover: - · Selected: -</div>
             <div class="level-summary" data-role="level-summary"></div>
           </div>
@@ -159,7 +179,13 @@ export function createEditorLayout(root) {
     customSize: root.querySelector('[data-role="custom-size"]'),
     customWidth: root.querySelector('[data-role="custom-width"]'),
     coordinateStatus: root.querySelector('[data-role="coordinate-status"]'),
+    copySelectedAssetsButton: root.querySelector('[data-action="copy-selected-assets"]'),
+    cutSelectedAssetsButton: root.querySelector('[data-action="cut-selected-assets"]'),
+    duplicateSelectedAssetsButton: root.querySelector('[data-action="duplicate-selected-assets"]'),
     editPropertiesButton: root.querySelector('[data-action="edit-placed-asset-properties"]'),
+    fillSelectedAreaButton: root.querySelector('[data-action="fill-selected-area"]'),
+    clearSelectedAreaButton: root.querySelector('[data-action="clear-selected-area"]'),
+    replaceMatchingAssetsButton: root.querySelector('[data-action="replace-matching-assets"]'),
     gridSize: root.querySelector('[data-role="grid-size"]'),
     gridStage: root.querySelector('[data-role="grid-stage"]'),
     layerVisibilityInputs: Array.from(
@@ -168,11 +194,13 @@ export function createEditorLayout(root) {
     layerLockInputs: Array.from(
       root.querySelectorAll('[data-role="layer-lock-toggle"]'),
     ),
+    paintBrushSize: root.querySelector('[data-role="paint-brush-size"]'),
+    paintVariantsButton: root.querySelector('[data-action="paint-variants"]'),
     levelPicker: root.querySelector('[data-role="level-picker"]'),
     levelPickerButton: root.querySelector('[data-role="level-picker-button"]'),
     levelPickerPanel: root.querySelector('[data-role="level-picker-panel"]'),
     levelSummary: root.querySelector('[data-role="level-summary"]'),
-    placeSelectedAssetButton: root.querySelector('[data-action="place-selected-asset"]'),
+    modeStatus: root.querySelector('[data-role="mode-status"]'),
     selectedLevelName: root.querySelector('[data-role="selected-level-name"]'),
     sidebar: root.querySelector('[data-role="sidebar"]'),
     sidebarResizer: root.querySelector('[data-role="sidebar-resizer"]'),

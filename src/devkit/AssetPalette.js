@@ -9,6 +9,7 @@ export class AssetPalette {
     onCleanCategories,
     onDeleteCategory,
     onDeleteAsset,
+    onDeleteSelectedAssets,
   }) {
     this.root = root;
     this.assetRegistry = assetRegistry;
@@ -19,11 +20,22 @@ export class AssetPalette {
     this.onCleanCategories = onCleanCategories;
     this.onDeleteCategory = onDeleteCategory;
     this.onDeleteAsset = onDeleteAsset;
+    this.onDeleteSelectedAssets = onDeleteSelectedAssets;
     this.searchTerm = "";
+    this.selectedAssetIds = new Set(selectedAssetId ? [selectedAssetId] : []);
+    this.categoryOpenState = new Map();
   }
 
   render() {
     this.root.innerHTML = "";
+    this.selectedAssetIds = new Set(
+      Array.from(this.selectedAssetIds).filter((assetId) =>
+        (this.assetRegistry.assets || []).some((asset) => asset.id === assetId),
+      ),
+    );
+    if (this.selectedAssetId && this.selectedAssetIds.size === 0) {
+      this.selectedAssetIds.add(this.selectedAssetId);
+    }
 
     const heading = document.createElement("h2");
     heading.textContent = "Assets";
@@ -112,9 +124,34 @@ export class AssetPalette {
     const help = document.createElement("p");
     help.className = "help-text";
     help.textContent =
-      "Select an imported asset, click a cell, or drag from a category onto the grid. In Select/Move, drag on the grid first to place one stretched asset.";
+      "Select an imported asset, then drag it from a category onto the grid or a highlighted area. Use Paint mode to drag-paint repeated 1x1 assets. In Select/Move, drag on the grid to select areas or move placed assets.";
 
     this.root.append(heading, actions, search, list, help);
+    this.bindBulkDeleteKeydown();
+  }
+
+  bindBulkDeleteKeydown() {
+    this.root.onkeydown = async (event) => {
+      if (event.key !== "Delete" && event.key !== "Backspace") {
+        return;
+      }
+      if (event.target.closest("input, textarea, select, button")) {
+        return;
+      }
+      if (this.selectedAssetIds.size <= 1) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      const selectedAssets = (this.assetRegistry.assets || []).filter((asset) =>
+        this.selectedAssetIds.has(asset.id),
+      );
+      const deleted = await this.onDeleteSelectedAssets?.(selectedAssets);
+      if (deleted) {
+        this.selectedAssetIds.clear();
+      }
+    };
   }
 
   filterAssets(assets) {
@@ -130,7 +167,10 @@ export class AssetPalette {
   renderCategory(category, assets) {
     const section = document.createElement("details");
     section.className = "asset-category";
-    section.open = true;
+    section.open = this.categoryOpenState.get(category.id) !== false;
+    section.addEventListener("toggle", () => {
+      this.categoryOpenState.set(category.id, section.open);
+    });
 
     const summary = document.createElement("summary");
     const categoryName = document.createElement("span");
@@ -175,7 +215,7 @@ export class AssetPalette {
     button.setAttribute("aria-label", `Select asset ${asset.name}`);
     button.dataset.assetId = asset.id;
     button.draggable = true;
-    button.classList.toggle("is-active", asset.id === this.selectedAssetId);
+    button.classList.toggle("is-active", this.selectedAssetIds.has(asset.id));
 
     const preview = document.createElement("span");
     preview.className = "asset-preview";
@@ -208,24 +248,59 @@ export class AssetPalette {
     });
 
     button.append(preview, label, deleteAsset);
-    button.addEventListener("click", () => {
-      this.selectedAssetId = asset.id;
-      this.onSelect(asset);
+    ["pointerdown", "mousedown", "mouseup", "dragstart", "dragend"].forEach((eventName) => {
+      button.addEventListener(eventName, (event) => {
+        event.stopPropagation();
+      });
+    });
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.selectAssetButton(asset, button, event.ctrlKey || event.metaKey);
     });
     button.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
-        this.selectedAssetId = asset.id;
-        this.onSelect(asset);
+        event.stopPropagation();
+        this.selectAssetButton(asset, button, event.ctrlKey || event.metaKey);
       }
     });
 
     button.addEventListener("dragstart", (event) => {
+      event.stopPropagation();
       event.dataTransfer.effectAllowed = "copy";
       event.dataTransfer.setData("application/x-game-dev-kit-asset", asset.id);
       event.dataTransfer.setData("text/plain", asset.id);
     });
 
     return button;
+  }
+
+  selectAssetButton(asset, button, additive = false) {
+    this.selectedAssetId = asset.id;
+    if (additive) {
+      if (this.selectedAssetIds.has(asset.id)) {
+        this.selectedAssetIds.delete(asset.id);
+      } else {
+        this.selectedAssetIds.add(asset.id);
+      }
+      if (this.selectedAssetIds.size === 0) {
+        this.selectedAssetIds.add(asset.id);
+      }
+    } else {
+      this.selectedAssetIds = new Set([asset.id]);
+    }
+
+    this.root.querySelectorAll(".asset-button.is-active").forEach((activeButton) => {
+      activeButton.classList.toggle(
+        "is-active",
+        this.selectedAssetIds.has(activeButton.dataset.assetId),
+      );
+    });
+    button.classList.toggle("is-active", this.selectedAssetIds.has(asset.id));
+    this.onSelect(asset, {
+      selectedAssetIds: Array.from(this.selectedAssetIds),
+      additive,
+    });
   }
 }

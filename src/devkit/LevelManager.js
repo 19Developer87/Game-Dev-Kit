@@ -373,11 +373,21 @@ function getEffectivePlacedObjectLayer(placedObject, containingLayer) {
   return LAYERS.includes(explicitLayer) ? explicitLayer : containingLayer;
 }
 
-function removeObjectsInRangeExcept(level, x, y, width, height, preservedObjectId) {
+function removeObjectsInRangeExcept(
+  level,
+  x,
+  y,
+  width,
+  height,
+  preservedObjectId,
+  layerNames = LAYERS,
+) {
+  const requestedLayers = new Set(getKnownLayerNames(layerNames));
   LAYERS.forEach((layerName) => {
     level.layers[layerName] = (level.layers[layerName] || []).filter(
       (placedObject) =>
         placedObject.id === preservedObjectId ||
+        !requestedLayers.has(getEffectivePlacedObjectLayer(placedObject, layerName)) ||
         !rangesOverlap(
           x,
           y,
@@ -400,6 +410,9 @@ function removeObjectsInRangesExcept(level, ranges, preservedIds) {
       }
 
       return !ranges.some((range) =>
+        getKnownLayerNames(range.layerNames || LAYERS).includes(
+          getEffectivePlacedObjectLayer(placedObject, layerName),
+        ) &&
         rangesOverlap(
           range.x,
           range.y,
@@ -416,8 +429,8 @@ function removeObjectsInRangesExcept(level, ranges, preservedIds) {
 }
 
 export function placeAsset(level, asset, x, y, width = 1, height = 1) {
-  removeObjectsInRange(level, x, y, width, height);
-  const layerName = asset.defaultLayer || "objects";
+  const layerName = getLayerArrayName(asset.defaultLayer || "objects");
+  removeObjectsInRange(level, x, y, width, height, [layerName]);
   level.layers[layerName] = Array.isArray(level.layers[layerName]) ? level.layers[layerName] : [];
   const placedObject = {
     id: `placed-${asset.id}-${Date.now()}-${x}-${y}`,
@@ -444,10 +457,255 @@ export function placeAsset(level, asset, x, y, width = 1, height = 1) {
   return placedObject;
 }
 
+export function fillAreaWithAsset(level, asset, range, replacedObjectIds = []) {
+  if (!asset?.id || !range) {
+    return null;
+  }
+
+  const startX = Number(range.x);
+  const startY = Number(range.y);
+  const width = Math.max(1, Number(range.width) || 1);
+  const height = Math.max(1, Number(range.height) || 1);
+  if (!Number.isFinite(startX) || !Number.isFinite(startY)) {
+    return null;
+  }
+
+  const layerName = getLayerArrayName(asset.defaultLayer || "objects");
+  const timestamp = Date.now();
+  const placedObjects = [];
+  let index = 0;
+  for (let y = startY; y < startY + height; y += 1) {
+    for (let x = startX; x < startX + width; x += 1) {
+      placedObjects.push({
+        id: `placed-${asset.id}-fill-${timestamp}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+        assetId: asset.id,
+        type: asset.type || asset.id,
+        name: asset.name,
+        x,
+        y,
+        gridRef: toGridRef(x, y),
+        rangeRef: toRangeRef(x, y, 1, 1),
+        layer: layerName,
+        width: 1,
+        height: 1,
+        visible: asset.visible !== false,
+        transparent: asset.transparent !== false,
+        solid: Boolean(asset.solid),
+        blocksMovement: Boolean(asset.blocksMovement),
+        collisionEnabled: Boolean(asset.collisionEnabled),
+        opacity: 100,
+        notes: "",
+      });
+      index += 1;
+    }
+  }
+
+  removeKnownPlacedObjectsByIds(level, replacedObjectIds);
+  level.layers[layerName] = Array.isArray(level.layers[layerName])
+    ? level.layers[layerName]
+    : [];
+  level.layers[layerName].push(...placedObjects);
+  return placedObjects;
+}
+
+export function fillCellsWithAsset(level, asset, cells, replacedObjectIds = []) {
+  if (!asset?.id || !Array.isArray(cells) || cells.length === 0) {
+    return null;
+  }
+
+  const normalizedCells = [];
+  const occupiedCells = new Set();
+  cells.forEach((cell) => {
+    const x = Number(cell?.x);
+    const y = Number(cell?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return;
+    }
+    const key = `${x}:${y}`;
+    if (occupiedCells.has(key)) {
+      return;
+    }
+    occupiedCells.add(key);
+    normalizedCells.push({ x, y });
+  });
+
+  if (normalizedCells.length === 0) {
+    return null;
+  }
+
+  const layerName = getLayerArrayName(asset.defaultLayer || "objects");
+  const timestamp = Date.now();
+  const placedObjects = normalizedCells.map(({ x, y }, index) => ({
+    id: `placed-${asset.id}-fill-${timestamp}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+    assetId: asset.id,
+    type: asset.type || asset.id,
+    name: asset.name,
+    x,
+    y,
+    gridRef: toGridRef(x, y),
+    rangeRef: toRangeRef(x, y, 1, 1),
+    layer: layerName,
+    width: 1,
+    height: 1,
+    visible: asset.visible !== false,
+    transparent: asset.transparent !== false,
+    solid: Boolean(asset.solid),
+    blocksMovement: Boolean(asset.blocksMovement),
+    collisionEnabled: Boolean(asset.collisionEnabled),
+    opacity: 100,
+    notes: "",
+  }));
+
+  removeKnownPlacedObjectsByIds(level, replacedObjectIds);
+  level.layers[layerName] = Array.isArray(level.layers[layerName])
+    ? level.layers[layerName]
+    : [];
+  level.layers[layerName].push(...placedObjects);
+  return placedObjects;
+}
+
+export function fillCellsWithAssets(level, cellAssets, replacedObjectIds = []) {
+  if (!Array.isArray(cellAssets) || cellAssets.length === 0) {
+    return null;
+  }
+
+  const normalizedCells = [];
+  const occupiedCells = new Set();
+  cellAssets.forEach((entry) => {
+    const asset = entry?.asset;
+    const x = Number(entry?.x);
+    const y = Number(entry?.y);
+    if (!asset?.id || !Number.isFinite(x) || !Number.isFinite(y)) {
+      return;
+    }
+    const key = `${x}:${y}`;
+    if (occupiedCells.has(key)) {
+      return;
+    }
+    occupiedCells.add(key);
+    normalizedCells.push({ asset, x, y });
+  });
+
+  if (normalizedCells.length === 0) {
+    return null;
+  }
+
+  const timestamp = Date.now();
+  const placedObjects = normalizedCells.map(({ asset, x, y }, index) => {
+    const layerName = getLayerArrayName(asset.defaultLayer || "objects");
+    return {
+      id: `placed-${asset.id}-paint-${timestamp}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+      assetId: asset.id,
+      type: asset.type || asset.id,
+      name: asset.name,
+      x,
+      y,
+      gridRef: toGridRef(x, y),
+      rangeRef: toRangeRef(x, y, 1, 1),
+      layer: layerName,
+      width: 1,
+      height: 1,
+      visible: asset.visible !== false,
+      transparent: asset.transparent !== false,
+      solid: Boolean(asset.solid),
+      blocksMovement: Boolean(asset.blocksMovement),
+      collisionEnabled: Boolean(asset.collisionEnabled),
+      opacity: 100,
+      notes: "",
+    };
+  });
+
+  removeKnownPlacedObjectsByIds(level, replacedObjectIds);
+  placedObjects.forEach((placedObject) => {
+    const layerName = getLayerArrayName(placedObject.layer);
+    level.layers[layerName] = Array.isArray(level.layers[layerName])
+      ? level.layers[layerName]
+      : [];
+    level.layers[layerName].push(placedObject);
+  });
+  return placedObjects;
+}
+
+export function removeKnownPlacedObjectsByIds(level, placedObjectIds) {
+  const removedIds = new Set(placedObjectIds);
+  const removedObjects = [];
+  LAYERS.forEach((layerName) => {
+    level.layers[layerName] = (level.layers[layerName] || []).filter((placedObject) => {
+      if (!removedIds.has(placedObject.id)) {
+        return true;
+      }
+      removedObjects.push(placedObject);
+      return false;
+    });
+  });
+  return removedObjects;
+}
+
+export function countPlacedObjectsByAssetIds(project, assetIds) {
+  const targetIds = new Set((Array.isArray(assetIds) ? assetIds : [assetIds]).filter(Boolean));
+  if (targetIds.size === 0) {
+    return 0;
+  }
+
+  return project.levels.reduce(
+    (count, level) =>
+      count + getPlacedObjects(level).filter((placedObject) => targetIds.has(placedObject.assetId)).length,
+    0,
+  );
+}
+
+export function removePlacedObjectsByAssetIds(project, assetIds) {
+  const targetIds = new Set((Array.isArray(assetIds) ? assetIds : [assetIds]).filter(Boolean));
+  if (targetIds.size === 0) {
+    return [];
+  }
+
+  const removedObjects = [];
+  project.levels.forEach((level) => {
+    LAYERS.forEach((layerName) => {
+      level.layers[layerName] = (level.layers[layerName] || []).filter((placedObject) => {
+        if (!targetIds.has(placedObject.assetId)) {
+          return true;
+        }
+        removedObjects.push(placedObject);
+        return false;
+      });
+    });
+  });
+  return removedObjects;
+}
+
+export function replacePlacedObjectAssetSources(level, placedObjectIds, replacementAsset) {
+  if (!replacementAsset?.id || !Array.isArray(placedObjectIds) || placedObjectIds.length === 0) {
+    return [];
+  }
+
+  const replacementIds = new Set(placedObjectIds);
+  const replacedObjects = [];
+  LAYERS.forEach((layerName) => {
+    level.layers[layerName] = (level.layers[layerName] || []).map((placedObject) => {
+      if (!replacementIds.has(placedObject.id)) {
+        return placedObject;
+      }
+
+      const replacedObject = {
+        ...placedObject,
+        assetId: replacementAsset.id,
+        type: replacementAsset.type || replacementAsset.id,
+        name: replacementAsset.name || replacementAsset.id,
+      };
+      replacedObjects.push(replacedObject);
+      return replacedObject;
+    });
+  });
+
+  return replacedObjects;
+}
+
 export function duplicatePlacedAsset(level, sourceObject, x, y, width, height) {
-  removeObjectsInRange(level, x, y, width, height);
   const storedLayer = sourceObject.layer || "objects";
   const layerName = getLayerArrayName(storedLayer);
+  removeObjectsInRange(level, x, y, width, height, [layerName]);
   level.layers[layerName] = Array.isArray(level.layers[layerName]) ? level.layers[layerName] : [];
   const placedObject = {
     ...sourceObject,
@@ -465,8 +723,90 @@ export function duplicatePlacedAsset(level, sourceObject, x, y, width, height) {
   return placedObject;
 }
 
+export function duplicatePlacedAssetGroup(level, copiedObjects, replacedObjectIds = []) {
+  return insertPlacedAssetGroup(level, copiedObjects, replacedObjectIds, {
+    preserveIds: false,
+  });
+}
+
+export function movePlacedAssetGroup(
+  level,
+  copiedObjects,
+  sourceObjectIds,
+  replacedObjectIds = [],
+) {
+  return insertPlacedAssetGroup(
+    level,
+    copiedObjects,
+    [...sourceObjectIds, ...replacedObjectIds],
+    { preserveIds: true },
+  );
+}
+
+function insertPlacedAssetGroup(
+  level,
+  copiedObjects,
+  removedObjectIds = [],
+  { preserveIds = false } = {},
+) {
+  if (!Array.isArray(copiedObjects) || copiedObjects.length === 0) {
+    return null;
+  }
+
+  const timestamp = Date.now();
+  const preparedObjects = copiedObjects.map((copy, index) => {
+    const sourceObject = copy?.sourceObject;
+    const x = Number(copy?.x);
+    const y = Number(copy?.y);
+    const width = Math.max(1, Number(copy?.width) || 1);
+    const height = Math.max(1, Number(copy?.height) || 1);
+    if (!sourceObject || !Number.isFinite(x) || !Number.isFinite(y)) {
+      return null;
+    }
+
+    const storedLayer = sourceObject.layer || "objects";
+    return {
+      layerName: getLayerArrayName(storedLayer),
+      placedObject: {
+        ...cloneJsonValue(sourceObject),
+        id: preserveIds
+          ? sourceObject.id
+          : `placed-${sourceObject.assetId}-copy-${timestamp}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+        x,
+        y,
+        gridRef: toGridRef(x, y),
+        rangeRef: toRangeRef(x, y, width, height),
+        layer: storedLayer,
+        width,
+        height,
+      },
+    };
+  });
+
+  if (preparedObjects.some((entry) => !entry)) {
+    return null;
+  }
+
+  const removedIds = new Set(removedObjectIds);
+  LAYERS.forEach((layerName) => {
+    level.layers[layerName] = (level.layers[layerName] || []).filter(
+      (placedObject) => !removedIds.has(placedObject.id),
+    );
+  });
+
+  preparedObjects.forEach(({ layerName, placedObject }) => {
+    level.layers[layerName] = Array.isArray(level.layers[layerName])
+      ? level.layers[layerName]
+      : [];
+    level.layers[layerName].push(placedObject);
+  });
+
+  return preparedObjects.map(({ placedObject }) => placedObject);
+}
+
 export function updatePlacedAssetBounds(level, placedObjectId, x, y, width, height) {
   let selectedObject = null;
+  let selectedLayerName = null;
 
   LAYERS.forEach((layerName) => {
     const foundObject = (level.layers[layerName] || []).find(
@@ -475,6 +815,7 @@ export function updatePlacedAssetBounds(level, placedObjectId, x, y, width, heig
 
     if (foundObject) {
       selectedObject = foundObject;
+      selectedLayerName = layerName;
     }
   });
 
@@ -482,7 +823,8 @@ export function updatePlacedAssetBounds(level, placedObjectId, x, y, width, heig
     return null;
   }
 
-  removeObjectsInRangeExcept(level, x, y, width, height, placedObjectId);
+  const targetLayerName = getEffectivePlacedObjectLayer(selectedObject, selectedLayerName);
+  removeObjectsInRangeExcept(level, x, y, width, height, placedObjectId, [targetLayerName]);
   selectedObject.x = x;
   selectedObject.y = y;
   selectedObject.width = width;
@@ -499,7 +841,10 @@ export function updatePlacedAssetGroupBounds(level, boundsById) {
   LAYERS.forEach((layerName) => {
     (level.layers[layerName] || []).forEach((placedObject) => {
       if (updates.has(placedObject.id)) {
-        selectedObjects.push(placedObject);
+        selectedObjects.push({
+          placedObject,
+          layerName: getEffectivePlacedObjectLayer(placedObject, layerName),
+        });
       }
     });
   });
@@ -509,19 +854,20 @@ export function updatePlacedAssetGroupBounds(level, boundsById) {
   }
 
   const preservedIds = new Set(updates.keys());
-  const targetRanges = selectedObjects.map((placedObject) => {
+  const targetRanges = selectedObjects.map(({ placedObject, layerName }) => {
     const bounds = updates.get(placedObject.id);
     return {
       x: bounds.x,
       y: bounds.y,
       width: bounds.width,
       height: bounds.height,
+      layerNames: [layerName],
     };
   });
 
   removeObjectsInRangesExcept(level, targetRanges, preservedIds);
 
-  selectedObjects.forEach((placedObject) => {
+  selectedObjects.forEach(({ placedObject }) => {
     const bounds = updates.get(placedObject.id);
     placedObject.x = bounds.x;
     placedObject.y = bounds.y;
@@ -568,6 +914,7 @@ export function updatePlacedAssetProperties(level, placedObjectId, properties) {
       properties.width,
       properties.height,
       placedObjectId,
+      [targetLayerName],
     );
   }
   Object.assign(selectedObject, properties, {
@@ -930,6 +1277,28 @@ export function deleteAssetCategory(project, categoryId) {
   return { deleted: true, category };
 }
 
+export function deleteAssetCategoryWithAssets(project, categoryId) {
+  const registry = normalizeAssetRegistry(project.assetRegistry, project.assets);
+  const category = registry.categories.find((candidate) => candidate.id === categoryId);
+
+  if (!category) {
+    project.assetRegistry = registry;
+    project.assets = registry.assets;
+    return { deleted: false, category: null, assets: [] };
+  }
+
+  const belongsToCategory = (asset) =>
+    asset.categoryId === category.id || asset.category === category.name;
+  const categoryAssets = registry.assets.filter((asset) => belongsToCategory(asset));
+  project.assetRegistry = {
+    ...registry,
+    categories: registry.categories.filter((candidate) => candidate.id !== category.id),
+    assets: registry.assets.filter((asset) => !belongsToCategory(asset)),
+  };
+  project.assets = project.assetRegistry.assets;
+  return { deleted: true, category, assets: categoryAssets };
+}
+
 export function isAssetUsedOnAnyLevel(project, assetId) {
   return project.levels.some((level) =>
     getPlacedObjects(level).some((placedObject) => placedObject.assetId === assetId),
@@ -1058,6 +1427,13 @@ function rangesOverlap(aX, aY, aWidth, aHeight, bX, bY, bWidth, bHeight) {
     aY < bY + bHeight &&
     aY + aHeight > bY
   );
+}
+
+function cloneJsonValue(value) {
+  if (typeof structuredClone === "function") {
+    return structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value));
 }
 
 function createUniqueCategoryId(name, categories) {

@@ -4,6 +4,9 @@ import {
   LAYER_LOCKS_STORAGE_KEY,
   LAYER_VISIBILITY_STORAGE_KEY,
   LAYERS,
+  PAINT_BRUSH_SIZE_STORAGE_KEY,
+  PAINT_VARIANT_ASSET_IDS_STORAGE_KEY,
+  PAINT_VARIANT_EXPANDED_CATEGORIES_STORAGE_KEY,
   PLACED_PROPERTIES_DIALOG_STORAGE_KEY,
   SIDEBAR_COLLAPSED_STORAGE_KEY,
   SIDEBAR_WIDTH_STORAGE_KEY,
@@ -20,29 +23,38 @@ import {
   addAssetCategory,
   addImportedAsset,
   countObjectsOutsideBounds,
+  countPlacedObjectsByAssetIds,
   createAssetRegistryData,
   createCopiedLevelData,
   createLevelFileData,
   createProjectIndex,
   createNewLevel,
   deleteCurrentLevel,
+  deleteAssetCategoryWithAssets,
   getCurrentLevel,
   hasLevelContent,
   pasteLevelContent,
   placeAsset,
   findObjectsInRange,
+  fillAreaWithAsset,
+  fillCellsWithAsset,
+  fillCellsWithAssets,
   findAssetCategoryByName,
   deleteAssetCategory,
   deleteImportedAsset,
-  duplicatePlacedAsset,
+  duplicatePlacedAssetGroup,
   getPlacedObjects,
   isAssetUsedOnAnyLevel,
+  movePlacedAssetGroup,
   reorderLevel,
   removeEmptyAssetCategories,
   renameCurrentLevel,
+  replacePlacedObjectAssetSources,
   removeObjectsInRange,
   removeObjectsAtCell,
   removePlacedObjectById,
+  removeKnownPlacedObjectsByIds,
+  removePlacedObjectsByAssetIds,
   resizeCurrentLevel,
   switchLevel,
   toGridRef,
@@ -56,6 +68,7 @@ const GRID_SIZE_PRESETS = ["10", "20", "30", "40", "50", "75", "100", "150", "20
 const LARGE_GRID_WARNING_SIZE = 100;
 const VERY_LARGE_GRID_WARNING_SIZE = 250;
 const MAX_GRID_SIZE = 500;
+const MIXED_VALUE = "__mixed";
 
 class DevEditor {
   constructor(root, loaded) {
@@ -68,14 +81,20 @@ class DevEditor {
     this.saveQueue = Promise.resolve();
     this.copiedLevel = this.loadCopiedLevel();
     this.selectedRange = null;
+    this.selectedRanges = [];
+    this.isDragPaintMode = false;
+    this.paintBrushSize = this.loadPaintBrushSize();
+    this.paintVariantAssetIds = this.loadPaintVariantAssetIds();
+    this.dragPaintSession = null;
+    this.isCtrlPressed = false;
     this.selectionState = "idle";
     this.selectionConfirmationTimer = null;
     this.hoveredGridRef = null;
     this.dropPreviewRange = null;
     this.selectedPlacedObjectId = null;
     this.selectedPlacedObjectIds = new Set();
-    this.copiedPlacedObject = null;
-    this.copyPreviewRange = null;
+    this.copiedPlacedGroup = null;
+    this.copyPreviewOrigin = null;
     this.layerVisibility = this.loadLayerVisibility();
     this.layerLocks = this.loadLayerLocks();
     this.ui = createEditorLayout(root);
@@ -88,13 +107,19 @@ class DevEditor {
       root: this.ui.gridStage,
       onCellClick: (cell) => this.handleCellClick(cell),
       onHoverCell: (cell) => this.handleHoverCell(cell),
-      onSelectionChange: (range, state) => this.handleSelectionChange(range, state),
+      onSelectionChange: (range, state, options) => this.handleSelectionChange(range, state, options),
       onAssetDrop: (drop) => this.handleAssetDrop(drop),
       onPlacedObjectSelect: (placedObjectId) => this.selectPlacedObject(placedObjectId),
+      onPlacedObjectToggleSelection: (placedObjectId) =>
+        this.togglePlacedObjectSelection(placedObjectId),
       onPlacedObjectProperties: (placedObjectId) => this.openPlacedAssetProperties(placedObjectId),
       onPlacedObjectTransform: (transform) => this.transformPlacedObject(transform),
       onPlacedObjectGroupMoveStart: () => this.clearGridAreaSelection(),
       onCopyPreviewMove: (cell) => this.moveCopyPreview(cell),
+      onDragPaintStart: (cell) => this.startDragPaint(cell),
+      onDragPaintCell: (cell) => this.addDragPaintCell(cell),
+      onDragPaintEnd: () => this.finishDragPaint(),
+      onDragPaintCancel: () => this.cancelDragPaint(),
       onLockedLayerInteraction: (layerName) => {
         this.setStatus(`Layer "${layerName}" is locked.`);
       },
@@ -116,8 +141,12 @@ class DevEditor {
       selectedAssetId: this.selectedAsset?.id || null,
       onSelect: (asset) => {
         this.selectedAsset = asset;
-        this.activateTool("move");
-        if (this.selectionState === "selectionReady") {
+        this.syncAreaToolMenu();
+        if (this.activeTool === "paint") {
+          this.setStatus(
+            this.getToolStatusMessage("paint"),
+          );
+        } else if (this.selectionState === "selectionReady") {
           this.setSelectionReadyStatus();
         } else {
           this.setStatus(`Selected ${asset.name}.`);
@@ -128,6 +157,7 @@ class DevEditor {
       onCleanCategories: () => this.cleanEmptyCategories(),
       onDeleteCategory: (category) => this.deleteCategory(category),
       onDeleteAsset: (asset) => this.deleteAsset(asset),
+      onDeleteSelectedAssets: (assets) => this.deleteSelectedSourceAssets(assets),
     });
 
     this.bindEvents();
@@ -143,8 +173,37 @@ class DevEditor {
       });
     });
 
-    this.root.querySelector('[data-action="place-selected-asset"]').addEventListener("click", async () => {
-      await this.placeSelectedAssetInRange();
+    this.ui.paintBrushSize.value = String(this.paintBrushSize);
+    this.ui.paintBrushSize.addEventListener("change", () => {
+      this.paintBrushSize = normalizePaintBrushSize(this.ui.paintBrushSize.value);
+      this.savePaintBrushSize();
+      if (!this.dragPaintSession && this.activeTool === "paint") {
+        this.gridEditor.updatePaintPreview([]);
+      }
+      this.setStatus(this.getToolStatusMessage("paint"));
+      this.syncModeStatus();
+    });
+
+    this.ui.paintVariantsButton.addEventListener("click", () => {
+      this.openPaintVariantsDialog();
+    });
+
+    window.addEventListener("keydown", (event) => {
+      if (event.key !== "Control" || this.isCtrlPressed) {
+        return;
+      }
+      this.setCtrlPressed(true);
+    });
+
+    window.addEventListener("keyup", (event) => {
+      if (event.key !== "Control") {
+        return;
+      }
+      this.setCtrlPressed(false);
+    });
+
+    window.addEventListener("blur", () => {
+      this.setCtrlPressed(false);
     });
 
     this.ui.sidebarToggle.addEventListener("click", () => {
@@ -181,25 +240,44 @@ class DevEditor {
       }
 
       if (
-        event.ctrlKey &&
-        !event.metaKey &&
+        (event.ctrlKey || event.metaKey) &&
+        !event.altKey &&
+        event.key.toLowerCase() === "x" &&
+        this.activeTool === "move" &&
+        (this.selectedPlacedObjectId || this.selectedPlacedObjectIds.size > 0)
+      ) {
+        event.preventDefault();
+        this.startCutPlacement();
+        return;
+      }
+
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        !event.altKey &&
+        event.key.toLowerCase() === "d" &&
+        this.activeTool === "move" &&
+        (this.selectedPlacedObjectId || this.selectedPlacedObjectIds.size > 0)
+      ) {
+        event.preventDefault();
+        this.duplicateSelectedPlacedAssets();
+        return;
+      }
+
+      if (
+        (event.ctrlKey || event.metaKey) &&
         !event.altKey &&
         event.key.toLowerCase() === "c" &&
         this.activeTool === "move" &&
-        this.selectedPlacedObjectId
+        (this.selectedPlacedObjectId || this.selectedPlacedObjectIds.size > 0)
       ) {
         event.preventDefault();
-        if (this.selectedPlacedObjectIds.size > 1) {
-          this.setStatus("Group copy is not implemented yet.");
-          return;
-        }
         this.startCopyPlacement();
         return;
       }
 
       const hotkeyTool = {
         q: "move",
-        w: "move",
+        w: "paint",
         e: "delete",
       }[event.key.toLowerCase()];
 
@@ -213,6 +291,12 @@ class DevEditor {
         (event.key === "Delete" || event.key === "Backspace") &&
         this.activeTool === "move"
       ) {
+        if (this.selectedRanges.length > 0 && this.selectionState === "selectionReady") {
+          event.preventDefault();
+          this.deleteAssetsInSelectedRange();
+          return;
+        }
+
         if (this.selectedPlacedObjectIds.size > 0 || this.selectedPlacedObjectId) {
           event.preventDefault();
           this.deleteSelectedPlacedObjects();
@@ -227,11 +311,22 @@ class DevEditor {
       }
 
       if (event.key === "Escape") {
-        if (this.copiedPlacedObject) {
+        if (this.dragPaintSession) {
           event.preventDefault();
+          this.cancelDragPaint({ showStatus: true });
+          return;
+        }
+
+        if (this.copiedPlacedGroup) {
+          event.preventDefault();
+          const cancelledMode = this.copiedPlacedGroup.mode;
           this.cancelCopyPlacement();
           this.render();
-          this.setStatus("Copy placement cancelled.");
+          this.setStatus(
+            cancelledMode === "cut"
+              ? "Cut placement cancelled. Original assets were unchanged."
+              : "Copy placement cancelled.",
+          );
           return;
         }
 
@@ -264,6 +359,36 @@ class DevEditor {
 
     this.root.querySelector('[data-action="paste-level"]').addEventListener("click", async () => {
       await this.pasteCopiedLevel();
+      this.closeMenus();
+    });
+
+    this.ui.copySelectedAssetsButton.addEventListener("click", () => {
+      this.startCopyPlacement();
+      this.closeMenus();
+    });
+
+    this.ui.cutSelectedAssetsButton.addEventListener("click", () => {
+      this.startCutPlacement();
+      this.closeMenus();
+    });
+
+    this.ui.duplicateSelectedAssetsButton.addEventListener("click", async () => {
+      await this.duplicateSelectedPlacedAssets();
+      this.closeMenus();
+    });
+
+    this.ui.fillSelectedAreaButton.addEventListener("click", async () => {
+      await this.fillSelectedArea();
+      this.closeMenus();
+    });
+
+    this.ui.clearSelectedAreaButton.addEventListener("click", () => {
+      this.clearSelectedArea();
+      this.closeMenus();
+    });
+
+    this.ui.replaceMatchingAssetsButton.addEventListener("click", async () => {
+      await this.replaceMatchingAssetsInSelectedArea();
       this.closeMenus();
     });
 
@@ -374,12 +499,26 @@ class DevEditor {
       });
   }
 
-  async handleCellClick({ x, y }) {
+  async handleCellClick({ x, y, additive = false }) {
     const level = getCurrentLevel(this.project);
 
     if (this.activeTool === "move") {
-      if (this.copiedPlacedObject) {
+      if (this.copiedPlacedGroup) {
         await this.pasteCopiedPlacedAssetAt(x, y);
+        return;
+      }
+
+      if (additive) {
+        if (this.selectedPlacedObjectIds.size > 0) {
+          this.setStatus(`Selected ${this.selectedPlacedObjectIds.size} asset${this.selectedPlacedObjectIds.size === 1 ? "" : "s"}.`);
+        }
+        return;
+      }
+
+      if (!additive && this.selectedRanges.length > 0) {
+        this.clearSelection();
+        this.render();
+        this.setStatus("Multi-area selection cleared.");
         return;
       }
 
@@ -454,10 +593,16 @@ class DevEditor {
     if (isDropTarget) {
       this.gridEditor.updateDropPreview(this.dropPreviewRange);
     }
+
+    if (this.activeTool === "paint" && !this.dragPaintSession) {
+      this.updatePaintBrushFootprintPreview({ x, y });
+    }
   }
 
-  handleSelectionChange(range, state) {
+  handleSelectionChange(range, state, options = {}) {
+    const isAdditiveSelection = Boolean(options.additive);
     const hadPlacedObjectSelection = this.activeTool === "move" && this.selectedPlacedObjectIds.size > 0;
+    const previousSelectedRange = this.selectedRange;
     this.selectedRange = range;
     this.selectionState = state;
     this.dropPreviewRange = null;
@@ -474,22 +619,42 @@ class DevEditor {
     if (state === "draggingSelection") {
       if (this.activeTool === "delete") {
         this.setStatus(`Delete area: ${formatRange(range)}.`);
+      } else if (isAdditiveSelection) {
+        const previewRanges = [...this.selectedRanges, range];
+        this.setStatus(this.createMultiAreaSelectionStatus(previewRanges));
       }
       return;
     }
 
     this.syncPlacementButton();
-    this.gridEditor.updateSelection(this.selectedRange);
+    this.gridEditor.updateSelection(this.selectedRanges.length > 0 ? null : this.selectedRange);
     this.gridEditor.updateDropPreview(null);
 
     if (this.activeTool === "delete") {
       if (state === "selectionReady") {
-        this.deleteAssetsInRange(range, { clearSelection: true });
+        if (isAdditiveSelection) {
+          this.addSelectedArea(range);
+          this.setStatus(this.createMultiAreaSelectionStatus());
+        } else {
+          this.deleteAssetsInRange(range, { clearSelection: true });
+        }
       }
       return;
     }
 
     if (state === "selectionReady") {
+      if (isAdditiveSelection) {
+        this.addSelectedArea(range, { seedRange: previousSelectedRange });
+        this.syncPlacedObjectSelectionForSelectedAreas();
+        this.refreshPlacedAssetMarkers();
+        this.setStatus(this.createMultiAreaSelectionStatus());
+        return;
+      }
+
+      this.selectedRanges = [];
+      this.gridEditor.updateMultiSelections([]);
+      this.gridEditor.updateSelection(this.selectedRange);
+      this.syncCoordinateStatus();
       const selectedObjects = findObjectsInRange(
         getCurrentLevel(this.project),
         range.x,
@@ -497,7 +662,7 @@ class DevEditor {
         range.width,
         range.height,
         this.getEditableLayerNames(),
-      ).filter((placedObject) => placedObject.editorLocked !== true);
+      ).filter((placedObject) => this.canSelectPlacedObject(placedObject));
       if (selectedObjects.length > 0) {
         this.setPlacedObjectSelection(
           selectedObjects.map((placedObject) => placedObject.id),
@@ -524,6 +689,13 @@ class DevEditor {
     }
 
     this.selectedAsset = asset;
+    if (this.selectedRanges.length > 1) {
+      this.dropPreviewRange = null;
+      this.gridEditor.updateDropPreview(null);
+      this.setStatus("Use Fill Selected Area to place assets into multiple selected areas.");
+      return;
+    }
+
     if (this.selectedRange && !rangeContains(this.selectedRange, x, y)) {
       this.clearSelection();
     }
@@ -533,21 +705,30 @@ class DevEditor {
   }
 
   activateTool(tool) {
-    if (!["move", "delete"].includes(tool)) {
+    if (!["move", "paint", "delete"].includes(tool)) {
       return;
     }
 
     this.activeTool = tool;
-    if (tool === "delete") {
+    this.isDragPaintMode = tool === "paint";
+    if (tool !== "paint") {
+      this.cancelDragPaint();
+    }
+    if (tool !== "move" && this.copiedPlacedGroup) {
+      this.cancelCopyPlacement();
+    }
+    if (tool === "delete" || tool === "paint") {
       this.clearSelection();
     }
     if (tool !== "move") {
       this.clearPlacedObjectSelection();
     }
-    this.gridEditor.setInteractionMode(tool);
+    this.gridEditor.setInteractionMode(tool === "paint" ? "move" : tool);
+    this.gridEditor.setDragPaintModeActive(this.isDragPaintMode);
     this.syncToolButtons();
+    this.syncModeStatus();
     this.render();
-    this.setStatus(`${getToolLabel(tool)} tool active.`);
+    this.setStatus(this.getToolStatusMessage(tool));
   }
 
   selectPlacedObject(placedObjectId) {
@@ -558,11 +739,7 @@ class DevEditor {
     const placedObject = getPlacedObjects(
       getCurrentLevel(this.project),
       this.getEditableLayerNames(),
-    ).find(
-      (candidate) =>
-        candidate.id === placedObjectId &&
-        candidate.editorLocked !== true,
-    );
+    ).find((candidate) => candidate.id === placedObjectId);
     if (!placedObject) {
       const unavailableObject = getPlacedObjects(getCurrentLevel(this.project)).find(
         (candidate) => candidate.id === placedObjectId,
@@ -579,13 +756,79 @@ class DevEditor {
     this.clearSelection();
     this.setPlacedObjectSelection([placedObjectId], placedObjectId);
     this.render();
-    this.setStatus("Placed asset selected. Drag to move or use a handle to resize.");
+    this.setStatus(
+      placedObject.editorLocked === true
+        ? "Locked placed asset selected. Open Properties to unlock it."
+        : "Placed asset selected. Drag to move or use a handle to resize.",
+    );
+  }
+
+  togglePlacedObjectSelection(placedObjectId) {
+    if (this.activeTool !== "move") {
+      return;
+    }
+
+    const level = getCurrentLevel(this.project);
+    const placedObject = getPlacedObjects(level).find(
+      (candidate) => candidate.id === placedObjectId,
+    );
+    if (!placedObject || !this.canSelectPlacedObject(placedObject)) {
+      this.setStatus(
+        placedObject
+          ? this.getPlacedObjectLockMessage(placedObject)
+          : "Unable to select that placed asset.",
+      );
+      return;
+    }
+
+    this.cancelCopyPlacement();
+    this.clearGridAreaSelection();
+    const nextSelection = new Set(this.selectedPlacedObjectIds);
+    if (nextSelection.has(placedObjectId)) {
+      nextSelection.delete(placedObjectId);
+      const nextIds = Array.from(nextSelection);
+      this.setPlacedObjectSelection(
+        nextIds,
+        this.selectedPlacedObjectId === placedObjectId
+          ? nextIds[0] || null
+          : this.selectedPlacedObjectId,
+      );
+      this.gridEditor.syncPlacedObjectSelection(
+        this.selectedPlacedObjectId,
+        Array.from(this.selectedPlacedObjectIds),
+      );
+      this.syncAssetMenu();
+      this.setStatus(
+        nextIds.length > 0
+          ? `Removed asset from selection. Selected ${nextIds.length} asset${nextIds.length === 1 ? "" : "s"}.`
+          : "Removed asset from selection.",
+      );
+      return;
+    }
+
+    nextSelection.add(placedObjectId);
+    const nextIds = Array.from(nextSelection);
+    this.setPlacedObjectSelection(nextIds, placedObjectId);
+    this.gridEditor.syncPlacedObjectSelection(
+      this.selectedPlacedObjectId,
+      Array.from(this.selectedPlacedObjectIds),
+    );
+    this.syncAssetMenu();
+    this.setStatus(`Selected ${nextIds.length} asset${nextIds.length === 1 ? "" : "s"}.`);
   }
 
   openPlacedAssetProperties(placedObjectId = this.selectedPlacedObjectId) {
     const explicitPlacedObject = arguments.length > 0;
+    if (
+      explicitPlacedObject &&
+      this.selectedPlacedObjectIds.size > 1 &&
+      this.selectedPlacedObjectIds.has(placedObjectId)
+    ) {
+      this.openMultiPlacedAssetProperties();
+      return;
+    }
     if (this.selectedPlacedObjectIds.size > 1 && !explicitPlacedObject) {
-      this.setStatus("Select one asset to edit properties.");
+      this.openMultiPlacedAssetProperties();
       return;
     }
 
@@ -615,11 +858,7 @@ class DevEditor {
 
     this.cancelCopyPlacement();
     this.clearSelection();
-    if (placedObject.editorLocked === true) {
-      this.clearPlacedObjectSelection();
-    } else {
-      this.setPlacedObjectSelection([placedObjectId], placedObjectId);
-    }
+    this.setPlacedObjectSelection([placedObjectId], placedObjectId);
     this.render();
     this.showPlacedAssetPropertiesDialog(level, placedObject);
   }
@@ -755,24 +994,30 @@ class DevEditor {
         Number(placedObject.width) !== result.values.width ||
         Number(placedObject.height) !== result.values.height;
       const overlaps = boundsChanged
-        ? findObjectsInRange(
+        ? this.findTargetLayerOverlaps(
             level,
-            result.values.x,
-            result.values.y,
-            result.values.width,
-            result.values.height,
-          ).filter((candidate) => candidate.id !== placedObject.id)
+            {
+              x: result.values.x,
+              y: result.values.y,
+              width: result.values.width,
+              height: result.values.height,
+            },
+            result.values.layer,
+            new Set([placedObject.id]),
+          )
         : [];
 
-      const lockedOverlap = overlaps.find((candidate) =>
-        this.isPlacedObjectProtected(candidate),
+      const protectedOverlap = overlaps.find((candidate) =>
+        this.isPlacedObjectProtected(candidate) || !this.isLayerVisible(candidate.layer),
       );
-      if (lockedOverlap) {
+      if (protectedOverlap) {
         error.hidden = false;
         error.textContent = `Changes were not applied because the new bounds overlap ${
-          this.isLayerLocked(lockedOverlap.layer)
-            ? `locked layer "${normalizePlacedLayer(lockedOverlap.layer)}"`
-            : "an individually locked asset"
+          !this.isLayerVisible(protectedOverlap.layer)
+            ? `hidden layer "${normalizePlacedLayer(protectedOverlap.layer)}"`
+            : this.isLayerLocked(protectedOverlap.layer)
+              ? `locked layer "${normalizePlacedLayer(protectedOverlap.layer)}"`
+              : "an individually locked asset"
         }.`;
         return;
       }
@@ -831,6 +1076,303 @@ class DevEditor {
 
     dialog.showModal();
     this.restorePlacedPropertiesDialogBounds(dialog);
+  }
+
+  openMultiPlacedAssetProperties() {
+    if (this.activeTool !== "move" || this.selectedPlacedObjectIds.size <= 1) {
+      this.setStatus("Select multiple assets first.");
+      return;
+    }
+
+    const level = getCurrentLevel(this.project);
+    const selection = this.getSelectedPlacedAssetsForProperties();
+    if (selection.editableObjects.length > 0) {
+      this.cancelCopyPlacement();
+      this.clearSelection();
+      this.render();
+      this.showMultiPlacedAssetPropertiesDialog(level, selection);
+      return;
+    }
+
+    if (selection.lockableObjects.length > 0) {
+      this.openMultiPlacedAssetLockProperties();
+      return;
+    }
+
+    this.setStatus("No selected assets can be edited.");
+  }
+
+  showMultiPlacedAssetPropertiesDialog(level, selection) {
+    const editableObjects = selection.editableObjects;
+    const lockableObjects = selection.lockableObjects;
+    const layerValue = getCommonValue(editableObjects, (placedObject) =>
+      normalizePlacedLayer(placedObject.layer),
+    );
+    const visibleValue = getCommonValue(editableObjects, (placedObject) =>
+      placedObject.visible !== false,
+    );
+    const opacityValue = getCommonValue(editableObjects, (placedObject) =>
+      normalizeOpacity(placedObject.opacity),
+    );
+    const blocksMovementValue = getCommonValue(editableObjects, (placedObject) =>
+      Boolean(placedObject.blocksMovement),
+    );
+    const notesValue = getCommonValue(editableObjects, (placedObject) =>
+      String(placedObject.notes || ""),
+    );
+    const lockValue = getCommonValue(lockableObjects, (placedObject) =>
+      placedObject.editorLocked === true,
+    );
+    const skippedText =
+      selection.protectedCount > 0
+        ? `<p class="properties-hint">${selection.protectedCount} protected selected asset${selection.protectedCount === 1 ? "" : "s"} will be skipped.</p>`
+        : "";
+    const dialog = document.createElement("dialog");
+
+    dialog.className = "placed-properties-dialog";
+    dialog.innerHTML = `
+      <form class="placed-properties-form" method="dialog">
+        <header class="properties-dialog-header">
+          <h2>Multi-Asset Properties &mdash; ${editableObjects.length} editable selected assets</h2>
+        </header>
+        <div class="properties-scroll-content">
+          <fieldset class="properties-info">
+            <legend>Selection</legend>
+            <p class="properties-hint">Editing ${editableObjects.length} selected asset${editableObjects.length === 1 ? "" : "s"}. Only changed fields will be applied.</p>
+            ${selection.lockedCount > 0 ? `<p class="properties-hint">${selection.lockedCount} individually locked selected asset${selection.lockedCount === 1 ? "" : "s"} can be unlocked with the Locked field.</p>` : ""}
+            ${skippedText}
+          </fieldset>
+          <div class="properties-fields">
+            <fieldset class="properties-position">
+              <legend>Position / Size</legend>
+              <p class="properties-hint">Group resize is not available yet. Select one placed asset to edit Width/Height or use single-asset resize handles.</p>
+            </fieldset>
+            <fieldset>
+              <legend>Display</legend>
+              <label>Visible
+                <select name="visible" data-track-change>
+                  ${createMixedBooleanOptions(visibleValue)}
+                </select>
+              </label>
+              <label>Opacity (0 to 100)
+                <input name="opacity" type="number" min="0" max="100" value="${opacityValue === MIXED_VALUE ? "" : opacityValue}" placeholder="${opacityValue === MIXED_VALUE ? "Mixed" : ""}" data-track-change />
+              </label>
+              <p class="properties-hint">Mixed values are preserved unless you change the field.</p>
+            </fieldset>
+            <fieldset>
+              <legend>Layer / Behaviour</legend>
+              <label>Layer
+                <select name="layer" data-track-change>
+                  ${createMixedLayerOptions(layerValue)}
+                </select>
+              </label>
+              <label>Blocks Movement
+                <select name="blocksMovement" data-track-change>
+                  ${createMixedBooleanOptions(blocksMovementValue)}
+                </select>
+              </label>
+              <label>Locked
+                <select name="editorLocked" data-track-change>
+                  ${createMixedBooleanOptions(lockValue)}
+                </select>
+              </label>
+              <label class="properties-notes">Notes
+                <textarea name="notes" rows="4" placeholder="${notesValue === MIXED_VALUE ? "Mixed" : ""}" data-track-change>${notesValue === MIXED_VALUE ? "" : escapeHtml(notesValue)}</textarea>
+              </label>
+              <p class="properties-hint">Layer changes use the same layer reassignment path as single-asset Properties. Layer-specific metadata is preserved.</p>
+            </fieldset>
+          </div>
+          <p class="form-error" role="alert" hidden></p>
+        </div>
+        <div class="dialog-actions properties-dialog-actions">
+          <button type="button" data-action="cancel-properties">Cancel / Close</button>
+          <button type="submit">Apply / Save Changes</button>
+        </div>
+      </form>
+    `;
+
+    document.body.append(dialog);
+    const form = dialog.querySelector("form");
+    const error = dialog.querySelector(".form-error");
+    const releaseDialogBehavior = this.bindPlacedPropertiesDialogBehavior(dialog);
+
+    form.querySelectorAll("[data-track-change]").forEach((field) => {
+      const markDirty = () => {
+        field.dataset.changed = "true";
+      };
+      field.addEventListener("change", markDirty);
+      field.addEventListener("input", markDirty);
+    });
+
+    dialog.querySelector('[data-action="cancel-properties"]').addEventListener("click", () => {
+      dialog.close();
+    });
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const result = this.readMultiPlacedAssetPropertyValues(new FormData(form), form);
+      if (result.error) {
+        error.hidden = false;
+        error.textContent = result.error;
+        return;
+      }
+
+      if (Object.keys(result.values).length === 0) {
+        error.hidden = false;
+        error.textContent = "No property changes were selected.";
+        return;
+      }
+
+      const applyResult = this.applyMultiPlacedAssetProperties(result.values);
+      dialog.close();
+      this.render();
+      this.autosave(this.createMultiPropertiesStatusMessage(applyResult, result.values));
+    });
+
+    dialog.addEventListener("close", () => {
+      releaseDialogBehavior();
+      dialog.remove();
+    });
+
+    dialog.showModal();
+    this.restorePlacedPropertiesDialogBounds(dialog);
+  }
+
+  openMultiPlacedAssetLockProperties() {
+    if (this.activeTool !== "move" || this.selectedPlacedObjectIds.size <= 1) {
+      this.setStatus("Select multiple assets first.");
+      return;
+    }
+
+    const { selectedObjects, protectedCount } = this.getSelectedPlacedAssetsForLocking();
+    if (selectedObjects.length === 0) {
+      this.setStatus("No selected assets can be locked or unlocked.");
+      return;
+    }
+
+    const lockedCount = selectedObjects.filter((placedObject) => placedObject.editorLocked === true).length;
+    const initialLockValue = lockedCount === selectedObjects.length;
+    const mixedText =
+      lockedCount > 0 && lockedCount < selectedObjects.length
+        ? `<p class="properties-hint">Selected assets have mixed lock states. Choose Yes or No to apply one state to all editable selected assets.</p>`
+        : "";
+    const skippedText =
+      protectedCount > 0
+        ? `<p class="properties-hint">${protectedCount} protected selected asset${protectedCount === 1 ? "" : "s"} will be skipped.</p>`
+        : "";
+    const dialog = document.createElement("dialog");
+    dialog.className = "placed-properties-dialog";
+    dialog.innerHTML = `
+      <form class="placed-properties-form" method="dialog">
+        <header class="properties-dialog-header">
+          <h2>Placed Asset Properties &mdash; ${selectedObjects.length} selected assets</h2>
+        </header>
+        <div class="properties-scroll-content">
+          <div class="properties-fields">
+            <fieldset>
+              <legend>Individual Lock</legend>
+              <label>Locked
+                <select name="editorLocked">
+                  <option value="false" ${!initialLockValue ? "selected" : ""}>No</option>
+                  <option value="true" ${initialLockValue ? "selected" : ""}>Yes</option>
+                </select>
+              </label>
+              <p class="properties-hint">This changes only the individual lock field for editable selected placed assets.</p>
+              ${mixedText}
+              ${skippedText}
+            </fieldset>
+          </div>
+          <p class="form-error" role="alert" hidden></p>
+        </div>
+        <div class="dialog-actions properties-dialog-actions">
+          <button type="button" data-action="cancel-properties">Cancel / Close</button>
+          <button type="submit">Apply / Save Changes</button>
+        </div>
+      </form>
+    `;
+
+    document.body.append(dialog);
+    const form = dialog.querySelector("form");
+    const releaseDialogBehavior = this.bindPlacedPropertiesDialogBehavior(dialog);
+
+    dialog.querySelector('[data-action="cancel-properties"]').addEventListener("click", () => {
+      dialog.close();
+    });
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const data = new FormData(form);
+      const shouldLock = data.get("editorLocked") === "true";
+      const result = this.applySelectedPlacedAssetLockState(shouldLock);
+      dialog.close();
+      this.render();
+      this.autosave(this.createMultiLockStatusMessage(result, shouldLock));
+    });
+
+    dialog.addEventListener("close", () => {
+      releaseDialogBehavior();
+      dialog.remove();
+    });
+
+    dialog.showModal();
+    this.restorePlacedPropertiesDialogBounds(dialog);
+  }
+
+  readMultiPlacedAssetPropertyValues(data, form) {
+    const values = {};
+    const isChanged = (name) =>
+      form.elements[name]?.dataset?.changed === "true";
+
+    if (isChanged("layer")) {
+      const layer = String(data.get("layer") || "");
+      if (layer && layer !== MIXED_VALUE) {
+        if (!LAYERS.includes(layer)) {
+          return { error: "Choose a valid layer." };
+        }
+        if (this.isLayerLocked(layer)) {
+          return { error: `Layer "${normalizePlacedLayer(layer)}" is locked. Unlock it before applying Properties changes.` };
+        }
+        values.layer = layer;
+      }
+    }
+
+    if (isChanged("visible")) {
+      const visible = String(data.get("visible") || "");
+      if (visible !== MIXED_VALUE) {
+        values.visible = visible === "true";
+      }
+    }
+
+    if (isChanged("opacity")) {
+      const rawOpacity = String(data.get("opacity") || "").trim();
+      if (rawOpacity !== "") {
+        const opacity = Number(rawOpacity);
+        if (!Number.isInteger(opacity) || opacity < 0 || opacity > 100) {
+          return { error: "Opacity must be a whole number from 0 to 100." };
+        }
+        values.opacity = opacity;
+      }
+    }
+
+    if (isChanged("blocksMovement")) {
+      const blocksMovement = String(data.get("blocksMovement") || "");
+      if (blocksMovement !== MIXED_VALUE) {
+        values.blocksMovement = blocksMovement === "true";
+      }
+    }
+
+    if (isChanged("editorLocked")) {
+      const editorLocked = String(data.get("editorLocked") || "");
+      if (editorLocked !== MIXED_VALUE) {
+        values.editorLocked = editorLocked === "true";
+      }
+    }
+
+    if (isChanged("notes")) {
+      values.notes = String(data.get("notes") || "");
+    }
+
+    return { values };
   }
 
   readPlacedAssetPropertyValues(data, level, placedObject) {
@@ -1063,11 +1605,58 @@ class DevEditor {
   }
 
   deleteAssetsInSelectedRange() {
-    if (!this.selectedRange || this.selectionState !== "selectionReady") {
+    const selectedAreas = this.getSelectedAreaRanges();
+    if (selectedAreas.length === 0 || this.selectionState !== "selectionReady") {
       return false;
     }
 
-    return this.deleteAssetsInRange(this.selectedRange);
+    if (selectedAreas.length === 1) {
+      return this.deleteAssetsInRange(selectedAreas[0]);
+    }
+
+    const level = getCurrentLevel(this.project);
+    const selectedObjects = this.findObjectsInSelectedAreas(selectedAreas);
+    const removable = selectedObjects.filter(
+      (placedObject) =>
+        this.isLayerVisible(placedObject.layer) &&
+        !this.isPlacedObjectProtected(placedObject),
+    );
+    const hiddenCount = selectedObjects.filter(
+      (placedObject) => !this.isLayerVisible(placedObject.layer),
+    ).length;
+    const lockedCount = selectedObjects.filter(
+      (placedObject) =>
+        this.isLayerVisible(placedObject.layer) &&
+        this.isPlacedObjectProtected(placedObject),
+    ).length;
+
+    if (removable.length === 0) {
+      const skippedParts = this.createSkippedAssetParts(hiddenCount, lockedCount);
+      this.setStatus(
+        skippedParts.length > 0
+          ? `No editable visible assets deleted. ${skippedParts.join(" and ")} asset${hiddenCount + lockedCount === 1 ? " was" : "s were"} skipped.`
+          : "No placed assets found in the selected areas.",
+      );
+      return false;
+    }
+
+    const removedObjects = removeKnownPlacedObjectsByIds(
+      level,
+      removable.map((placedObject) => placedObject.id),
+    );
+    this.cancelCopyPlacement();
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    this.refreshPlacedAssetMarkers();
+    const skippedParts = this.createSkippedAssetParts(hiddenCount, lockedCount);
+    this.autosave(
+      `Deleted ${removedObjects.length} asset${removedObjects.length === 1 ? "" : "s"} across ${selectedAreas.length} areas.${
+        skippedParts.length > 0
+          ? ` ${skippedParts.join(" and ")} asset${hiddenCount + lockedCount === 1 ? " was" : "s were"} skipped.`
+          : ""
+      }`,
+    );
+    return true;
   }
 
   deleteAssetsInRange(range, { clearSelection = false } = {}) {
@@ -1145,11 +1734,14 @@ class DevEditor {
       return this.transformPlacedObjectGroup(transform);
     }
 
-    const existing = findObjectsInRange(level, x, y, width, height).filter(
-      (placedObject) => placedObject.id !== placedObjectId,
+    const existing = this.findTargetLayerOverlaps(
+      level,
+      { x, y, width, height },
+      this.getPlacedObjectTargetLayer(sourceObject),
+      new Set([placedObjectId]),
     );
 
-    if (this.blockActionForLockedOverlaps(existing, "Move/resize")) {
+    if (this.blockActionForTargetLayerOverlaps(existing, "Move/resize")) {
       this.render();
       return false;
     }
@@ -1216,9 +1808,20 @@ class DevEditor {
 
     const overlappingObjects = [];
     updates.forEach((bounds) => {
-      findObjectsInRange(level, bounds.x, bounds.y, bounds.width, bounds.height).forEach(
+      const sourceObject = selectedObjects.find(
+        (placedObject) => placedObject.id === placedObjectId,
+      );
+      if (!sourceObject) {
+        return;
+      }
+      this.findTargetLayerOverlaps(
+        level,
+        bounds,
+        this.getPlacedObjectTargetLayer(sourceObject),
+        selectedIdSet,
+      ).forEach(
         (candidate) => {
-          if (!selectedIdSet.has(candidate.id) && !overlappingObjects.some((item) => item.id === candidate.id)) {
+          if (!overlappingObjects.some((item) => item.id === candidate.id)) {
             overlappingObjects.push(candidate);
           }
         },
@@ -1226,7 +1829,7 @@ class DevEditor {
     });
 
     if (overlappingObjects.length > 0) {
-      if (this.blockActionForLockedOverlaps(overlappingObjects, "Group move")) {
+      if (this.blockActionForTargetLayerOverlaps(overlappingObjects, "Group move")) {
         this.render();
         return false;
       }
@@ -1261,44 +1864,101 @@ class DevEditor {
   }
 
   startCopyPlacement() {
-    const level = getCurrentLevel(this.project);
-    const selectedObject = getPlacedObjects(level, this.getEditableLayerNames()).find(
-      (placedObject) =>
-        placedObject.id === this.selectedPlacedObjectId &&
-        placedObject.editorLocked !== true,
-    );
+    this.startPlacedAssetPlacement("copy");
+  }
 
-    if (!selectedObject) {
-      this.setStatus("Select an asset first.");
+  startCutPlacement() {
+    this.startPlacedAssetPlacement("cut");
+  }
+
+  startPlacedAssetPlacement(mode) {
+    const level = getCurrentLevel(this.project);
+    const { selectedIds, selectedObjects } = this.getEligibleSelectedPlacedAssets();
+
+    if (selectedObjects.length === 0) {
+      this.setStatus(
+        mode === "cut"
+          ? "No unlocked visible assets selected to cut."
+          : "No unlocked visible assets selected to copy.",
+      );
       return;
     }
 
-    this.copiedPlacedObject = { ...selectedObject };
-    this.copyPreviewRange = this.getCopiedPlacementRange(selectedObject.x, selectedObject.y);
-    this.gridEditor.setCopyModeActive(true);
+    this.copiedPlacedGroup = this.createPlacedAssetGroup(selectedObjects, mode);
+    this.copyPreviewOrigin = this.getCopiedPlacementOrigin(
+      this.copiedPlacedGroup.sourceOrigin.x,
+      this.copiedPlacedGroup.sourceOrigin.y,
+    );
+    this.gridEditor.setCopyModeActive(true, mode);
     this.render();
-    this.setStatus("Copied placed asset. Move over the grid and click to place; Escape cancels.");
+    if (mode === "cut") {
+      const skippedCount = selectedIds.length - selectedObjects.length;
+      this.setStatus(
+        skippedCount > 0
+          ? `Cut ${selectedObjects.length} of ${selectedIds.length} selected assets. Cut mode: click grid to place, Escape to cancel.`
+          : "Cut mode: click grid to place, Escape to cancel.",
+      );
+    } else if (selectedIds.length === 1 && selectedObjects.length === 1) {
+      this.setStatus("Copied placed asset. Move over the grid and click to place; Escape cancels.");
+    } else {
+      this.setStatus(
+        `Copied ${selectedObjects.length} of ${selectedIds.length} selected assets. Move over the grid and click to place; Escape cancels.`,
+      );
+    }
   }
 
   moveCopyPreview({ x, y }) {
-    if (!this.copiedPlacedObject || this.activeTool !== "move") {
+    if (!this.copiedPlacedGroup || this.activeTool !== "move") {
       return;
     }
 
-    this.copyPreviewRange = this.getCopiedPlacementRange(x, y);
-    this.gridEditor.updateCopyPreview(this.createCopyPreview());
+    this.copyPreviewOrigin = this.getCopiedPlacementOrigin(x, y);
+    this.gridEditor.updateCopyPreviewPosition({
+      ...this.copyPreviewOrigin,
+      width: this.copiedPlacedGroup.width,
+      height: this.copiedPlacedGroup.height,
+    });
   }
 
   async pasteCopiedPlacedAssetAt(x, y) {
-    if (!this.copiedPlacedObject) {
+    if (!this.copiedPlacedGroup) {
       return false;
     }
 
     const level = getCurrentLevel(this.project);
-    const range = this.getCopiedPlacementRange(x, y);
-    const existing = findObjectsInRange(level, range.x, range.y, range.width, range.height);
+    const origin = this.getCopiedPlacementOrigin(x, y);
+    const isCut = this.copiedPlacedGroup.mode === "cut";
+    const sourceIds = new Set(
+      this.copiedPlacedGroup.objects.map((copy) => copy.sourceObject.id),
+    );
+    const targetCopies = this.copiedPlacedGroup.objects.map((copy) => ({
+      sourceObject: copy.sourceObject,
+      x: origin.x + copy.offsetX,
+      y: origin.y + copy.offsetY,
+      width: Math.max(1, Number(copy.sourceObject.width) || 1),
+      height: Math.max(1, Number(copy.sourceObject.height) || 1),
+    }));
+    const existingById = new Map();
+    targetCopies.forEach((copy) => {
+      this.findTargetLayerOverlaps(
+        level,
+        copy,
+        this.getPlacedObjectTargetLayer(copy.sourceObject),
+        isCut ? sourceIds : new Set(),
+      ).forEach(
+        (placedObject) => {
+          existingById.set(placedObject.id, placedObject);
+        },
+      );
+    });
+    const existing = Array.from(existingById.values());
 
-    if (this.blockActionForLockedOverlaps(existing, "Copied asset placement")) {
+    if (
+      this.blockActionForTargetLayerOverlaps(
+        existing,
+        isCut ? "Cut group placement" : "Copied group placement",
+      )
+    ) {
       return false;
     }
 
@@ -1306,32 +1966,144 @@ class DevEditor {
       const confirmed = await this.showConfirmModal({
         title: "Overlap Existing Assets?",
         message: this.createOverlapWarningMessage(
-          "Placing this copied asset will overlap existing assets. Continue?",
+          `Placing this ${isCut ? "cut" : "copied"} ${targetCopies.length === 1 ? "asset" : "group"} will overlap existing assets. Continue?`,
           existing,
         ),
-        confirmLabel: "Place Copy",
+        confirmLabel: isCut
+          ? "Place Cut Assets"
+          : targetCopies.length === 1
+            ? "Place Copy"
+            : "Place Group",
       });
 
       if (!confirmed) {
-        this.setStatus("Copy placement cancelled. Click another grid cell or press Escape.");
+        this.setStatus(
+          `${isCut ? "Cut" : "Copy"} placement not applied. Click another grid cell or press Escape.`,
+        );
         return false;
       }
     }
 
-    const placedObject = duplicatePlacedAsset(
-      level,
-      this.copiedPlacedObject,
-      range.x,
-      range.y,
-      range.width,
-      range.height,
+    const primarySourceId = this.copiedPlacedGroup.primarySourceId;
+    const placedObjects = isCut
+      ? movePlacedAssetGroup(
+        level,
+        targetCopies,
+        Array.from(sourceIds),
+        existing.map((placedObject) => placedObject.id),
+      )
+      : duplicatePlacedAssetGroup(
+        level,
+        targetCopies,
+        existing.map((placedObject) => placedObject.id),
+      );
+    if (!placedObjects) {
+      this.setStatus(
+        isCut
+          ? "Unable to move the cut assets. Original assets were unchanged."
+          : "Unable to paste the copied assets.",
+      );
+      return false;
+    }
+
+    const primaryIndex = this.copiedPlacedGroup.objects.findIndex(
+      (copy) => copy.sourceObject.id === primarySourceId,
     );
-    this.copiedPlacedObject = null;
-    this.copyPreviewRange = null;
+    const primaryPlacedObject = placedObjects[Math.max(0, primaryIndex)] || placedObjects[0];
+    this.copiedPlacedGroup = null;
+    this.copyPreviewOrigin = null;
     this.gridEditor.setCopyModeActive(false);
-    this.setPlacedObjectSelection([placedObject.id], placedObject.id);
+    this.setPlacedObjectSelection(
+      placedObjects.map((placedObject) => placedObject.id),
+      primaryPlacedObject.id,
+    );
     this.render();
-    this.autosave(`Pasted copied asset at ${placedObject.rangeRef} on ${level.name}.`);
+    this.autosave(
+      `${isCut ? "Moved" : "Pasted"} ${placedObjects.length} asset${placedObjects.length === 1 ? "" : "s"} on ${level.name}.`,
+    );
+    return true;
+  }
+
+  async duplicateSelectedPlacedAssets() {
+    if (this.copiedPlacedGroup) {
+      this.cancelCopyPlacement();
+    }
+    const level = getCurrentLevel(this.project);
+    const { selectedIds, selectedObjects } = this.getEligibleSelectedPlacedAssets();
+    if (selectedObjects.length === 0) {
+      this.setStatus("No unlocked visible assets selected to duplicate.");
+      return false;
+    }
+
+    const group = this.createPlacedAssetGroup(selectedObjects, "copy");
+    const origin = this.getDuplicatePlacementOrigin(group);
+    const sourceIds = new Set(group.objects.map((copy) => copy.sourceObject.id));
+    const targetCopies = group.objects.map((copy) => ({
+      sourceObject: copy.sourceObject,
+      x: origin.x + copy.offsetX,
+      y: origin.y + copy.offsetY,
+      width: Math.max(1, Number(copy.sourceObject.width) || 1),
+      height: Math.max(1, Number(copy.sourceObject.height) || 1),
+    }));
+    const existingById = new Map();
+    targetCopies.forEach((copy) => {
+      this.findTargetLayerOverlaps(
+        level,
+        copy,
+        this.getPlacedObjectTargetLayer(copy.sourceObject),
+        sourceIds,
+      ).forEach(
+        (placedObject) => {
+          existingById.set(placedObject.id, placedObject);
+        },
+      );
+    });
+    const existing = Array.from(existingById.values());
+
+    if (this.blockActionForTargetLayerOverlaps(existing, "Duplicate placement")) {
+      return false;
+    }
+
+    if (existing.length > 0) {
+      const confirmed = await this.showConfirmModal({
+        title: "Overlap Existing Assets?",
+        message: this.createOverlapWarningMessage(
+          `Duplicating ${targetCopies.length === 1 ? "this asset" : "these assets"} will overlap existing assets. Continue?`,
+          existing,
+        ),
+        confirmLabel: targetCopies.length === 1 ? "Duplicate Asset" : "Duplicate Group",
+      });
+      if (!confirmed) {
+        this.setStatus("Duplicate cancelled. Existing assets were unchanged.");
+        return false;
+      }
+    }
+
+    const placedObjects = duplicatePlacedAssetGroup(
+      level,
+      targetCopies,
+      existing.map((placedObject) => placedObject.id),
+    );
+    if (!placedObjects) {
+      this.setStatus("Unable to duplicate the selected assets.");
+      return false;
+    }
+
+    const primaryIndex = group.objects.findIndex(
+      (copy) => copy.sourceObject.id === group.primarySourceId,
+    );
+    const primaryPlacedObject = placedObjects[Math.max(0, primaryIndex)] || placedObjects[0];
+    this.setPlacedObjectSelection(
+      placedObjects.map((placedObject) => placedObject.id),
+      primaryPlacedObject.id,
+    );
+    this.render();
+    const skippedCount = selectedIds.length - selectedObjects.length;
+    this.autosave(
+      `Duplicated ${placedObjects.length} asset${placedObjects.length === 1 ? "" : "s"}${
+        skippedCount > 0 ? `; skipped ${skippedCount} hidden or locked selection${skippedCount === 1 ? "" : "s"}` : ""
+      }.`,
+    );
     return true;
   }
 
@@ -1365,6 +2137,78 @@ class DevEditor {
       placeholder: options.placeholder || "",
       confirmLabel: options.confirmLabel || "OK",
       cancelLabel: options.cancelLabel || "Cancel",
+    });
+  }
+
+  showSelectModal(options) {
+    return new Promise((resolve) => {
+      const dialog = document.createElement("dialog");
+      const selectOptions = (options.options || []).map(
+        (option) =>
+          `<option value="${escapeAttribute(option.value)}">${escapeHtml(option.label)}</option>`,
+      ).join("");
+      let resolved = false;
+
+      dialog.className = "editor-modal-dialog editor-modal-select";
+      dialog.innerHTML = `
+        <form class="editor-modal-form" method="dialog">
+          <h2>${escapeHtml(options.title || "Choose Option")}</h2>
+          ${options.message ? `<p>${escapeHtml(options.message)}</p>` : ""}
+          <label>${escapeHtml(options.label || "Option")}
+            <select name="modalValue" required>${selectOptions}</select>
+          </label>
+          <div class="dialog-actions">
+            <button type="button" data-action="cancel-modal">${escapeHtml(options.cancelLabel || "Cancel")}</button>
+            <button type="submit">${escapeHtml(options.confirmLabel || "Continue")}</button>
+          </div>
+        </form>
+      `;
+
+      const finish = (value) => {
+        if (resolved) {
+          return;
+        }
+        resolved = true;
+        resolve(value);
+        if (dialog.open) {
+          dialog.close();
+        } else {
+          dialog.remove();
+        }
+      };
+
+      document.body.append(dialog);
+      const form = dialog.querySelector("form");
+      const select = dialog.querySelector("select[name='modalValue']");
+      const cancelButton = dialog.querySelector('[data-action="cancel-modal"]');
+      if (options.value) {
+        select.value = options.value;
+      }
+
+      cancelButton.addEventListener("click", () => {
+        finish(null);
+      });
+
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        finish(select.value);
+      });
+
+      dialog.addEventListener("cancel", (event) => {
+        event.preventDefault();
+        finish(null);
+      });
+
+      dialog.addEventListener("close", () => {
+        if (!resolved) {
+          resolved = true;
+          resolve(null);
+        }
+        dialog.remove();
+      });
+
+      dialog.showModal();
+      select.focus();
     });
   }
 
@@ -1574,34 +2418,334 @@ class DevEditor {
     );
   }
 
-  getCopiedPlacementRange(x, y) {
+  getCopiedPlacementOrigin(x, y) {
     const level = getCurrentLevel(this.project);
-    const width = Math.max(1, Number(this.copiedPlacedObject?.width) || 1);
-    const height = Math.max(1, Number(this.copiedPlacedObject?.height) || 1);
+    const width = Math.max(1, Number(this.copiedPlacedGroup?.width) || 1);
+    const height = Math.max(1, Number(this.copiedPlacedGroup?.height) || 1);
 
     return {
       x: clamp(x, 1, Math.max(1, level.gridWidth - width + 1)),
       y: clamp(y, 1, Math.max(1, level.gridHeight - height + 1)),
-      width: Math.min(width, level.gridWidth),
-      height: Math.min(height, level.gridHeight),
+    };
+  }
+
+  getDuplicatePlacementOrigin(group) {
+    const level = getCurrentLevel(this.project);
+    const maximumX = Math.max(1, level.gridWidth - group.width + 1);
+    const maximumY = Math.max(1, level.gridHeight - group.height + 1);
+    const preferred = {
+      x: clamp(group.sourceOrigin.x + 1, 1, maximumX),
+      y: clamp(group.sourceOrigin.y + 1, 1, maximumY),
+    };
+    if (
+      preferred.x !== group.sourceOrigin.x ||
+      preferred.y !== group.sourceOrigin.y
+    ) {
+      return preferred;
+    }
+    return {
+      x: clamp(group.sourceOrigin.x - 1, 1, maximumX),
+      y: clamp(group.sourceOrigin.y - 1, 1, maximumY),
+    };
+  }
+
+  getEligibleSelectedPlacedAssets() {
+    const level = getCurrentLevel(this.project);
+    const selectedIds = this.selectedPlacedObjectIds.size > 0
+      ? Array.from(this.selectedPlacedObjectIds)
+      : [this.selectedPlacedObjectId].filter(Boolean);
+    const selectedIdSet = new Set(selectedIds);
+    const selectedObjects = getPlacedObjects(level).filter(
+      (placedObject) =>
+        selectedIdSet.has(placedObject.id) &&
+        this.isLayerVisible(placedObject.layer) &&
+        !this.isLayerLocked(placedObject.layer) &&
+        placedObject.editorLocked !== true,
+    );
+    return { selectedIds, selectedObjects };
+  }
+
+  getSelectedPlacedAssetsForLocking() {
+    const selection = this.getSelectedPlacedAssetsForProperties();
+
+    return {
+      selectedIds: selection.selectedIds,
+      selectedObjects: selection.lockableObjects,
+      protectedCount: selection.protectedCount,
+    };
+  }
+
+  getSelectedPlacedAssetsForProperties() {
+    const level = getCurrentLevel(this.project);
+    const selectedIds = this.selectedPlacedObjectIds.size > 0
+      ? Array.from(this.selectedPlacedObjectIds)
+      : [this.selectedPlacedObjectId].filter(Boolean);
+    const selectedIdSet = new Set(selectedIds);
+    const allSelectedObjects = getPlacedObjects(level).filter(
+      (placedObject) => selectedIdSet.has(placedObject.id),
+    );
+    const visibleLayerObjects = allSelectedObjects.filter(
+      (placedObject) => this.canUnlockPlacedObject(placedObject),
+    );
+    const editableObjects = allSelectedObjects.filter(
+      (placedObject) => this.canEditPlacedObject(placedObject),
+    );
+    const individuallyLockedObjects = visibleLayerObjects.filter(
+      (placedObject) => placedObject.editorLocked === true,
+    );
+
+    return {
+      selectedIds,
+      allSelectedObjects,
+      editableObjects,
+      individuallyLockedObjects,
+      lockableObjects: visibleLayerObjects,
+      lockedCount: individuallyLockedObjects.length,
+      protectedCount: allSelectedObjects.length - visibleLayerObjects.length,
+    };
+  }
+
+  applySelectedPlacedAssetLockState(shouldLock) {
+    const level = getCurrentLevel(this.project);
+    const { selectedObjects, protectedCount } = this.getSelectedPlacedAssetsForLocking();
+    let changedCount = 0;
+
+    selectedObjects.forEach((placedObject) => {
+      const result = this.setPlacedObjectLockState(level, placedObject.id, shouldLock);
+      if (result?.changed) {
+        changedCount += 1;
+      }
+    });
+
+    const selectableIds = selectedObjects
+      .filter(
+        (placedObject) =>
+          this.isLayerVisible(placedObject.layer) &&
+          !this.isLayerLocked(placedObject.layer),
+      )
+      .map((placedObject) => placedObject.id);
+    const previousPrimaryId = this.selectedPlacedObjectId;
+    this.setPlacedObjectSelection(
+      selectableIds,
+      selectableIds.includes(previousPrimaryId) ? previousPrimaryId : selectableIds[0] || null,
+    );
+
+    return {
+      appliedCount: selectedObjects.length,
+      changedCount,
+      selectedCount: selectedObjects.length,
+      protectedCount,
+    };
+  }
+
+  createMultiLockStatusMessage(result, shouldLock) {
+    const action = shouldLock ? "Locked" : "Unlocked";
+    const skippedText =
+      result.protectedCount > 0
+        ? ` Skipped ${result.protectedCount} protected asset${result.protectedCount === 1 ? "" : "s"}.`
+        : "";
+
+    if (result.appliedCount === 0) {
+      return `No selected assets changed.${skippedText}`;
+    }
+
+    return `${action} ${result.appliedCount} selected asset${result.appliedCount === 1 ? "" : "s"}.${skippedText}`;
+  }
+
+  setPlacedObjectLockState(level, placedObjectId, shouldLock) {
+    for (const layerName of LAYERS) {
+      const placedObject = (level.layers[layerName] || []).find(
+        (candidate) => candidate.id === placedObjectId,
+      );
+      if (!placedObject) {
+        continue;
+      }
+
+      const changed = placedObject.editorLocked !== shouldLock;
+      placedObject.editorLocked = shouldLock;
+      return { placedObject, changed };
+    }
+
+    return null;
+  }
+
+  applyMultiPlacedAssetProperties(values) {
+    const level = getCurrentLevel(this.project);
+    const selection = this.getSelectedPlacedAssetsForProperties();
+    const changedFields = Object.keys(values);
+    const hasEditableChanges = changedFields.some((fieldName) => fieldName !== "editorLocked");
+    let editedCount = 0;
+    let lockAppliedCount = 0;
+    let lockChangedCount = 0;
+
+    if (hasEditableChanges) {
+      selection.editableObjects.forEach((placedObject) => {
+        const nextProperties = {
+          x: Number(placedObject.x) || 1,
+          y: Number(placedObject.y) || 1,
+          width: Math.max(1, Number(placedObject.width) || 1),
+          height: Math.max(1, Number(placedObject.height) || 1),
+          layer: values.layer ?? normalizePlacedLayer(placedObject.layer),
+        };
+        if (Object.prototype.hasOwnProperty.call(values, "visible")) {
+          nextProperties.visible = values.visible;
+        }
+        if (Object.prototype.hasOwnProperty.call(values, "opacity")) {
+          nextProperties.opacity = values.opacity;
+        }
+        if (Object.prototype.hasOwnProperty.call(values, "blocksMovement")) {
+          nextProperties.blocksMovement = values.blocksMovement;
+        }
+        if (Object.prototype.hasOwnProperty.call(values, "notes")) {
+          nextProperties.notes = values.notes;
+        }
+        const updatedObject = updatePlacedAssetProperties(level, placedObject.id, nextProperties);
+        if (updatedObject) {
+          editedCount += 1;
+        }
+      });
+    }
+
+    if (values.editorLocked !== undefined) {
+      selection.lockableObjects.forEach((placedObject) => {
+        const result = this.setPlacedObjectLockState(
+          level,
+          placedObject.id,
+          values.editorLocked,
+        );
+        if (result?.changed) {
+          lockChangedCount += 1;
+        }
+      });
+      lockAppliedCount = selection.lockableObjects.length;
+    }
+
+    const selectableIds = selection.selectedIds.filter((placedObjectId) => {
+      const placedObject = getPlacedObjects(level).find(
+        (candidate) => candidate.id === placedObjectId,
+      );
+      return (
+        placedObject &&
+        this.isLayerVisible(placedObject.layer) &&
+        !this.isLayerLocked(placedObject.layer)
+      );
+    });
+    const previousPrimaryId = this.selectedPlacedObjectId;
+    this.setPlacedObjectSelection(
+      selectableIds,
+      selectableIds.includes(previousPrimaryId) ? previousPrimaryId : selectableIds[0] || null,
+    );
+
+    return {
+      changedFields,
+      editedCount,
+      lockAppliedCount,
+      lockChangedCount,
+      lockState: values.editorLocked,
+      editableCount: selection.editableObjects.length,
+      lockableCount: selection.lockableObjects.length,
+      sharedEditSkippedCount: hasEditableChanges
+        ? selection.allSelectedObjects.length - selection.editableObjects.length
+        : 0,
+      protectedCount: selection.protectedCount,
+    };
+  }
+
+  createMultiPropertiesStatusMessage(result, values) {
+    const parts = [];
+    const changedSharedFields = result.changedFields.filter(
+      (fieldName) => fieldName !== "editorLocked",
+    );
+
+    if (changedSharedFields.length > 0) {
+      parts.push(
+        `Updated ${changedSharedFields.join(", ")} for ${result.editedCount} selected asset${result.editedCount === 1 ? "" : "s"}.`,
+      );
+      if (result.sharedEditSkippedCount > 0) {
+        parts.push(
+          `Skipped ${result.sharedEditSkippedCount} protected asset${result.sharedEditSkippedCount === 1 ? "" : "s"}.`,
+        );
+      }
+    }
+
+    if (values.editorLocked !== undefined) {
+      const action = values.editorLocked ? "Locked" : "Unlocked";
+      parts.push(
+        `${action} ${result.lockAppliedCount} selected asset${result.lockAppliedCount === 1 ? "" : "s"}.`,
+      );
+    }
+
+    if (result.protectedCount > 0 && changedSharedFields.length === 0) {
+      parts.push(
+        `Skipped ${result.protectedCount} protected asset${result.protectedCount === 1 ? "" : "s"}.`,
+      );
+    }
+
+    return parts.length > 0 ? parts.join(" ") : "No selected assets changed.";
+  }
+
+  createPlacedAssetGroup(selectedObjects, mode) {
+    const minimumX = Math.min(...selectedObjects.map((placedObject) => Number(placedObject.x) || 1));
+    const minimumY = Math.min(...selectedObjects.map((placedObject) => Number(placedObject.y) || 1));
+    const maximumX = Math.max(
+      ...selectedObjects.map(
+        (placedObject) =>
+          (Number(placedObject.x) || 1) + (Number(placedObject.width) || 1) - 1,
+      ),
+    );
+    const maximumY = Math.max(
+      ...selectedObjects.map(
+        (placedObject) =>
+          (Number(placedObject.y) || 1) + (Number(placedObject.height) || 1) - 1,
+      ),
+    );
+    return {
+      mode,
+      width: maximumX - minimumX + 1,
+      height: maximumY - minimumY + 1,
+      sourceOrigin: { x: minimumX, y: minimumY },
+      primarySourceId: this.selectedPlacedObjectId || selectedObjects[0].id,
+      objects: selectedObjects.map((placedObject) => ({
+        sourceObject: cloneEditorData(placedObject),
+        offsetX: (Number(placedObject.x) || 1) - minimumX,
+        offsetY: (Number(placedObject.y) || 1) - minimumY,
+      })),
     };
   }
 
   createCopyPreview() {
-    if (!this.copiedPlacedObject || !this.copyPreviewRange) {
+    if (!this.copiedPlacedGroup || !this.copyPreviewOrigin) {
       return null;
     }
 
     return {
-      placedObject: this.copiedPlacedObject,
-      asset: this.project.assets.find((asset) => asset.id === this.copiedPlacedObject.assetId),
-      range: this.copyPreviewRange,
+      mode: this.copiedPlacedGroup.mode,
+      key: `${this.copiedPlacedGroup.mode}:${
+        this.copiedPlacedGroup.objects
+        .map((copy) => `${copy.sourceObject.id}:${copy.sourceObject.assetId}`)
+        .join("|")
+      }`,
+      range: {
+        ...this.copyPreviewOrigin,
+        width: this.copiedPlacedGroup.width,
+        height: this.copiedPlacedGroup.height,
+      },
+      items: this.copiedPlacedGroup.objects.map((copy) => ({
+        placedObject: copy.sourceObject,
+        asset: this.project.assets.find((asset) => asset.id === copy.sourceObject.assetId),
+        range: {
+          x: this.copyPreviewOrigin.x + copy.offsetX,
+          y: this.copyPreviewOrigin.y + copy.offsetY,
+          width: Math.max(1, Number(copy.sourceObject.width) || 1),
+          height: Math.max(1, Number(copy.sourceObject.height) || 1),
+        },
+      })),
     };
   }
 
   cancelCopyPlacement() {
-    this.copiedPlacedObject = null;
-    this.copyPreviewRange = null;
+    this.copiedPlacedGroup = null;
+    this.copyPreviewOrigin = null;
     this.gridEditor?.setCopyModeActive(false);
     this.gridEditor?.updateCopyPreview(null);
   }
@@ -1617,7 +2761,977 @@ class DevEditor {
       return;
     }
 
+    if (this.selectedRanges.length > 1) {
+      this.setStatus("Use Fill Selected Area to place assets into multiple selected areas.");
+      return;
+    }
+
     await this.placeAssetInRange(asset, range, "button");
+  }
+
+  async fillSelectedArea() {
+    const selectedAreas = this.getSelectedAreaRanges();
+    if (selectedAreas.length === 0) {
+      this.setStatus("Select a grid area first.");
+      return false;
+    }
+    if (!this.selectedAsset) {
+      this.setStatus("No asset selected.");
+      return false;
+    }
+    if (
+      this.selectedAsset.isImported &&
+      (!this.selectedAsset.src || typeof this.selectedAsset.src !== "string")
+    ) {
+      this.setStatus("Asset image data missing.");
+      return false;
+    }
+
+    const targetLayer = this.getAssetPlacementLayer(this.selectedAsset);
+    if (this.isLayerLocked(targetLayer)) {
+      this.setStatus(
+        `Fill blocked: layer "${normalizePlacedLayer(targetLayer)}" is locked.`,
+      );
+      return false;
+    }
+
+    const level = getCurrentLevel(this.project);
+    const isMultiAreaFill = selectedAreas.length > 1;
+    const range = { ...selectedAreas[selectedAreas.length - 1] };
+    const existing = isMultiAreaFill
+      ? this.findObjectsInSelectedAreas(selectedAreas, [targetLayer])
+      : findObjectsInRange(
+          level,
+          range.x,
+          range.y,
+          range.width,
+          range.height,
+          [targetLayer],
+        );
+    if (this.blockActionForTargetLayerOverlaps(existing, "Fill")) {
+      this.setStatus(
+        isMultiAreaFill
+          ? "Selected areas contain hidden or locked assets on the target layer. Show or unlock them before filling these areas."
+          : "Selected area contains hidden or locked assets on the target layer. Show or unlock them before filling this area.",
+      );
+      return false;
+    }
+
+    const selectedCells = isMultiAreaFill
+      ? this.getUniqueSelectedCells(selectedAreas)
+      : null;
+    const fillCount = isMultiAreaFill
+      ? selectedCells.length
+      : range.width * range.height;
+    if (fillCount > 500) {
+      const confirmed = await this.showConfirmModal({
+        title: "Large Area Fill?",
+        message: `Filling this area will create ${fillCount} placed assets and may affect performance. Continue?`,
+        confirmLabel: "Fill Area",
+      });
+      if (!confirmed) {
+        this.setStatus("Fill cancelled.");
+        return false;
+      }
+    }
+
+    if (existing.length > 0) {
+      const confirmed = await this.showConfirmModal({
+        title: "Replace Existing Assets?",
+        message: this.createOverlapWarningMessage(
+          isMultiAreaFill
+            ? "Filling these areas will replace existing editable assets in the selected areas. Continue?"
+            : "Filling this area will replace existing editable assets in the selected area. Continue?",
+          existing,
+        ),
+        confirmLabel: "Fill Area",
+      });
+      if (!confirmed) {
+        this.setStatus("Fill cancelled.");
+        return false;
+      }
+    }
+
+    const placedObjects = isMultiAreaFill
+      ? fillCellsWithAsset(
+          level,
+          this.selectedAsset,
+          selectedCells,
+          existing.map((placedObject) => placedObject.id),
+        )
+      : fillAreaWithAsset(
+          level,
+          this.selectedAsset,
+          range,
+          existing.map((placedObject) => placedObject.id),
+        );
+    if (!placedObjects) {
+      this.setStatus("Unable to fill the selected area.");
+      return false;
+    }
+
+    this.cancelCopyPlacement();
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    this.refreshPlacedAssetMarkers();
+    this.autosave(
+      isMultiAreaFill
+        ? `Filled ${placedObjects.length} cells across ${selectedAreas.length} areas.`
+        : `Filled ${placedObjects.length} cells.`,
+    );
+    return true;
+  }
+
+  clearSelectedArea() {
+    const selectedAreas = this.getSelectedAreaRanges();
+    if (selectedAreas.length === 0) {
+      this.setStatus("Select a grid area first.");
+      return false;
+    }
+
+    const level = getCurrentLevel(this.project);
+    const isMultiAreaClear = selectedAreas.length > 1;
+    const range = selectedAreas[selectedAreas.length - 1];
+    const existing = isMultiAreaClear
+      ? this.findObjectsInSelectedAreas(selectedAreas)
+      : findObjectsInRange(
+          level,
+          range.x,
+          range.y,
+          range.width,
+          range.height,
+        );
+    const removable = existing.filter(
+      (placedObject) =>
+        this.isLayerVisible(placedObject.layer) &&
+        !this.isPlacedObjectProtected(placedObject),
+    );
+    const hiddenCount = existing.filter(
+      (placedObject) => !this.isLayerVisible(placedObject.layer),
+    ).length;
+    const lockedCount = existing.filter(
+      (placedObject) =>
+        this.isLayerVisible(placedObject.layer) &&
+        this.isPlacedObjectProtected(placedObject),
+    ).length;
+
+    if (removable.length === 0) {
+      const skipped = [];
+      if (hiddenCount > 0) {
+        skipped.push(`${hiddenCount} hidden`);
+      }
+      if (lockedCount > 0) {
+        skipped.push(`${lockedCount} locked`);
+      }
+      this.setStatus(
+        skipped.length > 0
+          ? `No editable visible assets cleared. ${skipped.join(" and ")} asset${hiddenCount + lockedCount === 1 ? " was" : "s were"} skipped.`
+          : `No placed assets found in the selected area${isMultiAreaClear ? "s" : ""}.`,
+      );
+      return false;
+    }
+
+    const removedObjects = removeKnownPlacedObjectsByIds(
+      level,
+      removable.map((placedObject) => placedObject.id),
+    );
+    this.cancelCopyPlacement();
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    this.refreshPlacedAssetMarkers();
+    const skippedParts = [];
+    if (hiddenCount > 0) {
+      skippedParts.push(`${hiddenCount} hidden`);
+    }
+    if (lockedCount > 0) {
+      skippedParts.push(`${lockedCount} locked`);
+    }
+    this.autosave(
+      `Cleared ${removedObjects.length} asset${removedObjects.length === 1 ? "" : "s"}${
+        isMultiAreaClear ? ` across ${selectedAreas.length} areas` : ""
+      }.${
+        skippedParts.length > 0
+          ? ` ${skippedParts.join(" and ")} asset${hiddenCount + lockedCount === 1 ? " was" : "s were"} skipped.`
+          : ""
+      }`,
+    );
+    return true;
+  }
+
+  async replaceMatchingAssetsInSelectedArea() {
+    const selectedAreas = this.getSelectedAreaRanges();
+    if (selectedAreas.length === 0) {
+      this.setStatus("Select a grid area first.");
+      return false;
+    }
+
+    const replacementAsset = this.selectedAsset;
+    if (!replacementAsset) {
+      this.setStatus("No replacement asset selected.");
+      return false;
+    }
+
+    if (
+      replacementAsset.isImported &&
+      (!replacementAsset.src || typeof replacementAsset.src !== "string")
+    ) {
+      this.setStatus("Replacement asset image data missing.");
+      return false;
+    }
+
+    if (!replacementAsset.id || !this.project.assets.some((asset) => asset.id === replacementAsset.id)) {
+      this.setStatus("Replacement asset was not found in the asset registry.");
+      return false;
+    }
+
+    const level = getCurrentLevel(this.project);
+    const isMultiAreaReplace = selectedAreas.length > 1;
+    const candidates = this.getReplaceMatchingCandidates(selectedAreas);
+    if (candidates.length === 0) {
+      this.setStatus("No visible unlocked placed assets found in the selected area.");
+      return false;
+    }
+
+    const sourceAssetId = await this.showSelectModal({
+      title: "Replace Matching Assets",
+      message: "Choose the placed asset type to replace inside the selected area.",
+      label: "Source asset to replace",
+      options: candidates.map((candidate) => ({
+        value: candidate.assetId,
+        label: candidate.label,
+      })),
+      value: candidates[0].assetId,
+      confirmLabel: "Choose Source",
+    });
+
+    if (!sourceAssetId) {
+      this.setStatus("Replace matching assets cancelled.");
+      return false;
+    }
+
+    if (sourceAssetId === replacementAsset.id) {
+      this.setStatus("Source and replacement assets are the same. No changes made.");
+      return false;
+    }
+
+    const matchingObjects = this.findObjectsInSelectedAreas(selectedAreas).filter(
+      (placedObject) => placedObject.assetId === sourceAssetId,
+    );
+    const replaceableObjects = matchingObjects.filter(
+      (placedObject) =>
+        this.isLayerVisible(placedObject.layer) &&
+        !this.isPlacedObjectProtected(placedObject),
+    );
+    const hiddenCount = matchingObjects.filter(
+      (placedObject) => !this.isLayerVisible(placedObject.layer),
+    ).length;
+    const lockedCount = matchingObjects.filter(
+      (placedObject) =>
+        this.isLayerVisible(placedObject.layer) &&
+        this.isPlacedObjectProtected(placedObject),
+    ).length;
+
+    if (replaceableObjects.length === 0) {
+      const skippedParts = this.createSkippedAssetParts(hiddenCount, lockedCount);
+      this.setStatus(
+        skippedParts.length > 0
+          ? `No editable matching assets replaced. ${skippedParts.join(" and ")} asset${hiddenCount + lockedCount === 1 ? " was" : "s were"} skipped.`
+          : "No matching assets found in the selected area.",
+      );
+      return false;
+    }
+
+    const skippedText = this.createSkippedAssetParts(hiddenCount, lockedCount);
+    const confirmed = await this.showConfirmModal({
+      title: "Replace Matching Assets?",
+      message: `Replace ${replaceableObjects.length} matching asset${replaceableObjects.length === 1 ? "" : "s"} in the selected area${isMultiAreaReplace ? "s" : ""}?${
+        skippedText.length > 0
+          ? ` ${skippedText.join(" and ")} asset${hiddenCount + lockedCount === 1 ? " will be" : "s will be"} skipped.`
+          : ""
+      }`,
+      confirmLabel: "Replace Assets",
+    });
+
+    if (!confirmed) {
+      this.setStatus("Replace matching assets cancelled.");
+      return false;
+    }
+
+    const replacedObjects = replacePlacedObjectAssetSources(
+      level,
+      replaceableObjects.map((placedObject) => placedObject.id),
+      replacementAsset,
+    );
+    if (replacedObjects.length === 0) {
+      this.setStatus("Unable to replace matching assets.");
+      return false;
+    }
+
+    this.cancelCopyPlacement();
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    this.refreshPlacedAssetMarkers();
+    this.autosave(
+      `Replaced ${replacedObjects.length} matching asset${replacedObjects.length === 1 ? "" : "s"} with ${replacementAsset.name || replacementAsset.id}${
+        isMultiAreaReplace ? ` across ${selectedAreas.length} areas` : ""
+      }.${
+        skippedText.length > 0
+          ? ` ${skippedText.join(" and ")} asset${hiddenCount + lockedCount === 1 ? " was" : "s were"} skipped.`
+          : ""
+      }`,
+    );
+    return true;
+  }
+
+  startDragPaint(cell) {
+    if (!this.isDragPaintMode) {
+      return;
+    }
+
+    if (!this.selectedAsset) {
+      this.dragPaintSession = null;
+      this.gridEditor.updatePaintPreview([]);
+      this.setStatus("Select an asset to drag paint.");
+      return;
+    }
+
+    const activePaintAssets = this.getActivePaintAssets();
+    if (activePaintAssets.length === 0) {
+      this.dragPaintSession = null;
+      this.gridEditor.updatePaintPreview([]);
+      this.setStatus(
+        this.getActivePaintVariantCount() > 0
+          ? "No usable paint variants available."
+          : "Asset image data missing.",
+      );
+      return;
+    }
+
+    if (activePaintAssets.some((asset) => this.isLayerLocked(asset.defaultLayer || "objects"))) {
+      this.dragPaintSession = null;
+      this.gridEditor.updatePaintPreview([]);
+      this.setStatus("Drag paint blocked: one or more paint source layers are locked.");
+      return;
+    }
+
+    this.selectedRange = null;
+    this.selectedRanges = [];
+    this.selectionState = "idle";
+    this.dropPreviewRange = null;
+    this.gridEditor.updateSelection(null);
+    this.gridEditor.updateMultiSelections([]);
+    this.gridEditor.updateDropPreview(null);
+    this.syncCoordinateStatus();
+    this.syncPlacementButton();
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    this.dragPaintSession = {
+      asset: this.selectedAsset,
+      paintAssets: activePaintAssets,
+      variantsActive: this.getActivePaintVariantCount() > 0,
+      brushSize: this.paintBrushSize,
+      paintedCells: new Map(),
+      skippedCells: new Set(),
+    };
+    this.addDragPaintCell(cell);
+  }
+
+  addDragPaintCell(cell) {
+    if (!this.dragPaintSession || !cell) {
+      return;
+    }
+
+    const level = getCurrentLevel(this.project);
+    const brushCells = this.getPaintBrushCells(cell, this.dragPaintSession.brushSize);
+    let changed = false;
+
+    brushCells.forEach((brushCell) => {
+      const key = createCellKey(brushCell);
+      if (
+        this.dragPaintSession.paintedCells.has(key) ||
+        this.dragPaintSession.skippedCells.has(key)
+      ) {
+        return;
+      }
+
+      const asset = this.pickPaintAsset(this.dragPaintSession.paintAssets);
+      const targetLayer = this.getAssetPlacementLayer(asset);
+      const existingObjects = findObjectsInRange(
+        level,
+        brushCell.x,
+        brushCell.y,
+        1,
+        1,
+        [targetLayer],
+      );
+      if (existingObjects.length > 0) {
+        this.dragPaintSession.skippedCells.add(key);
+        changed = true;
+        return;
+      }
+
+      this.dragPaintSession.paintedCells.set(key, {
+        x: brushCell.x,
+        y: brushCell.y,
+        asset,
+      });
+      changed = true;
+    });
+
+    if (!changed) {
+      return;
+    }
+
+    this.gridEditor.updatePaintPreview(
+      Array.from(this.dragPaintSession.paintedCells.values()),
+    );
+  }
+
+  finishDragPaint() {
+    const session = this.dragPaintSession;
+    this.dragPaintSession = null;
+    this.gridEditor.updatePaintPreview([]);
+
+    if (!session) {
+      return false;
+    }
+
+    const cells = Array.from(session.paintedCells.values());
+    const skippedCount = session.skippedCells.size;
+    if (cells.length === 0) {
+      this.setStatus(
+        skippedCount > 0
+          ? `Painted 0 cells with ${this.getBrushSizeLabel(session.brushSize)} brush. Skipped ${skippedCount} occupied/protected cell${skippedCount === 1 ? "" : "s"}.`
+          : "No cells painted.",
+      );
+      return false;
+    }
+
+    const level = getCurrentLevel(this.project);
+    const placedObjects = session.variantsActive
+      ? fillCellsWithAssets(level, cells, [])
+      : fillCellsWithAsset(level, session.asset, cells, []);
+    if (!placedObjects) {
+      this.setStatus("Unable to drag paint selected asset.");
+      return false;
+    }
+
+    this.refreshPlacedAssetMarkers();
+    this.autosave(
+      `Painted ${placedObjects.length} cell${placedObjects.length === 1 ? "" : "s"}${this.createPaintVariantStatusSuffix(session)} with ${this.getBrushSizeLabel(session.brushSize)} brush.${
+        skippedCount > 0
+          ? ` Skipped ${skippedCount} occupied/protected cell${skippedCount === 1 ? "" : "s"}.`
+          : ""
+      }`,
+    );
+    return true;
+  }
+
+  cancelDragPaint({ showStatus = false } = {}) {
+    const hadSession = Boolean(this.dragPaintSession);
+    this.dragPaintSession = null;
+    this.gridEditor?.updatePaintPreview([]);
+    if (showStatus && hadSession) {
+      this.setStatus("Drag paint cancelled. No cells were painted.");
+    }
+  }
+
+  openPaintVariantsDialog() {
+    const availableAssets = this.getAvailablePaintVariantAssets();
+    const categoryGroups = this.getPaintVariantCategoryGroups(availableAssets);
+    const selectedVariantIds = new Set(this.getValidatedPaintVariantAssetIds());
+    const expandedCategoryIds = new Set(this.loadPaintVariantExpandedCategoryIds());
+    const currentAssetText = this.selectedAsset
+      ? `${this.selectedAsset.name || this.selectedAsset.id} (${this.selectedAsset.category || "Uncategorised"})`
+      : "No selected asset";
+    const dialog = document.createElement("dialog");
+    dialog.className = "editor-modal paint-variants-dialog";
+    dialog.innerHTML = `
+      <form class="editor-modal-form paint-variants-form" method="dialog">
+        <h2>Paint Variants</h2>
+        <p class="properties-hint">Current selected asset: ${escapeHtml(currentAssetText)}</p>
+        <label class="paint-variant-search">
+          <span>Search assets</span>
+          <input type="search" data-role="paint-variant-search" placeholder="Search assets..." autocomplete="off" />
+        </label>
+        <p class="properties-hint" data-role="paint-variant-selected-count"></p>
+        <div class="paint-variant-list" data-role="paint-variant-list">
+        </div>
+        <p class="properties-hint">Tick a category to include its imported assets, then untick individual assets to exclude them. Paint randomly chooses one selected asset per painted cell.</p>
+        <div class="dialog-actions">
+          <button type="button" data-action="clear-paint-variants">Clear Variants</button>
+          <button type="button" data-action="cancel-paint-variants">Cancel</button>
+          <button type="submit">Apply</button>
+        </div>
+      </form>
+    `;
+
+    document.body.append(dialog);
+    const form = dialog.querySelector("form");
+    const list = dialog.querySelector('[data-role="paint-variant-list"]');
+    const searchInput = dialog.querySelector('[data-role="paint-variant-search"]');
+    const countLabel = dialog.querySelector('[data-role="paint-variant-selected-count"]');
+    const closeDialog = () => dialog.close();
+    const getGroupId = (group) => String(group.id || group.name || "uncategorised");
+    const getCategoryGroupsForSearch = () => {
+      const searchTerm = searchInput.value.trim().toLowerCase();
+      if (!searchTerm) {
+        return categoryGroups.map((group) => ({
+          ...group,
+          visibleAssets: group.assets,
+        }));
+      }
+      return categoryGroups
+        .map((group) => {
+          const visibleAssets = group.assets.filter((asset) => this.doesPaintVariantAssetMatchSearch(asset, group, searchTerm));
+          return {
+            ...group,
+            visibleAssets,
+          };
+        })
+        .filter((group) => group.visibleAssets.length > 0);
+    };
+    const updateCategoryStates = () => {
+      dialog.querySelectorAll("[data-role='paint-variant-category']").forEach((section) => {
+        const group = categoryGroups.find((candidate) => getGroupId(candidate) === section.dataset.categoryId);
+        const categoryToggle = section.querySelector("[data-role='paint-variant-category-toggle']");
+        const assetToggles = Array.from(section.querySelectorAll("[data-role='paint-variant-toggle']"));
+        const checkedCount = group
+          ? group.assets.filter((asset) => selectedVariantIds.has(asset.id)).length
+          : assetToggles.filter((input) => input.checked).length;
+        const totalCount = group ? group.assets.length : assetToggles.length;
+        const countText = section.querySelector("[data-role='paint-variant-category-count']");
+
+        categoryToggle.checked = totalCount > 0 && checkedCount === totalCount;
+        categoryToggle.indeterminate = checkedCount > 0 && checkedCount < totalCount;
+        if (countText) {
+          countText.textContent = `${checkedCount} / ${totalCount} selected`;
+        }
+      });
+
+      const selectedAssetCount = selectedVariantIds.size;
+      const selectedCategoryCount = categoryGroups
+        .filter((group) => group.assets.some((asset) => selectedVariantIds.has(asset.id)))
+        .length;
+      countLabel.textContent = selectedAssetCount > 0
+        ? `${selectedAssetCount} asset${selectedAssetCount === 1 ? "" : "s"} selected across ${selectedCategoryCount} categor${selectedCategoryCount === 1 ? "y" : "ies"}.`
+        : "No variant assets selected.";
+    };
+    const setCategoryExpanded = (section, expanded) => {
+      const expandButton = section.querySelector("[data-role='paint-variant-category-expand']");
+      const assetList = section.querySelector("[data-role='paint-variant-category-assets']");
+      const categoryId = section.dataset.categoryId;
+      section.classList.toggle("is-expanded", expanded);
+      section.classList.toggle("paint-variant-category--collapsed", !expanded);
+      expandButton?.setAttribute("aria-expanded", String(expanded));
+      if (expandButton) {
+        expandButton.textContent = expanded ? "v" : ">";
+      }
+      if (assetList) {
+        assetList.hidden = !expanded;
+      }
+      if (categoryId) {
+        if (expanded) {
+          expandedCategoryIds.add(categoryId);
+        } else {
+          expandedCategoryIds.delete(categoryId);
+        }
+        this.savePaintVariantExpandedCategoryIds(Array.from(expandedCategoryIds));
+      }
+    };
+    const renderVariantList = () => {
+      const groupsForSearch = getCategoryGroupsForSearch();
+      const hasSearch = searchInput.value.trim().length > 0;
+      if (availableAssets.length === 0) {
+        list.innerHTML = `<p class="properties-hint">No usable imported assets are available.</p>`;
+        updateCategoryStates();
+        return;
+      }
+      if (groupsForSearch.length === 0) {
+        list.innerHTML = `<p class="properties-hint">No assets found.</p>`;
+        updateCategoryStates();
+        return;
+      }
+      list.innerHTML = groupsForSearch
+        .map((group) =>
+          this.createPaintVariantCategorySection(
+            group,
+            selectedVariantIds,
+            hasSearch || expandedCategoryIds.has(getGroupId(group)),
+            group.visibleAssets,
+          ),
+        )
+        .join("");
+      updateCategoryStates();
+    };
+
+    dialog.querySelector('[data-action="cancel-paint-variants"]').addEventListener("click", closeDialog);
+    dialog.querySelector('[data-action="clear-paint-variants"]').addEventListener("click", () => {
+      selectedVariantIds.clear();
+      renderVariantList();
+      updateCategoryStates();
+      this.paintVariantAssetIds = [];
+      this.savePaintVariantAssetIds();
+      dialog.close();
+      this.syncPaintVariantsButton();
+      this.setStatus("Paint variants cleared. Using selected asset only.");
+    });
+    list?.addEventListener("click", (event) => {
+      const expandButton = event.target.closest("[data-role='paint-variant-category-expand']");
+      if (!expandButton) {
+        return;
+      }
+      const section = expandButton.closest("[data-role='paint-variant-category']");
+      setCategoryExpanded(section, !section.classList.contains("is-expanded"));
+    });
+    list?.addEventListener("change", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) {
+        return;
+      }
+      if (target.dataset.role === "paint-variant-category-toggle") {
+        const section = target.closest("[data-role='paint-variant-category']");
+        const group = categoryGroups.find((candidate) => getGroupId(candidate) === section?.dataset.categoryId);
+        group?.assets.forEach((asset) => {
+          if (target.checked) {
+            selectedVariantIds.add(asset.id);
+          } else {
+            selectedVariantIds.delete(asset.id);
+          }
+        });
+        section?.querySelectorAll("[data-role='paint-variant-toggle']").forEach((input) => {
+          input.checked = selectedVariantIds.has(input.value);
+        });
+      } else if (target.dataset.role === "paint-variant-toggle") {
+        if (target.checked) {
+          selectedVariantIds.add(target.value);
+        } else {
+          selectedVariantIds.delete(target.value);
+        }
+      }
+      updateCategoryStates();
+    });
+    searchInput.addEventListener("input", () => {
+      renderVariantList();
+    });
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      this.paintVariantAssetIds = this.validatePaintVariantAssetIds(Array.from(selectedVariantIds));
+      this.savePaintVariantAssetIds();
+      dialog.close();
+      this.syncPaintVariantsButton();
+      const count = this.paintVariantAssetIds.length;
+      this.setStatus(
+        count > 0
+          ? `Paint variants active: ${count}.`
+          : "Paint variants cleared. Using selected asset only.",
+      );
+    });
+    renderVariantList();
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog.showModal();
+  }
+
+  createPaintVariantCategorySection(group, activeIds, expanded = false, visibleAssets = group.assets) {
+    const groupId = String(group.id || group.name || "uncategorised");
+    const expandedClass = expanded ? "is-expanded" : "paint-variant-category--collapsed";
+    return `
+      <section class="paint-variant-category ${expandedClass}" data-role="paint-variant-category" data-category-id="${escapeAttribute(groupId)}">
+        <div class="paint-variant-category-summary">
+          <button
+            type="button"
+            class="paint-variant-category-expand"
+            data-role="paint-variant-category-expand"
+            aria-expanded="${expanded ? "true" : "false"}"
+            aria-label="Expand ${escapeAttribute(group.name)} variants"
+          >${expanded ? "v" : "&gt;"}</button>
+          <label class="paint-variant-category-toggle">
+            <input
+              type="checkbox"
+              data-role="paint-variant-category-toggle"
+              value="${escapeAttribute(group.id)}"
+            />
+            <span>${escapeHtml(group.name)}</span>
+          </label>
+          <span class="paint-variant-category-count" data-role="paint-variant-category-count"></span>
+        </div>
+        <div class="paint-variant-category-assets" data-role="paint-variant-category-assets" ${expanded ? "" : "hidden"}>
+          ${visibleAssets.map((asset) => this.createPaintVariantOption(asset, activeIds)).join("")}
+        </div>
+      </section>
+    `;
+  }
+
+  createPaintVariantOption(asset, activeIds) {
+    const label = this.getPaintVariantAssetLabel(asset);
+    const thumbnail = asset.src
+      ? `<img class="paint-variant-thumbnail" src="${escapeAttribute(asset.src)}" alt="" />`
+      : `<span class="paint-variant-thumbnail is-empty" aria-hidden="true"></span>`;
+    return `
+      <label class="paint-variant-option">
+        <input
+          type="checkbox"
+          data-role="paint-variant-toggle"
+          value="${escapeAttribute(asset.id)}"
+          ${activeIds.has(asset.id) ? "checked" : ""}
+        />
+        ${thumbnail}
+        <span>${escapeHtml(label)}</span>
+      </label>
+    `;
+  }
+
+  getPaintVariantCategoryGroups(assets) {
+    const categories = this.project.assetRegistry?.categories || [];
+    const usedAssetIds = new Set();
+    const groups = [];
+
+    categories.forEach((category) => {
+      const categoryAssets = assets.filter((asset) =>
+        !usedAssetIds.has(asset.id) && (asset.categoryId === category.id || asset.category === category.name),
+      );
+      if (categoryAssets.length === 0) {
+        return;
+      }
+      categoryAssets.forEach((asset) => usedAssetIds.add(asset.id));
+      groups.push({
+        id: category.id || category.name,
+        name: category.name || "Uncategorised",
+        assets: categoryAssets,
+      });
+    });
+
+    const uncategorisedAssets = assets.filter((asset) => !usedAssetIds.has(asset.id));
+    if (uncategorisedAssets.length > 0) {
+      groups.push({
+        id: "uncategorised",
+        name: "Uncategorised",
+        assets: uncategorisedAssets,
+      });
+    }
+
+    return groups;
+  }
+
+  getPaintVariantAssetLabel(asset) {
+    const name = asset.name || asset.id;
+    const fileName = asset.fileName || asset.filename || asset.originalName;
+    const suffixParts = [];
+    if (asset.category) {
+      suffixParts.push(asset.category);
+    }
+    if (fileName && fileName !== name) {
+      suffixParts.push(fileName);
+    }
+    if (suffixParts.length === 0) {
+      return name;
+    }
+    return `${name} (${suffixParts.join(" - ")})`;
+  }
+
+  doesPaintVariantAssetMatchSearch(asset, group, searchTerm) {
+    if (!searchTerm) {
+      return true;
+    }
+    const searchableText = [
+      asset.name,
+      asset.id,
+      asset.fileName,
+      asset.filename,
+      asset.originalName,
+      asset.category,
+      group?.name,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return searchableText.includes(searchTerm);
+  }
+
+  getAvailablePaintVariantAssets() {
+    return (this.project.assetRegistry?.assets || this.project.assets || [])
+      .filter((asset) => this.isUsablePaintVariantAsset(asset));
+  }
+
+  isUsablePaintVariantAsset(asset) {
+    return Boolean(
+      asset?.id &&
+      asset.isImported === true &&
+      typeof asset.src === "string" &&
+      asset.src.length > 0,
+    );
+  }
+
+  getValidatedPaintVariantAssetIds() {
+    const validatedIds = this.validatePaintVariantAssetIds(this.paintVariantAssetIds);
+    if (validatedIds.length !== this.paintVariantAssetIds.length) {
+      this.paintVariantAssetIds = validatedIds;
+      this.savePaintVariantAssetIds();
+    }
+    return validatedIds;
+  }
+
+  validatePaintVariantAssetIds(assetIds) {
+    const availableIds = new Set(this.getAvailablePaintVariantAssets().map((asset) => asset.id));
+    const validatedIds = [];
+    (Array.isArray(assetIds) ? assetIds : []).forEach((assetId) => {
+      if (availableIds.has(assetId) && !validatedIds.includes(assetId)) {
+        validatedIds.push(assetId);
+      }
+    });
+    return validatedIds;
+  }
+
+  getActivePaintVariantCount() {
+    return this.getValidatedPaintVariantAssetIds().length;
+  }
+
+  getActivePaintAssets() {
+    const variantIds = this.getValidatedPaintVariantAssetIds();
+    const sourceAssets = variantIds.length > 0
+      ? variantIds.map((assetId) => this.project.assets.find((asset) => asset.id === assetId))
+      : [this.selectedAsset];
+    return sourceAssets.filter((asset) => this.isUsablePaintVariantAsset(asset));
+  }
+
+  pickPaintAsset(assets) {
+    if (!Array.isArray(assets) || assets.length === 0) {
+      return this.selectedAsset;
+    }
+    return assets[Math.floor(Math.random() * assets.length)];
+  }
+
+  createPaintVariantStatusSuffix(session) {
+    if (!session?.variantsActive) {
+      return "";
+    }
+    const variantCount = session.paintAssets?.length || 0;
+    return ` using ${variantCount} variant${variantCount === 1 ? "" : "s"}`;
+  }
+
+  updatePaintBrushFootprintPreview(cell) {
+    if (this.activeTool !== "paint" || !this.selectedAsset || this.dragPaintSession) {
+      this.gridEditor.updatePaintPreview([]);
+      return;
+    }
+
+    this.gridEditor.updatePaintPreview(this.getPaintBrushCells(cell, this.paintBrushSize));
+  }
+
+  getPaintBrushCells(cell, brushSize = this.paintBrushSize) {
+    if (!cell) {
+      return [];
+    }
+
+    const size = normalizePaintBrushSize(brushSize);
+    const offset = size === 2 ? 0 : Math.floor(size / 2);
+    const startX = cell.x - offset;
+    const startY = cell.y - offset;
+    const level = getCurrentLevel(this.project);
+    const cells = [];
+
+    for (let y = startY; y < startY + size; y += 1) {
+      for (let x = startX; x < startX + size; x += 1) {
+        if (x < 1 || y < 1 || x > level.gridWidth || y > level.gridHeight) {
+          continue;
+        }
+        cells.push({ x, y });
+      }
+    }
+
+    return cells;
+  }
+
+  getToolStatusMessage(tool = this.activeTool) {
+    if (tool === "paint") {
+      const variantCount = this.getActivePaintVariantCount();
+      if (variantCount > 0) {
+        return `Paint mode: drag to paint using ${variantCount} variants with ${this.getBrushSizeLabel()} brush.`;
+      }
+      return this.selectedAsset
+        ? `Paint mode: drag to paint ${this.selectedAsset.name} with ${this.getBrushSizeLabel()} brush.`
+        : "Paint mode: select an asset to paint.";
+    }
+    if (tool === "move") {
+      return "Select/Move mode.";
+    }
+    if (tool === "delete") {
+      return "Delete mode.";
+    }
+    return `${getToolLabel(tool)} mode.`;
+  }
+
+  getReplaceMatchingCandidates(rangeOrRanges) {
+    const ranges = Array.isArray(rangeOrRanges) ? rangeOrRanges : [rangeOrRanges].filter(Boolean);
+    const candidateObjects = this.findObjectsInSelectedAreas(ranges).filter(
+      (placedObject) =>
+        placedObject.assetId &&
+        this.isLayerVisible(placedObject.layer) &&
+        !this.isPlacedObjectProtected(placedObject),
+    );
+    const candidatesByAssetId = new Map();
+
+    candidateObjects.forEach((placedObject) => {
+      if (!candidatesByAssetId.has(placedObject.assetId)) {
+        const sourceAsset = this.project.assets.find(
+          (asset) => asset.id === placedObject.assetId,
+        );
+        candidatesByAssetId.set(placedObject.assetId, {
+          assetId: placedObject.assetId,
+          asset: sourceAsset,
+          fallbackName: placedObject.name || placedObject.assetId,
+          count: 0,
+        });
+      }
+      candidatesByAssetId.get(placedObject.assetId).count += 1;
+    });
+
+    return Array.from(candidatesByAssetId.values())
+      .map((candidate) => ({
+        ...candidate,
+        label: this.formatReplaceMatchingCandidateLabel(candidate),
+      }))
+      .sort((first, second) => second.count - first.count || first.label.localeCompare(second.label));
+  }
+
+  formatReplaceMatchingCandidateLabel(candidate) {
+    const matchText = `${candidate.count} match${candidate.count === 1 ? "" : "es"}`;
+    if (!candidate.asset) {
+      return `Missing asset [${candidate.assetId}] - ${matchText}`;
+    }
+
+    const assetName = candidate.asset.name || candidate.fallbackName || candidate.assetId;
+    const categoryName = candidate.asset.category || "Unknown category";
+    const fileName = candidate.asset.fileName || candidate.asset.filename || candidate.asset.originalName;
+    const fileText = fileName ? ` - ${fileName}` : "";
+    return `${assetName} (${categoryName})${fileText} [${candidate.assetId}] - ${matchText}`;
+  }
+
+  createSkippedAssetParts(hiddenCount, lockedCount) {
+    const skippedParts = [];
+    if (hiddenCount > 0) {
+      skippedParts.push(`${hiddenCount} hidden`);
+    }
+    if (lockedCount > 0) {
+      skippedParts.push(`${lockedCount} locked`);
+    }
+    return skippedParts;
+  }
+
+  refreshPlacedAssetMarkers() {
+    const level = getCurrentLevel(this.project);
+    this.gridEditor.refreshPlacedObjects(
+      level,
+      this.project.assets,
+      this.selectedPlacedObjectId,
+      Array.from(this.selectedPlacedObjectIds),
+    );
+    this.gridEditor.setLayerVisibility(this.layerVisibility);
+    this.gridEditor.setLayerLocks(this.layerLocks);
+    this.gridEditor.updateSelection(this.selectedRanges.length > 0 ? null : this.selectedRange);
+    this.gridEditor.updateMultiSelections(this.selectedRanges);
+    this.syncAssetMenu();
+    this.syncAreaToolMenu();
   }
 
   async placeAssetInRange(asset, range, source) {
@@ -1646,9 +3760,17 @@ class DevEditor {
     }
 
     const level = getCurrentLevel(this.project);
-    const existing = findObjectsInRange(level, range.x, range.y, range.width, range.height);
+    const targetLayer = this.getAssetPlacementLayer(asset);
+    const existing = findObjectsInRange(
+      level,
+      range.x,
+      range.y,
+      range.width,
+      range.height,
+      [targetLayer],
+    );
 
-    if (this.blockActionForLockedOverlaps(existing, "Asset placement")) {
+    if (this.blockActionForTargetLayerOverlaps(existing, "Asset placement")) {
       return false;
     }
 
@@ -1697,16 +3819,131 @@ class DevEditor {
     return { x, y, width: 1, height: 1 };
   }
 
+  addSelectedArea(range, { seedRange = null } = {}) {
+    const normalizedRange = { ...range };
+    if (
+      seedRange &&
+      this.selectedRanges.length === 0 &&
+      !rangesMatch(seedRange, normalizedRange)
+    ) {
+      this.selectedRanges.push({ ...seedRange });
+    }
+    this.selectedRange = normalizedRange;
+    this.selectedRanges = this.selectedRanges.filter(
+      (selectedRange) => !rangesMatch(selectedRange, normalizedRange),
+    );
+    this.selectedRanges.push(normalizedRange);
+    this.selectionState = "selectionReady";
+    this.gridEditor.updateSelection(null);
+    this.gridEditor.updateMultiSelections(this.selectedRanges);
+    this.syncCoordinateStatus();
+    this.syncPlacementButton();
+    this.syncAreaToolMenu();
+  }
+
+  getSelectedAreaRanges() {
+    if (this.selectedRanges.length > 0) {
+      return this.selectedRanges.map((range) => ({ ...range }));
+    }
+
+    if (this.selectedRange && this.selectionState === "selectionReady") {
+      return [{ ...this.selectedRange }];
+    }
+
+    return [];
+  }
+
+  getUniqueSelectedCells(ranges = this.getSelectedAreaRanges()) {
+    const cells = [];
+    const cellKeys = new Set();
+    ranges.forEach((range) => {
+      for (let y = range.y; y < range.y + range.height; y += 1) {
+        for (let x = range.x; x < range.x + range.width; x += 1) {
+          const key = `${x}:${y}`;
+          if (cellKeys.has(key)) {
+            continue;
+          }
+          cellKeys.add(key);
+          cells.push({ x, y });
+        }
+      }
+    });
+    return cells;
+  }
+
+  findObjectsInSelectedAreas(ranges = this.getSelectedAreaRanges(), layerNames = LAYERS) {
+    const level = getCurrentLevel(this.project);
+    const objectsById = new Map();
+    ranges.forEach((range) => {
+      findObjectsInRange(level, range.x, range.y, range.width, range.height, layerNames).forEach(
+        (placedObject) => {
+          if (!objectsById.has(placedObject.id)) {
+            objectsById.set(placedObject.id, placedObject);
+          }
+        },
+      );
+    });
+    return Array.from(objectsById.values());
+  }
+
+  getAssetPlacementLayer(asset) {
+    return normalizePlacedLayer(asset?.defaultLayer || "objects");
+  }
+
+  getPlacedObjectTargetLayer(placedObject) {
+    return normalizePlacedLayer(placedObject?.layer || "objects");
+  }
+
+  findTargetLayerOverlaps(level, range, targetLayer, excludedIds = new Set()) {
+    const excluded = excludedIds instanceof Set
+      ? excludedIds
+      : new Set(Array.isArray(excludedIds) ? excludedIds : []);
+    return findObjectsInRange(
+      level,
+      range.x,
+      range.y,
+      range.width,
+      range.height,
+      [normalizePlacedLayer(targetLayer)],
+    ).filter((placedObject) => !excluded.has(placedObject.id));
+  }
+
+  findSelectableObjectsInSelectedAreas(ranges = this.getSelectedAreaRanges()) {
+    return this.findObjectsInSelectedAreas(ranges).filter(
+      (placedObject) => this.canSelectPlacedObject(placedObject),
+    );
+  }
+
+  syncPlacedObjectSelectionForSelectedAreas(ranges = this.getSelectedAreaRanges()) {
+    const selectedObjects = this.findSelectableObjectsInSelectedAreas(ranges);
+    if (selectedObjects.length === 0) {
+      this.selectedPlacedObjectId = null;
+      this.selectedPlacedObjectIds = new Set();
+      return [];
+    }
+
+    this.selectedPlacedObjectId = selectedObjects[0].id;
+    this.selectedPlacedObjectIds = new Set(selectedObjects.map((placedObject) => placedObject.id));
+    return selectedObjects;
+  }
+
+  createMultiAreaSelectionStatus(ranges = this.selectedRanges) {
+    const cells = this.getUniqueSelectedCells(ranges);
+    return `Selected: ${ranges.length} areas / ${cells.length} cells.`;
+  }
+
   clearSelection() {
     if (this.selectionConfirmationTimer) {
       window.clearTimeout(this.selectionConfirmationTimer);
       this.selectionConfirmationTimer = null;
     }
     this.selectedRange = null;
+    this.selectedRanges = [];
     this.selectionState = "idle";
     this.dropPreviewRange = null;
     this.gridEditor.cancelGesture();
     this.gridEditor.updateSelection(null);
+    this.gridEditor.updateMultiSelections([]);
     this.gridEditor.updateDropPreview(null);
     this.syncCoordinateStatus();
     this.syncPlacementButton();
@@ -1718,20 +3955,28 @@ class DevEditor {
       this.selectionConfirmationTimer = null;
     }
     this.selectedRange = null;
+    this.selectedRanges = [];
     this.selectionState = "idle";
     this.dropPreviewRange = null;
     this.gridEditor.updateSelection(null);
+    this.gridEditor.updateMultiSelections([]);
     this.gridEditor.updateDropPreview(null);
     this.syncCoordinateStatus();
     this.syncPlacementButton();
   }
 
   setSelectionReadyStatus() {
+    if (this.selectedRanges.length > 1) {
+      this.setStatus(`${this.createMultiAreaSelectionStatus()} Use Fill, Clear, or Replace Matching Assets from Edit.`);
+      this.syncPlacementButton();
+      return;
+    }
+
     const selected = `${toGridRef(this.selectedRange.x, this.selectedRange.y)} to ${toGridRef(
       this.selectedRange.x + this.selectedRange.width - 1,
       this.selectedRange.y + this.selectedRange.height - 1,
     )}`;
-    this.setStatus(`Selected: ${selected}. Click Place Selected Asset or drag an asset here.`);
+    this.setStatus(`Selected: ${selected}. Drag an asset here to place one stretched asset.`);
     this.syncPlacementButton();
   }
 
@@ -1778,9 +4023,10 @@ class DevEditor {
   }
 
   async deleteCategory(category) {
-    const assetCount = this.project.assetRegistry.assets.filter(
-      (asset) => asset.categoryId === category.id,
-    ).length;
+    const categoryAssets = this.project.assetRegistry.assets.filter(
+      (asset) => asset.categoryId === category.id || asset.category === category.name,
+    );
+    const assetCount = categoryAssets.length;
 
     if (assetCount === 0) {
       const confirmed = await this.showConfirmModal({
@@ -1800,28 +4046,51 @@ class DevEditor {
       return;
     }
 
-    this.setStatus("This category contains assets. Delete or move the assets first.");
-    await this.showAlertModal("This category contains assets. Delete or move the assets first.", {
-      title: "Category Not Empty",
+    const placedCopyCount = countPlacedObjectsByAssetIds(
+      this.project,
+      categoryAssets.map((asset) => asset.id),
+    );
+    const confirmed = await this.showConfirmModal({
+      title: `Delete category "${category.name}"?`,
+      message: `This will delete ${assetCount} source asset${assetCount === 1 ? "" : "s"} from the category and remove ${placedCopyCount} placed grid cop${placedCopyCount === 1 ? "y" : "ies"} across all levels. Continue?`,
+      confirmLabel: "Delete Category and Copies",
+      danger: true,
     });
-  }
-
-  async deleteAsset(asset) {
-    if (isAssetUsedOnAnyLevel(this.project, asset.id)) {
-      this.setStatus(
-        "This asset is currently used on a level. Remove placed copies first before deleting the asset.",
-      );
-      await this.showAlertModal(
-        "This asset is currently used on a level. Remove placed copies first before deleting the asset.",
-        { title: "Asset Is In Use" },
-      );
+    if (!confirmed) {
+      this.setStatus("Category deletion cancelled.");
       return;
     }
 
+    const removedObjects = removePlacedObjectsByAssetIds(
+      this.project,
+      categoryAssets.map((asset) => asset.id),
+    );
+    const result = deleteAssetCategoryWithAssets(this.project, category.id);
+    if (!result.deleted) {
+      this.setStatus("Category was not found.");
+      return;
+    }
+    if (categoryAssets.some((asset) => this.selectedAsset?.id === asset.id)) {
+      this.selectedAsset = this.project.assets[0] || null;
+    }
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    this.render();
+    this.autosave(
+      `Deleted category "${category.name}", ${assetCount} source asset${assetCount === 1 ? "" : "s"} and ${removedObjects.length} placed cop${removedObjects.length === 1 ? "y" : "ies"}.`,
+    );
+  }
+
+  async deleteAsset(asset) {
+    const placedCopyCount = countPlacedObjectsByAssetIds(this.project, [asset.id]);
+    const isUsed = placedCopyCount > 0 || isAssetUsedOnAnyLevel(this.project, asset.id);
+
     const confirmed = await this.showConfirmModal({
       title: `Delete "${asset.name}"?`,
-      message: "Delete this imported palette asset? Placed grid copies are not deleted by this action.",
-      confirmLabel: "Delete Asset",
+      message: isUsed
+        ? `This asset is used ${placedCopyCount} time${placedCopyCount === 1 ? "" : "s"} on the grid across all levels. Deleting it will also remove all ${placedCopyCount} placed cop${placedCopyCount === 1 ? "y" : "ies"}. Continue?`
+        : "Delete this imported palette asset? Placed grid copies are not affected.",
+      confirmLabel: isUsed ? "Delete Asset and Copies" : "Delete Asset",
       danger: true,
     });
 
@@ -1829,12 +4098,64 @@ class DevEditor {
       return;
     }
 
+    const removedObjects = removePlacedObjectsByAssetIds(this.project, [asset.id]);
     deleteImportedAsset(this.project, asset.id);
     if (this.selectedAsset?.id === asset.id) {
       this.selectedAsset = this.project.assets[0] || null;
     }
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
     this.render();
-    this.autosave(`Deleted asset ${asset.name}.`);
+    this.autosave(
+      removedObjects.length > 0
+        ? `Deleted asset and removed ${removedObjects.length} placed cop${removedObjects.length === 1 ? "y" : "ies"}.`
+        : `Deleted asset ${asset.name}.`,
+    );
+  }
+
+  async deleteSelectedSourceAssets(assets) {
+    const selectedAssets = (assets || [])
+      .map((asset) =>
+        this.project.assetRegistry.assets.find((candidate) => candidate.id === asset.id),
+      )
+      .filter(Boolean);
+    const uniqueAssets = Array.from(
+      new Map(selectedAssets.map((asset) => [asset.id, asset])).values(),
+    );
+
+    if (uniqueAssets.length <= 1) {
+      this.setStatus("Select multiple source assets to bulk delete.");
+      return false;
+    }
+
+    const assetIds = uniqueAssets.map((asset) => asset.id);
+    const placedCopyCount = countPlacedObjectsByAssetIds(this.project, assetIds);
+    const confirmed = await this.showConfirmModal({
+      title: `Delete ${uniqueAssets.length} selected source assets?`,
+      message: `This will also remove ${placedCopyCount} placed grid cop${placedCopyCount === 1 ? "y" : "ies"} across all levels. Continue?`,
+      confirmLabel: "Delete Selected Assets",
+      danger: true,
+    });
+
+    if (!confirmed) {
+      this.setStatus("Bulk source asset deletion cancelled.");
+      return false;
+    }
+
+    const removedObjects = removePlacedObjectsByAssetIds(this.project, assetIds);
+    assetIds.forEach((assetId) => {
+      deleteImportedAsset(this.project, assetId);
+    });
+    if (this.selectedAsset && assetIds.includes(this.selectedAsset.id)) {
+      this.selectedAsset = this.project.assets[0] || null;
+    }
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    this.render();
+    this.autosave(
+      `Deleted ${uniqueAssets.length} source asset${uniqueAssets.length === 1 ? "" : "s"} and removed ${removedObjects.length} placed cop${removedObjects.length === 1 ? "y" : "ies"} across all levels.`,
+    );
+    return true;
   }
 
   async importAsset() {
@@ -1891,7 +4212,7 @@ class DevEditor {
         await this.placeAssetInRange(importedAsset, pendingPlacementRange, "import");
       } else {
         this.setStatus(
-          `Asset added to ${importedAsset.category}. Click Place Selected Asset or drag the asset onto the grid to place it.`,
+          `Asset added to ${importedAsset.category}. Drag it from the asset panel onto the grid or use Paint mode to drag-paint it.`,
         );
       }
       return;
@@ -2264,15 +4585,16 @@ class DevEditor {
     this.assetPalette.assetRegistry = this.project.assetRegistry;
     this.assetPalette.selectedAssetId = this.selectedAsset?.id || null;
     this.assetPalette.render();
-    this.gridEditor.setInteractionMode(this.activeTool);
+    this.gridEditor.setInteractionMode(this.activeTool === "paint" ? "move" : this.activeTool);
     this.gridEditor.render(
       level,
       this.project.assets,
-      this.selectedRange,
+      this.selectedRanges.length > 0 ? null : this.selectedRange,
       this.dropPreviewRange,
       this.selectedPlacedObjectId,
       Array.from(this.selectedPlacedObjectIds),
       this.createCopyPreview(),
+      this.selectedRanges,
     );
     this.gridEditor.setLayerVisibility(this.layerVisibility);
     this.gridEditor.setLayerLocks(this.layerLocks);
@@ -2287,6 +4609,7 @@ class DevEditor {
     this.syncLayerLockControls();
     this.syncCoordinateStatus();
     this.syncPlacementButton();
+    this.syncAreaToolMenu();
     this.syncAssetMenu();
     this.ui.levelSummary.textContent = `${level.name} · ${level.gridWidth}x${level.gridHeight} · ${level.tileSize}px tiles`;
   }
@@ -2368,6 +4691,86 @@ class DevEditor {
     this.root.querySelectorAll("[data-tool]").forEach((button) => {
       button.classList.toggle("is-active", button.dataset.tool === this.activeTool);
     });
+    this.ui.paintBrushSize.value = String(this.paintBrushSize);
+    this.syncPaintVariantsButton();
+  }
+
+  loadPaintBrushSize() {
+    try {
+      return normalizePaintBrushSize(localStorage.getItem(PAINT_BRUSH_SIZE_STORAGE_KEY));
+    } catch (error) {
+      console.warn("Paint brush size preference could not be loaded.", error);
+      return 1;
+    }
+  }
+
+  savePaintBrushSize() {
+    try {
+      localStorage.setItem(PAINT_BRUSH_SIZE_STORAGE_KEY, String(this.paintBrushSize));
+    } catch (error) {
+      console.warn("Paint brush size preference could not be saved.", error);
+    }
+  }
+
+  loadPaintVariantAssetIds() {
+    try {
+      const storedIds = JSON.parse(localStorage.getItem(PAINT_VARIANT_ASSET_IDS_STORAGE_KEY));
+      return Array.isArray(storedIds)
+        ? storedIds.filter((assetId) => typeof assetId === "string")
+        : [];
+    } catch (error) {
+      console.warn("Paint variant preference could not be loaded.", error);
+      return [];
+    }
+  }
+
+  savePaintVariantAssetIds() {
+    try {
+      localStorage.setItem(
+        PAINT_VARIANT_ASSET_IDS_STORAGE_KEY,
+        JSON.stringify(this.paintVariantAssetIds),
+      );
+    } catch (error) {
+      console.warn("Paint variant preference could not be saved.", error);
+    }
+  }
+
+  loadPaintVariantExpandedCategoryIds() {
+    try {
+      const storedIds = JSON.parse(localStorage.getItem(PAINT_VARIANT_EXPANDED_CATEGORIES_STORAGE_KEY));
+      if (!Array.isArray(storedIds)) {
+        return [];
+      }
+      const availableIds = new Set(this.getPaintVariantCategoryGroups(this.getAvailablePaintVariantAssets()).map(
+        (group) => String(group.id || group.name || "uncategorised"),
+      ));
+      return storedIds.filter((categoryId) => typeof categoryId === "string" && availableIds.has(categoryId));
+    } catch (error) {
+      console.warn("Paint variant category expansion preference could not be loaded.", error);
+      return [];
+    }
+  }
+
+  savePaintVariantExpandedCategoryIds(categoryIds) {
+    try {
+      localStorage.setItem(
+        PAINT_VARIANT_EXPANDED_CATEGORIES_STORAGE_KEY,
+        JSON.stringify(Array.isArray(categoryIds) ? categoryIds.filter((categoryId) => typeof categoryId === "string") : []),
+      );
+    } catch (error) {
+      console.warn("Paint variant category expansion preference could not be saved.", error);
+    }
+  }
+
+  syncPaintVariantsButton() {
+    const count = this.getActivePaintVariantCount();
+    this.ui.paintVariantsButton.textContent = count > 0 ? `Variants: ${count} assets` : "Variants: Off";
+    this.ui.paintVariantsButton.classList.toggle("is-active", count > 0);
+  }
+
+  getBrushSizeLabel(size = this.paintBrushSize) {
+    const brushSize = normalizePaintBrushSize(size);
+    return `${brushSize}x${brushSize}`;
   }
 
   loadLayerVisibility() {
@@ -2467,6 +4870,25 @@ class DevEditor {
     );
   }
 
+  canSelectPlacedObject(placedObject) {
+    return Boolean(
+      placedObject &&
+      this.isLayerVisible(placedObject.layer) &&
+      !this.isLayerLocked(placedObject.layer),
+    );
+  }
+
+  canEditPlacedObject(placedObject) {
+    return Boolean(
+      this.canSelectPlacedObject(placedObject) &&
+      placedObject.editorLocked !== true,
+    );
+  }
+
+  canUnlockPlacedObject(placedObject) {
+    return this.canSelectPlacedObject(placedObject);
+  }
+
   getPlacedObjectLockMessage(placedObject) {
     if (this.isLayerLocked(placedObject?.layer)) {
       return `Layer "${normalizePlacedLayer(placedObject.layer)}" is locked.`;
@@ -2508,11 +4930,12 @@ class DevEditor {
     }
 
     if (
-      this.copiedPlacedObject &&
-      (
-        !this.isLayerVisible(this.copiedPlacedObject.layer) ||
-        this.isLayerLocked(this.copiedPlacedObject.layer) ||
-        this.copiedPlacedObject.editorLocked === true
+      this.copiedPlacedGroup &&
+      this.copiedPlacedGroup.objects.some(
+        ({ sourceObject }) =>
+          !this.isLayerVisible(sourceObject.layer) ||
+          this.isLayerLocked(sourceObject.layer) ||
+          sourceObject.editorLocked === true,
       )
     ) {
       this.cancelCopyPlacement();
@@ -2579,10 +5002,11 @@ class DevEditor {
     }
 
     if (
-      this.copiedPlacedObject &&
-      (
-        this.isLayerLocked(this.copiedPlacedObject.layer) ||
-        this.copiedPlacedObject.editorLocked === true
+      this.copiedPlacedGroup &&
+      this.copiedPlacedGroup.objects.some(
+        ({ sourceObject }) =>
+          this.isLayerLocked(sourceObject.layer) ||
+          sourceObject.editorLocked === true,
       )
     ) {
       this.cancelCopyPlacement();
@@ -2673,6 +5097,27 @@ class DevEditor {
     return true;
   }
 
+  blockActionForTargetLayerOverlaps(overlappingObjects, actionLabel) {
+    if (this.blockActionForLockedOverlaps(overlappingObjects, actionLabel)) {
+      return true;
+    }
+
+    const hiddenCount = overlappingObjects.filter(
+      (placedObject) => !this.isLayerVisible(placedObject.layer),
+    ).length;
+
+    if (hiddenCount === 0) {
+      return false;
+    }
+
+    this.setStatus(
+      `${actionLabel} blocked: ${hiddenCount} hidden same-layer asset${
+        hiddenCount === 1 ? "" : "s"
+      } cannot be replaced while hidden.`,
+    );
+    return true;
+  }
+
   createOverlapWarningMessage(message, overlappingObjects) {
     const hiddenCount = overlappingObjects.filter(
       (placedObject) => !this.isLayerVisible(placedObject.layer),
@@ -2702,37 +5147,57 @@ class DevEditor {
 
   syncCoordinateStatus() {
     const hover = this.hoveredGridRef || "-";
-    const selected = this.selectedRange
-      ? `${toGridRef(this.selectedRange.x, this.selectedRange.y)} to ${toGridRef(
-          this.selectedRange.x + this.selectedRange.width - 1,
-          this.selectedRange.y + this.selectedRange.height - 1,
-        )}`
-      : "-";
+    const selected = this.selectedRanges.length > 1
+      ? `${this.selectedRanges.length} areas / ${this.getUniqueSelectedCells().length} cells`
+      : this.selectedRange
+        ? `${toGridRef(this.selectedRange.x, this.selectedRange.y)} to ${toGridRef(
+            this.selectedRange.x + this.selectedRange.width - 1,
+            this.selectedRange.y + this.selectedRange.height - 1,
+          )}`
+        : "-";
 
     this.ui.coordinateStatus.textContent = `Hover: ${hover} · Selected: ${selected}`;
   }
 
   syncPlacementButton() {
-    this.ui.placeSelectedAssetButton.disabled = !(
-      this.selectedAsset &&
-      this.selectedRange &&
-      this.selectionState === "selectionReady" &&
-      this.activeTool !== "delete"
-    );
+    this.syncAreaToolMenu();
   }
 
   syncAssetMenu() {
+    const hasEligiblePlacedSelection =
+      this.activeTool === "move" &&
+      this.getEligibleSelectedPlacedAssets().selectedObjects.length > 0;
+    const hasPropertiesSelection =
+      this.activeTool === "move" &&
+      (
+        Boolean(this.selectedPlacedObjectId) ||
+        this.selectedPlacedObjectIds.size > 0
+      );
     const isEnabled =
       this.activeTool === "move" &&
-      Boolean(this.selectedPlacedObjectId) &&
-      this.selectedPlacedObjectIds.size <= 1;
+      hasPropertiesSelection;
     this.ui.assetMenu.classList.toggle("is-disabled", !isEnabled);
     this.ui.assetMenu.querySelector("summary").setAttribute("aria-disabled", String(!isEnabled));
     this.ui.assetMenu.querySelector("button").disabled = !isEnabled;
     this.ui.editPropertiesButton.disabled = !isEnabled;
+    this.ui.copySelectedAssetsButton.disabled = !hasEligiblePlacedSelection;
+    this.ui.cutSelectedAssetsButton.disabled = !hasEligiblePlacedSelection;
+    this.ui.duplicateSelectedAssetsButton.disabled = !hasEligiblePlacedSelection;
     if (!isEnabled) {
       this.ui.assetMenu.removeAttribute("open");
     }
+  }
+
+  syncAreaToolMenu() {
+    const selectedAreas = this.getSelectedAreaRanges();
+    const hasSelectedArea = selectedAreas.length > 0;
+    this.ui.fillSelectedAreaButton.disabled = !(hasSelectedArea && this.selectedAsset);
+    this.ui.clearSelectedAreaButton.disabled = !hasSelectedArea;
+    this.ui.replaceMatchingAssetsButton.disabled = !(
+      hasSelectedArea &&
+      this.selectedAsset &&
+      this.getReplaceMatchingCandidates(selectedAreas).length > 0
+    );
   }
 
   bindMenuBehavior() {
@@ -3026,6 +5491,24 @@ class DevEditor {
     this.ui.startupStatus.textContent = message;
   }
 
+  setCtrlPressed(isPressed) {
+    this.isCtrlPressed = Boolean(isPressed);
+    this.gridEditor?.setCtrlPressed(this.isCtrlPressed);
+    this.syncModeStatus();
+  }
+
+  syncModeStatus() {
+    const messages = [];
+    if (this.isDragPaintMode) {
+      messages.push(`Paint mode ${this.getBrushSizeLabel()}`);
+    }
+    if (this.isCtrlPressed) {
+      messages.push("Multi-select mode");
+    }
+    this.ui.modeStatus.hidden = messages.length === 0;
+    this.ui.modeStatus.textContent = messages.join(" / ");
+  }
+
   setStatus(message) {
     this.ui.statusMessage.textContent = message;
   }
@@ -3082,8 +5565,23 @@ function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
+function normalizePaintBrushSize(value) {
+  const size = Number(value);
+  return [1, 2, 3, 5].includes(size) ? size : 1;
+}
+
+function createCellKey(cell) {
+  return `${cell.x}:${cell.y}`;
+}
+
 function getToolLabel(tool) {
-  return tool === "move" ? "Select/Move" : "Delete";
+  if (tool === "move") {
+    return "Select/Move";
+  }
+  if (tool === "paint") {
+    return "Paint";
+  }
+  return "Delete";
 }
 
 const LAYER_LABELS = {
@@ -3111,6 +5609,38 @@ function createLayerOptions(selectedLayer) {
     (layerName) =>
       `<option value="${layerName}" ${layerName === selectedLayer ? "selected" : ""}>${LAYER_LABELS[layerName] || toTitleCase(layerName)}</option>`,
   ).join("");
+}
+
+function createMixedLayerOptions(selectedLayer) {
+  const mixedOption =
+    selectedLayer === MIXED_VALUE
+      ? `<option value="${MIXED_VALUE}" selected>Mixed</option>`
+      : "";
+  return `${mixedOption}${createLayerOptions(selectedLayer)}`;
+}
+
+function createMixedBooleanOptions(selectedValue) {
+  const mixedOption =
+    selectedValue === MIXED_VALUE
+      ? `<option value="${MIXED_VALUE}" selected>Mixed</option>`
+      : "";
+  return `
+    ${mixedOption}
+    <option value="false" ${selectedValue === false ? "selected" : ""}>No</option>
+    <option value="true" ${selectedValue === true ? "selected" : ""}>Yes</option>
+  `;
+}
+
+function getCommonValue(items, getValue) {
+  if (!items.length) {
+    return MIXED_VALUE;
+  }
+
+  const [firstItem, ...remainingItems] = items;
+  const firstValue = getValue(firstItem);
+  return remainingItems.every((item) => getValue(item) === firstValue)
+    ? firstValue
+    : MIXED_VALUE;
 }
 
 function normalizeLayerOptions(layerOptions) {
@@ -3353,4 +5883,11 @@ function escapeHtml(value) {
 
 function escapeAttribute(value) {
   return escapeHtml(value);
+}
+
+function cloneEditorData(value) {
+  if (typeof structuredClone === "function") {
+    return structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value));
 }
