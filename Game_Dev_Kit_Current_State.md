@@ -52,7 +52,8 @@ Update this current-state file whenever working behaviour changes.
 - Phase 6H follow-up work is in progress on the Phase 6 branch: left-panel drag/category stability, left-panel source asset multi-select/delete, and Ctrl-click additive placed-asset selection. Multi-asset resize is deferred.
 - Phase 6 is complete and merged into `main`.
 - Phase 7A Undo/Redo is complete and merged into `main`.
-- Phase 8A Play Mode Preview is in progress on the Phase 8 branch.
+- Phase 8A Play Mode Preview is complete on the Phase 8 branch.
+- Phase 8B Player Spawn Points are in progress on the Phase 8 branch.
 
 ## 4. Current Working Features
 
@@ -160,17 +161,21 @@ The editor currently supports:
 - Phase 8A Play Mode Preview adds a temporary `Play` button that switches the current editor level into a simple preview mode without leaving the editor.
 - Play Mode shows a temporary unsaved test player marker on the existing grid. WASD and arrow keys move the player one grid cell per key press while Play Mode is active.
 - Play Mode builds a lightweight blocking-cell lookup when it starts. Any placed asset with `blocksMovement: true` blocks every covered grid cell based on its current `x`, `y`, `width`, and `height`. Layer alone does not make an asset blocking.
-- Play Mode spawn is temporary: it prefers an obvious player/spawn marker on the `spawns` layer when present, otherwise uses the first non-blocked cell, falling back to `1.A`.
+- Phase 8B adds an editor `Add Spawn` toolbar button that creates or moves one Player Spawn marker on the `spawns` layer for the current level.
+- The Player Spawn marker is stored as a normal placed object in `level.layers.spawns` with `type: "playerSpawn"`, `markerType: "playerSpawn"`, `name: "Player Spawn"`, `width: 1`, `height: 1`, and `blocksMovement: false`. It does not require an imported source asset and is not stored in `assetRegistry.json`.
+- Adding Player Spawn again moves the existing marker instead of creating duplicates. If legacy duplicate Player Spawn markers are found while using the button, the first marker is kept and the duplicate Player Spawn markers are removed.
+- Player Spawn markers are selectable, movable, deletable, visible/hidden with the `spawns` layer, protected by `spawns` layer locking, and participate in Undo/Redo through the normal placed-object history paths.
+- Play Mode starts the temporary unsaved player at the Player Spawn marker when present, otherwise uses the first non-blocked cell, falling back to `1.A`.
 - Starting, stopping, and moving in Play Mode are runtime/editor state only. They do not mutate placed assets, do not save temporary player position or Play Mode state into project/level JSON, and do not create undo history entries.
 - While Play Mode is active, normal editor editing interactions are disabled or ignored, including grid selection, placement, drag painting, deletion, Properties access, area tools, left-panel drag/drop, and Undo/Redo.
 
 Current limitations:
 
-- This is still primarily an editor. Phase 8A includes only a temporary Play Mode Preview with grid-cell movement and `blocksMovement` blocking; it does not implement full gameplay integration.
+- This is still primarily an editor. Phase 8A/8B includes only a temporary Play Mode Preview with grid-cell movement, `blocksMovement` blocking, and one editor Player Spawn marker; it does not implement full gameplay integration.
 - Full Phase 5 layer behaviour is not implemented yet. Solo layer, layer reordering, active placement layers, and runtime visibility are not implemented yet.
 - Later Phase 6 tools remain unimplemented: weighted random brushes, replace brushes, auto-tiling, terrain blending, replace-by-category/layer/all-levels, and `Ctrl+A`.
 - Phase 7A does not implement persistent history, cross-refresh undo stacks, undo/redo for File > Save output, undo/redo for UI-only preferences, or a visible history panel.
-- Full runtime collision/physics, trigger execution, doors/exits, saved spawn runtime, NPC/enemy/item gameplay systems, combat, inventory, chunked maps, animated character import, audio/music systems, export/build systems, and multilayer/parallax background tools are not implemented yet.
+- Full runtime collision/physics, trigger execution, doors/exits, multi-spawn runtime rules, NPC/enemy/item gameplay systems, combat, inventory, chunked maps, animated character import, audio/music systems, export/build systems, and multilayer/parallax background tools are not implemented yet.
 - Left-panel source asset/category deletion can remove matching placed copies after app-owned confirmation. This applies only to source asset/category deletion from the left panel and does not change grid Delete mode, Delete/Backspace selected placed assets, Clear Selected Area, or Replace Matching Assets.
 - Left-panel source asset/category deletion scans all levels, matching the existing all-level asset-in-use scope, and removes only placed copies whose `assetId` belongs to the deleted source asset or deleted category.
 

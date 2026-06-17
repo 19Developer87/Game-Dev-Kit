@@ -227,6 +227,10 @@ textarea {
   background: #1f3d2d;
 }
 
+[data-action="add-player-spawn"] {
+  border-color: rgba(88, 166, 255, 0.45);
+}
+
 .is-play-mode-active .sidebar-content {
   opacity: 0.65;
   pointer-events: none;
@@ -987,6 +991,45 @@ body.is-sidebar-resizing * {
 
 .placed-asset.is-zero-opacity::after {
   content: "0%";
+}
+
+.placed-asset.is-player-spawn {
+  color: #eaf6ff;
+  background:
+    radial-gradient(circle at 50% 44%, rgba(88, 166, 255, 0.32) 0 34%, transparent 35%),
+    rgba(88, 166, 255, 0.16);
+  border-color: #58a6ff;
+  font-size: 0;
+}
+
+.placed-asset.is-player-spawn::before {
+  content: "P";
+  display: grid;
+  place-items: center;
+  width: 62%;
+  height: 62%;
+  border-radius: 50%;
+  color: #f4fbff;
+  background: #1f6feb;
+  box-shadow:
+    0 0 0 2px rgba(16, 19, 22, 0.72),
+    0 0 10px rgba(88, 166, 255, 0.6);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.placed-asset.is-player-spawn.is-selected,
+.placed-asset.is-player-spawn.is-primary-selected {
+  border-color: #edc949;
+}
+
+.placed-asset.is-player-spawn.is-asset-locked {
+  border-color: #ef4444;
+}
+
+.placed-asset.is-player-spawn.is-selected.is-asset-locked {
+  border-color: #edc949;
 }
 
 .play-mode-layer {

@@ -824,6 +824,7 @@ export class GridEditor {
       marker.classList.toggle("is-primary-selected", isPrimarySelected);
       marker.classList.toggle("is-hidden", !isVisible);
       marker.classList.toggle("is-zero-opacity", isVisible && opacity === 0);
+      marker.classList.toggle("is-player-spawn", isPlayerSpawnMarker(placedObject));
       marker.classList.toggle(
         "is-layer-hidden",
         !this.isLayerVisible(marker.dataset.layer),
@@ -1385,4 +1386,18 @@ function normalizePlacedLayer(layer) {
   return Object.prototype.hasOwnProperty.call(PLACED_ASSET_LAYER_ORDER, layer)
     ? layer
     : "objects";
+}
+
+function isPlayerSpawnMarker(placedObject) {
+  if (!placedObject) {
+    return false;
+  }
+  return (
+    normalizePlacedLayer(placedObject.layer) === "spawns" &&
+    (
+      placedObject.type === "playerSpawn" ||
+      placedObject.markerType === "playerSpawn" ||
+      String(placedObject.name || "").toLowerCase() === "player spawn"
+    )
+  );
 }

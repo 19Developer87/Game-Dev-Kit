@@ -193,6 +193,11 @@ export function createEditorLayout(root) {
                 data-action="toggle-play-mode"
                 title="Start Play Mode preview"
               >Play</button>
+              <button
+                type="button"
+                data-action="add-player-spawn"
+                title="Add or move the Player Spawn marker"
+              >Add Spawn</button>
             </nav>
           </div>
           <div class="status-bar">
@@ -235,6 +240,7 @@ export function createEditorLayout(root) {
     paintBrushSize: root.querySelector('[data-role="paint-brush-size"]'),
     paintVariantsButton: root.querySelector('[data-action="paint-variants"]'),
     playModeButton: root.querySelector('[data-action="toggle-play-mode"]'),
+    addPlayerSpawnButton: root.querySelector('[data-action="add-player-spawn"]'),
     levelPicker: root.querySelector('[data-role="level-picker"]'),
     levelPickerButton: root.querySelector('[data-role="level-picker-button"]'),
     levelPickerPanel: root.querySelector('[data-role="level-picker-panel"]'),

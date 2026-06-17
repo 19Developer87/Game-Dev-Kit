@@ -70,6 +70,7 @@ const VERY_LARGE_GRID_WARNING_SIZE = 250;
 const MAX_GRID_SIZE = 500;
 const MIXED_VALUE = "__mixed";
 const HISTORY_LIMIT = 50;
+const PLAYER_SPAWN_TYPE = "playerSpawn";
 
 class DevEditor {
   constructor(root, loaded) {
@@ -199,6 +200,10 @@ class DevEditor {
 
     this.ui.playModeButton.addEventListener("click", () => {
       this.togglePlayMode();
+    });
+
+    this.ui.addPlayerSpawnButton.addEventListener("click", () => {
+      this.addOrMovePlayerSpawn();
     });
 
     window.addEventListener("keydown", (event) => {
@@ -950,6 +955,18 @@ class DevEditor {
   }
 
   findPlayModeSpawnCell(level, blockedCells) {
+    const playerSpawns = this.getPlayerSpawnMarkers(level);
+    if (playerSpawns.length > 0) {
+      if (playerSpawns.length > 1) {
+        this.setStatus("Multiple Player Spawns found. Using first spawn.");
+      }
+      const playerSpawn = playerSpawns[0];
+      return {
+        x: clamp(Number(playerSpawn.x) || 1, 1, level.gridWidth),
+        y: clamp(Number(playerSpawn.y) || 1, 1, level.gridHeight),
+      };
+    }
+
     const placedObjects = getPlacedObjects(level);
     const spawnObject = placedObjects.find((placedObject) => {
       const layer = normalizePlacedLayer(placedObject.layer);
@@ -981,6 +998,10 @@ class DevEditor {
       }
     }
 
+    return this.findFirstNonBlockedCell(level, blockedCells);
+  }
+
+  findFirstNonBlockedCell(level, blockedCells) {
     for (let y = 1; y <= level.gridHeight; y += 1) {
       for (let x = 1; x <= level.gridWidth; x += 1) {
         if (!blockedCells.has(this.createPlayModeCellKey(x, y))) {
@@ -988,12 +1009,118 @@ class DevEditor {
         }
       }
     }
-
     return { x: 1, y: 1 };
   }
 
   createPlayModeCellKey(x, y) {
     return `${x},${y}`;
+  }
+
+  addOrMovePlayerSpawn() {
+    if (this.isPlayModeActive) {
+      this.setStatus("Exit Play Mode before adding a Player Spawn.");
+      return false;
+    }
+
+    if (this.layerLocks.spawns === true) {
+      this.setStatus('Layer "spawns" is locked.');
+      return false;
+    }
+
+    const level = getCurrentLevel(this.project);
+    const targetCell = this.getPlayerSpawnPlacementCell(level);
+    const existingSpawns = this.getPlayerSpawnMarkers(level);
+    const historySnapshot = this.captureHistorySnapshot();
+
+    level.layers.spawns = Array.isArray(level.layers.spawns) ? level.layers.spawns : [];
+    if (existingSpawns.length > 0) {
+      const [primarySpawn] = existingSpawns;
+      primarySpawn.x = targetCell.x;
+      primarySpawn.y = targetCell.y;
+      primarySpawn.width = 1;
+      primarySpawn.height = 1;
+      primarySpawn.gridRef = toGridRef(targetCell.x, targetCell.y);
+      primarySpawn.rangeRef = `${primarySpawn.gridRef}:${primarySpawn.gridRef}`;
+      primarySpawn.layer = "spawns";
+      primarySpawn.type = PLAYER_SPAWN_TYPE;
+      primarySpawn.markerType = PLAYER_SPAWN_TYPE;
+      primarySpawn.name = "Player Spawn";
+      primarySpawn.visible = primarySpawn.visible !== false;
+      primarySpawn.blocksMovement = false;
+      primarySpawn.collisionEnabled = false;
+      level.layers.spawns = level.layers.spawns.filter((placedObject) =>
+        placedObject.id === primarySpawn.id || !this.isPlayerSpawnMarker(placedObject),
+      );
+      this.setPlacedObjectSelection([primarySpawn.id], primarySpawn.id);
+      this.render();
+      this.pushHistoryEntry("Move player spawn", historySnapshot);
+      this.autosave(`Moved Player Spawn to ${primarySpawn.gridRef}.`);
+      return true;
+    }
+
+    const spawn = this.createPlayerSpawnMarker(targetCell.x, targetCell.y);
+    level.layers.spawns.push(spawn);
+    this.setPlacedObjectSelection([spawn.id], spawn.id);
+    this.render();
+    this.pushHistoryEntry("Add player spawn", historySnapshot);
+    this.autosave(`Added Player Spawn at ${spawn.gridRef}.`);
+    return true;
+  }
+
+  getPlayerSpawnPlacementCell(level) {
+    const selectedArea = this.getSelectedAreaRanges()[0] || this.selectedRange;
+    if (selectedArea) {
+      return {
+        x: clamp(Number(selectedArea.x) || 1, 1, level.gridWidth),
+        y: clamp(Number(selectedArea.y) || 1, 1, level.gridHeight),
+      };
+    }
+
+    const blockedCells = this.createPlayModeBlockedCellSet(level);
+    return this.findFirstNonBlockedCell(level, blockedCells);
+  }
+
+  createPlayerSpawnMarker(x, y) {
+    const gridRef = toGridRef(x, y);
+    return {
+      id: `player-spawn-${Date.now()}-${x}-${y}`,
+      type: PLAYER_SPAWN_TYPE,
+      markerType: PLAYER_SPAWN_TYPE,
+      name: "Player Spawn",
+      x,
+      y,
+      gridRef,
+      rangeRef: `${gridRef}:${gridRef}`,
+      layer: "spawns",
+      width: 1,
+      height: 1,
+      visible: true,
+      transparent: true,
+      solid: false,
+      blocksMovement: false,
+      collisionEnabled: false,
+      opacity: 100,
+      notes: "",
+    };
+  }
+
+  getPlayerSpawnMarkers(level) {
+    return getPlacedObjects(level).filter((placedObject) => this.isPlayerSpawnMarker(placedObject));
+  }
+
+  isPlayerSpawnMarker(placedObject) {
+    if (!placedObject) {
+      return false;
+    }
+    const layer = normalizePlacedLayer(placedObject.layer);
+    return (
+      layer === "spawns" &&
+      (
+        placedObject.type === PLAYER_SPAWN_TYPE ||
+        placedObject.markerType === PLAYER_SPAWN_TYPE ||
+        String(placedObject.name || "").toLowerCase() === "player spawn"
+      )
+    );
   }
 
   selectPlacedObject(placedObjectId) {
@@ -5178,6 +5305,7 @@ class DevEditor {
       ...this.root.querySelectorAll(".level-controls > button, .grid-controls button, .grid-controls select, .grid-controls input"),
       this.ui.paintBrushSize,
       this.ui.paintVariantsButton,
+      this.ui.addPlayerSpawnButton,
       this.ui.copySelectedAssetsButton,
       this.ui.cutSelectedAssetsButton,
       this.ui.duplicateSelectedAssetsButton,
