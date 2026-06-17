@@ -479,6 +479,44 @@ body.is-sidebar-resizing * {
   gap: 6px;
 }
 
+.quick-history-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 4px;
+  padding-left: 10px;
+  border-left: 1px solid #2d373f;
+}
+
+.quick-history-button {
+  width: 34px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 6px;
+  background: #1d252b;
+}
+
+.quick-history-button svg {
+  width: 21px;
+  height: 21px;
+  display: block;
+  fill: currentColor;
+}
+
+.quick-history-button:hover:not(:disabled),
+.quick-history-button:focus-visible:not(:disabled) {
+  border-color: #78b5d6;
+  background: #26323a;
+  color: #ffffff;
+}
+
+.quick-history-button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
 .menu {
   position: relative;
 }

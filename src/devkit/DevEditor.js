@@ -69,6 +69,7 @@ const LARGE_GRID_WARNING_SIZE = 100;
 const VERY_LARGE_GRID_WARNING_SIZE = 250;
 const MAX_GRID_SIZE = 500;
 const MIXED_VALUE = "__mixed";
+const HISTORY_LIMIT = 50;
 
 class DevEditor {
   constructor(root, loaded) {
@@ -95,6 +96,8 @@ class DevEditor {
     this.selectedPlacedObjectIds = new Set();
     this.copiedPlacedGroup = null;
     this.copyPreviewOrigin = null;
+    this.undoStack = [];
+    this.redoStack = [];
     this.layerVisibility = this.loadLayerVisibility();
     this.layerLocks = this.loadLayerLocks();
     this.ui = createEditorLayout(root);
@@ -162,6 +165,7 @@ class DevEditor {
 
     this.bindEvents();
     this.render();
+    this.syncHistoryControls();
     this.setStartupStatus(this.startupMessage);
     this.setStatus(this.startupMessage);
   }
@@ -236,6 +240,31 @@ class DevEditor {
         document.querySelector("dialog[open]") ||
         this.root.querySelector("[data-menu][open], [data-role='level-picker'].is-open")
       ) {
+        return;
+      }
+
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        !event.altKey &&
+        event.key.toLowerCase() === "z"
+      ) {
+        event.preventDefault();
+        if (event.shiftKey) {
+          this.redo();
+        } else {
+          this.undo();
+        }
+        return;
+      }
+
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        !event.altKey &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === "y"
+      ) {
+        event.preventDefault();
+        this.redo();
         return;
       }
 
@@ -357,6 +386,20 @@ class DevEditor {
       this.closeMenus();
     });
 
+    this.ui.undoButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        this.undo();
+        this.closeMenus();
+      });
+    });
+
+    this.ui.redoButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        this.redo();
+        this.closeMenus();
+      });
+    });
+
     this.root.querySelector('[data-action="paste-level"]').addEventListener("click", async () => {
       await this.pasteCopiedLevel();
       this.closeMenus();
@@ -456,7 +499,7 @@ class DevEditor {
     this.root.querySelector('[data-action="clear"]').addEventListener("click", async () => {
       const confirmed = await this.showConfirmModal({
         title: "Clear Level?",
-        message: "Clear every placed asset from the current level? This cannot be undone.",
+        message: "Clear every placed asset from the current level?",
         confirmLabel: "Clear Level",
         danger: true,
       });
@@ -464,9 +507,11 @@ class DevEditor {
       if (!confirmed) {
         return;
       }
+      const historySnapshot = this.captureHistorySnapshot();
       clearCurrentLevel(this.project);
       this.clearSelection();
       this.clearPlacedObjectSelection();
+      this.pushHistoryEntry("Clear level", historySnapshot);
       this.autosave("Cleared the current level and saved the empty grid.");
       this.render();
     });
@@ -532,6 +577,7 @@ class DevEditor {
     }
 
     if (this.activeTool === "delete") {
+      const historySnapshot = this.captureHistorySnapshot();
       const removedObjects = removeObjectsAtCell(
         level,
         x,
@@ -556,6 +602,7 @@ class DevEditor {
 
       this.clearPlacedObjectSelection();
       this.closePlacedPropertiesDialog();
+      this.pushHistoryEntry("Delete assets", historySnapshot);
       this.autosave(createDeletedPlacedAssetsMessage(removedObjects.length));
       this.render();
       return;
@@ -1045,12 +1092,14 @@ class DevEditor {
         return;
       }
 
+      const historySnapshot = this.captureHistorySnapshot();
       const updatedObject = updatePlacedAssetProperties(level, placedObject.id, result.values);
       if (!updatedObject) {
         error.hidden = false;
         error.textContent = "The selected placed asset could not be found.";
         return;
       }
+      this.pushHistoryEntry("Edit asset properties", historySnapshot);
 
       const movedToHiddenLayer = !this.isLayerVisible(updatedObject.layer);
       if (movedToHiddenLayer || updatedObject.editorLocked === true) {
@@ -1223,7 +1272,9 @@ class DevEditor {
         return;
       }
 
+      const historySnapshot = this.captureHistorySnapshot();
       const applyResult = this.applyMultiPlacedAssetProperties(result.values);
+      this.pushHistoryEntry("Edit selected asset properties", historySnapshot);
       dialog.close();
       this.render();
       this.autosave(this.createMultiPropertiesStatusMessage(applyResult, result.values));
@@ -1303,7 +1354,12 @@ class DevEditor {
       event.preventDefault();
       const data = new FormData(form);
       const shouldLock = data.get("editorLocked") === "true";
+      const historySnapshot = this.captureHistorySnapshot();
       const result = this.applySelectedPlacedAssetLockState(shouldLock);
+      this.pushHistoryEntry(
+        shouldLock ? "Lock selected assets" : "Unlock selected assets",
+        historySnapshot,
+      );
       dialog.close();
       this.render();
       this.autosave(this.createMultiLockStatusMessage(result, shouldLock));
@@ -1580,6 +1636,7 @@ class DevEditor {
     const selectedIds = this.selectedPlacedObjectIds.size > 0
       ? Array.from(this.selectedPlacedObjectIds)
       : [this.selectedPlacedObjectId].filter(Boolean);
+    const historySnapshot = this.captureHistorySnapshot();
     const removedObjects = selectedIds
       .map((placedObjectId) =>
         removePlacedObjectById(
@@ -1600,6 +1657,7 @@ class DevEditor {
       return false;
     }
 
+    this.pushHistoryEntry("Delete assets", historySnapshot);
     this.autosave(createDeletedPlacedAssetsMessage(removedObjects.length));
     return true;
   }
@@ -1640,6 +1698,7 @@ class DevEditor {
       return false;
     }
 
+    const historySnapshot = this.captureHistorySnapshot();
     const removedObjects = removeKnownPlacedObjectsByIds(
       level,
       removable.map((placedObject) => placedObject.id),
@@ -1648,6 +1707,7 @@ class DevEditor {
     this.clearPlacedObjectSelection();
     this.closePlacedPropertiesDialog();
     this.refreshPlacedAssetMarkers();
+    this.pushHistoryEntry("Delete assets", historySnapshot);
     const skippedParts = this.createSkippedAssetParts(hiddenCount, lockedCount);
     this.autosave(
       `Deleted ${removedObjects.length} asset${removedObjects.length === 1 ? "" : "s"} across ${selectedAreas.length} areas.${
@@ -1691,6 +1751,7 @@ class DevEditor {
       return false;
     }
 
+    const historySnapshot = this.captureHistorySnapshot();
     const removedObjects = removeObjectsInRange(
       level,
       range.x,
@@ -1706,6 +1767,7 @@ class DevEditor {
       this.clearSelection();
     }
     this.render();
+    this.pushHistoryEntry("Delete assets", historySnapshot);
     this.autosave(createDeletedPlacedAssetsMessage(removedObjects.length));
     return true;
   }
@@ -1763,6 +1825,7 @@ class DevEditor {
       }
     }
 
+    const historySnapshot = this.captureHistorySnapshot();
     const updatedObject = updatePlacedAssetBounds(level, placedObjectId, x, y, width, height);
     if (!updatedObject) {
       this.setStatus("Unable to update the selected asset.");
@@ -1772,6 +1835,7 @@ class DevEditor {
 
     this.setPlacedObjectSelection([placedObjectId], placedObjectId);
     this.render();
+    this.pushHistoryEntry(action === "resize" ? "Resize asset" : "Move asset", historySnapshot);
     this.autosave(
       `${action === "resize" ? "Resized" : "Moved"} placed asset to ${updatedObject.rangeRef}.`,
     );
@@ -1850,6 +1914,7 @@ class DevEditor {
       }
     }
 
+    const historySnapshot = this.captureHistorySnapshot();
     const updatedObjects = updatePlacedAssetGroupBounds(level, updates);
     if (!updatedObjects) {
       this.setStatus("Unable to update the selected assets.");
@@ -1859,6 +1924,7 @@ class DevEditor {
 
     this.setPlacedObjectSelection(selectedIds, placedObjectId || selectedIds[0]);
     this.render();
+    this.pushHistoryEntry("Move selected assets", historySnapshot);
     this.autosave(`Moved ${updatedObjects.length} selected assets.`);
     return true;
   }
@@ -1984,6 +2050,7 @@ class DevEditor {
       }
     }
 
+    const historySnapshot = this.captureHistorySnapshot();
     const primarySourceId = this.copiedPlacedGroup.primarySourceId;
     const placedObjects = isCut
       ? movePlacedAssetGroup(
@@ -2018,6 +2085,7 @@ class DevEditor {
       primaryPlacedObject.id,
     );
     this.render();
+    this.pushHistoryEntry(isCut ? "Cut assets" : "Paste assets", historySnapshot);
     this.autosave(
       `${isCut ? "Moved" : "Pasted"} ${placedObjects.length} asset${placedObjects.length === 1 ? "" : "s"} on ${level.name}.`,
     );
@@ -2079,6 +2147,7 @@ class DevEditor {
       }
     }
 
+    const historySnapshot = this.captureHistorySnapshot();
     const placedObjects = duplicatePlacedAssetGroup(
       level,
       targetCopies,
@@ -2098,6 +2167,7 @@ class DevEditor {
       primaryPlacedObject.id,
     );
     this.render();
+    this.pushHistoryEntry("Duplicate assets", historySnapshot);
     const skippedCount = selectedIds.length - selectedObjects.length;
     this.autosave(
       `Duplicated ${placedObjects.length} asset${placedObjects.length === 1 ? "" : "s"}${
@@ -2852,6 +2922,7 @@ class DevEditor {
       }
     }
 
+    const historySnapshot = this.captureHistorySnapshot();
     const placedObjects = isMultiAreaFill
       ? fillCellsWithAsset(
           level,
@@ -2874,6 +2945,7 @@ class DevEditor {
     this.clearPlacedObjectSelection();
     this.closePlacedPropertiesDialog();
     this.refreshPlacedAssetMarkers();
+    this.pushHistoryEntry("Fill selected area", historySnapshot);
     this.autosave(
       isMultiAreaFill
         ? `Filled ${placedObjects.length} cells across ${selectedAreas.length} areas.`
@@ -2931,6 +3003,7 @@ class DevEditor {
       return false;
     }
 
+    const historySnapshot = this.captureHistorySnapshot();
     const removedObjects = removeKnownPlacedObjectsByIds(
       level,
       removable.map((placedObject) => placedObject.id),
@@ -2939,6 +3012,7 @@ class DevEditor {
     this.clearPlacedObjectSelection();
     this.closePlacedPropertiesDialog();
     this.refreshPlacedAssetMarkers();
+    this.pushHistoryEntry("Clear selected area", historySnapshot);
     const skippedParts = [];
     if (hiddenCount > 0) {
       skippedParts.push(`${hiddenCount} hidden`);
@@ -3057,6 +3131,7 @@ class DevEditor {
       return false;
     }
 
+    const historySnapshot = this.captureHistorySnapshot();
     const replacedObjects = replacePlacedObjectAssetSources(
       level,
       replaceableObjects.map((placedObject) => placedObject.id),
@@ -3071,6 +3146,7 @@ class DevEditor {
     this.clearPlacedObjectSelection();
     this.closePlacedPropertiesDialog();
     this.refreshPlacedAssetMarkers();
+    this.pushHistoryEntry("Replace matching assets", historySnapshot);
     this.autosave(
       `Replaced ${replacedObjects.length} matching asset${replacedObjects.length === 1 ? "" : "s"} with ${replacementAsset.name || replacementAsset.id}${
         isMultiAreaReplace ? ` across ${selectedAreas.length} areas` : ""
@@ -3208,6 +3284,7 @@ class DevEditor {
     }
 
     const level = getCurrentLevel(this.project);
+    const historySnapshot = this.captureHistorySnapshot();
     const placedObjects = session.variantsActive
       ? fillCellsWithAssets(level, cells, [])
       : fillCellsWithAsset(level, session.asset, cells, []);
@@ -3217,6 +3294,7 @@ class DevEditor {
     }
 
     this.refreshPlacedAssetMarkers();
+    this.pushHistoryEntry("Paint assets", historySnapshot);
     this.autosave(
       `Painted ${placedObjects.length} cell${placedObjects.length === 1 ? "" : "s"}${this.createPaintVariantStatusSuffix(session)} with ${this.getBrushSizeLabel(session.brushSize)} brush.${
         skippedCount > 0
@@ -3791,6 +3869,7 @@ class DevEditor {
       }
     }
 
+    const historySnapshot = this.captureHistorySnapshot();
     const placedObject = placeAsset(level, asset, range.x, range.y, range.width, range.height);
     this.selectionState = this.selectedRange ? "selectionReady" : "idle";
     this.clearPlacedObjectSelection();
@@ -3803,6 +3882,7 @@ class DevEditor {
       placedObject,
     });
     this.render();
+    this.pushHistoryEntry("Place asset", historySnapshot);
     this.autosave(`Placed ${asset.name} at ${placedObject.rangeRef} on ${level.name}.`);
     return true;
   }
@@ -4040,8 +4120,10 @@ class DevEditor {
         return;
       }
 
+      const historySnapshot = this.captureHistorySnapshot();
       deleteAssetCategory(this.project, category.id);
       this.render();
+      this.pushHistoryEntry("Delete category", historySnapshot);
       this.autosave(`Deleted category ${category.name}.`);
       return;
     }
@@ -4061,6 +4143,7 @@ class DevEditor {
       return;
     }
 
+    const historySnapshot = this.captureHistorySnapshot();
     const removedObjects = removePlacedObjectsByAssetIds(
       this.project,
       categoryAssets.map((asset) => asset.id),
@@ -4076,6 +4159,7 @@ class DevEditor {
     this.clearPlacedObjectSelection();
     this.closePlacedPropertiesDialog();
     this.render();
+    this.pushHistoryEntry("Delete category", historySnapshot);
     this.autosave(
       `Deleted category "${category.name}", ${assetCount} source asset${assetCount === 1 ? "" : "s"} and ${removedObjects.length} placed cop${removedObjects.length === 1 ? "y" : "ies"}.`,
     );
@@ -4098,6 +4182,7 @@ class DevEditor {
       return;
     }
 
+    const historySnapshot = this.captureHistorySnapshot();
     const removedObjects = removePlacedObjectsByAssetIds(this.project, [asset.id]);
     deleteImportedAsset(this.project, asset.id);
     if (this.selectedAsset?.id === asset.id) {
@@ -4106,6 +4191,7 @@ class DevEditor {
     this.clearPlacedObjectSelection();
     this.closePlacedPropertiesDialog();
     this.render();
+    this.pushHistoryEntry("Delete source asset", historySnapshot);
     this.autosave(
       removedObjects.length > 0
         ? `Deleted asset and removed ${removedObjects.length} placed cop${removedObjects.length === 1 ? "y" : "ies"}.`
@@ -4142,6 +4228,7 @@ class DevEditor {
       return false;
     }
 
+    const historySnapshot = this.captureHistorySnapshot();
     const removedObjects = removePlacedObjectsByAssetIds(this.project, assetIds);
     assetIds.forEach((assetId) => {
       deleteImportedAsset(this.project, assetId);
@@ -4152,6 +4239,7 @@ class DevEditor {
     this.clearPlacedObjectSelection();
     this.closePlacedPropertiesDialog();
     this.render();
+    this.pushHistoryEntry("Delete source assets", historySnapshot);
     this.autosave(
       `Deleted ${uniqueAssets.length} source asset${uniqueAssets.length === 1 ? "" : "s"} and removed ${removedObjects.length} placed cop${removedObjects.length === 1 ? "y" : "ies"} across all levels.`,
     );
@@ -4455,6 +4543,109 @@ class DevEditor {
     return null;
   }
 
+  captureHistorySnapshot() {
+    return JSON.stringify({
+      lastOpenedLevelId: this.project.lastOpenedLevelId,
+      levels: this.project.levels,
+      assetRegistry: this.project.assetRegistry,
+    });
+  }
+
+  pushHistoryEntry(label, beforeSnapshot) {
+    if (!beforeSnapshot) {
+      return false;
+    }
+
+    const afterSnapshot = this.captureHistorySnapshot();
+    if (beforeSnapshot === afterSnapshot) {
+      return false;
+    }
+
+    this.undoStack.push({
+      label,
+      before: beforeSnapshot,
+      after: afterSnapshot,
+    });
+    if (this.undoStack.length > HISTORY_LIMIT) {
+      this.undoStack.splice(0, this.undoStack.length - HISTORY_LIMIT);
+    }
+    this.redoStack = [];
+    this.syncHistoryControls();
+    return true;
+  }
+
+  restoreHistorySnapshot(snapshot) {
+    const restored = JSON.parse(snapshot);
+    this.project.lastOpenedLevelId = restored.lastOpenedLevelId;
+    this.project.levels = restored.levels;
+    this.project.assetRegistry = restored.assetRegistry || { categories: [], assets: [] };
+    this.project.assets = this.project.assetRegistry.assets || [];
+    this.selectedAsset = this.selectedAsset?.id
+      ? this.project.assets.find((asset) => asset.id === this.selectedAsset.id) || this.project.assets[0] || null
+      : this.project.assets[0] || null;
+    this.clearSelection();
+    this.clearPlacedObjectSelection();
+    this.closePlacedPropertiesDialog();
+    this.cancelCopyPlacement();
+  }
+
+  undo() {
+    const entry = this.undoStack.pop();
+    if (!entry) {
+      this.setStatus("Nothing to undo.");
+      this.syncHistoryControls();
+      return false;
+    }
+
+    this.redoStack.push(entry);
+    this.restoreHistorySnapshot(entry.before);
+    this.render();
+    this.autosave(`Undid ${entry.label}.`);
+    this.syncHistoryControls();
+    return true;
+  }
+
+  redo() {
+    const entry = this.redoStack.pop();
+    if (!entry) {
+      this.setStatus("Nothing to redo.");
+      this.syncHistoryControls();
+      return false;
+    }
+
+    this.undoStack.push(entry);
+    this.restoreHistorySnapshot(entry.after);
+    this.render();
+    this.autosave(`Redid ${entry.label}.`);
+    this.syncHistoryControls();
+    return true;
+  }
+
+  syncHistoryControls() {
+    if (!this.ui.undoButtons?.length || !this.ui.redoButtons?.length) {
+      return;
+    }
+
+    const undoEntry = this.undoStack[this.undoStack.length - 1];
+    const redoEntry = this.redoStack[this.redoStack.length - 1];
+    this.ui.undoButtons.forEach((button) => {
+      button.disabled = !undoEntry;
+      button.title = undoEntry ? `Undo ${undoEntry.label}` : "Undo";
+      button.setAttribute("aria-label", button.title);
+      if (!button.classList.contains("quick-history-button")) {
+        button.textContent = undoEntry ? `Undo ${undoEntry.label}` : "Undo";
+      }
+    });
+    this.ui.redoButtons.forEach((button) => {
+      button.disabled = !redoEntry;
+      button.title = redoEntry ? `Redo ${redoEntry.label}` : "Redo";
+      button.setAttribute("aria-label", button.title);
+      if (!button.classList.contains("quick-history-button")) {
+        button.textContent = redoEntry ? `Redo ${redoEntry.label}` : "Redo";
+      }
+    });
+  }
+
   autosave(message, onSaveResult = null) {
     this.setStatus(message);
     this.saveQueue = this.saveQueue
@@ -4611,6 +4802,7 @@ class DevEditor {
     this.syncPlacementButton();
     this.syncAreaToolMenu();
     this.syncAssetMenu();
+    this.syncHistoryControls();
     this.ui.levelSummary.textContent = `${level.name} · ${level.gridWidth}x${level.gridHeight} · ${level.tileSize}px tiles`;
   }
 
@@ -5025,6 +5217,7 @@ class DevEditor {
   }
 
   unlockAllLayers() {
+    const historySnapshot = this.captureHistorySnapshot();
     this.layerLocks = Object.fromEntries(
       LAYERS.map((layerName) => [layerName, false]),
     );
@@ -5051,6 +5244,7 @@ class DevEditor {
     this.clearPlacedObjectSelection();
     this.closePlacedPropertiesDialog();
     this.render();
+    this.pushHistoryEntry("Unlock all assets", historySnapshot);
     this.autosave(
       `All layers and individually locked assets unlocked${
         unlockedAssetCount > 0 ? ` (${unlockedAssetCount} asset${unlockedAssetCount === 1 ? "" : "s"})` : ""

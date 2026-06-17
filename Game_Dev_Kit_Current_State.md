@@ -29,7 +29,7 @@ Update this current-state file whenever working behaviour changes.
 
 ## 3. Current Phase Status
 
-- Current working branch: `codex/phase-6-area-tools`.
+- Current working branch: `codex/phase-7-undo-redo`.
 - The project has begun Phase 4 with a focused placed-asset properties implementation.
 - Phase 1 and Phase 2 functionality is working.
 - Phase 3 has a solid asset import, categorisation, grid selection, and placement base and is being polished.
@@ -50,6 +50,8 @@ Update this current-state file whenever working behaviour changes.
 - Phase 6F Brush Sizes for Paint mode are implemented on the Phase 6 branch.
 - Phase 6G Random Brush / Asset Variants for Paint mode is implemented on the Phase 6 branch.
 - Phase 6H follow-up work is in progress on the Phase 6 branch: left-panel drag/category stability, left-panel source asset multi-select/delete, and Ctrl-click additive placed-asset selection. Multi-asset resize is deferred.
+- Phase 6 is complete and merged into `main`.
+- Phase 7A Undo/Redo is in progress on the Phase 7 branch.
 
 ## 4. Current Working Features
 
@@ -63,7 +65,12 @@ The editor currently supports:
 - Delete Level is working: it confirms first, removes only the selected level from the project, selects another level, rerenders the grid/level selector, and persists to browser storage.
 - Level reordering by drag within the level selector.
 - File menu with Choose Project Folder, Save, and Save As.
-- Edit menu with Copy Level and Paste Level.
+- Edit menu with Undo, Redo, Copy Level, Paste Level, placed-asset copy/cut/duplicate commands, area tools, and Properties.
+- Quick Undo and Redo buttons sit beside the top `File`, `Edit`, `View`, and `Asset` menus. The left curved-arrow button performs Undo and the right curved-arrow button performs Redo.
+- Undo/Redo is session-based editor history with a bounded stack of 50 meaningful data changes. It is not stored in project JSON, level JSON, `assetRegistry.json`, browser backups, or any persistent clipboard/storage key.
+- Undo/Redo shortcuts are `Ctrl+Z` for Undo, `Ctrl+Y` and `Ctrl+Shift+Z` for Redo. The shortcuts are disabled while typing in inputs, textareas, selects, modals, search boxes, and other editable UI.
+- Quick Undo/Redo buttons use the same undo/redo methods as the Edit menu and keyboard shortcuts, and disable when their matching history stack is unavailable.
+- Undo/Redo restores the project data snapshot for the action, clears stale grid/placed-asset selections, cancels any copy/cut placement preview, rerenders the editor, and autosaves the restored state for refresh persistence.
 - Top editor menu order is `File`, `Edit`, `View`, `Asset`.
 - The `View` menu contains compact `Layer Visibility` and `Layer Locking` flyouts for all ten known layers, plus `Show All Layers` and `Unlock All Layers and Assets`.
 - Asset menu is enabled only for one visible placed asset selected in Select/Move mode.
@@ -145,12 +152,16 @@ The editor currently supports:
 - Multi-asset Properties lock/unlock writes the chosen `editorLocked` state back to the original placed objects in `level.layers`, preserving IDs, positions, metadata, `layerOptions`, and unknown fields. Protected selected assets are skipped for shared edits.
 - Browser refresh restoration of project data, levels, categories, imported image data, and placed objects.
 - No visible default placeholder asset library.
+- Phase 7A undoable actions include placed asset placement, stretched placement, Delete mode removal, selected placed asset deletion, selected-area deletion, drag painting, brush-size/random-variant painting, Fill Selected Area, Clear Selected Area, Replace Matching Assets, placed asset move/resize, group move, copied group paste, cut paste, duplicate, placed asset Properties edits, multi-asset Properties edits, multi-asset lock/unlock, Clear Level, source asset delete, bulk source asset delete, category delete, and unlocking individually locked assets through View > Unlock All Layers and Assets.
+- Actions are grouped by completed editor operation: drag paint creates one undo step on mouseup, fill/clear/replace each create one undo step after confirmation, copy/cut/duplicate placement creates one undo step after commit, and properties create one undo step when Apply succeeds.
+- UI-only state is not undoable: selected cells/areas, selected placed assets, selected source assets, active tool mode, brush size, paint variant selection/search/collapse state, layer visibility preferences, layer lock preferences, panel sizes, menu open state, modal positions, copied level clipboard, and copy/cut placement preview state.
 
 Current limitations:
 
 - This is still an editor only; it does not run player movement, NPC logic, battles, doors, or game integration.
 - Full Phase 5 layer behaviour is not implemented yet. Solo layer, layer reordering, active placement layers, and runtime visibility are not implemented yet.
 - Later Phase 6 tools remain unimplemented: weighted random brushes, replace brushes, auto-tiling, terrain blending, replace-by-category/layer/all-levels, and `Ctrl+A`.
+- Phase 7A does not implement persistent history, cross-refresh undo stacks, undo/redo for File > Save output, undo/redo for UI-only preferences, or a visible history panel.
 - Play Mode, runtime collision, trigger execution, doors/exits, spawn runtime, NPC/enemy/item gameplay systems, chunked maps, animated character import, audio/music systems, and multilayer/parallax background tools are not implemented yet.
 - Left-panel source asset/category deletion can remove matching placed copies after app-owned confirmation. This applies only to source asset/category deletion from the left panel and does not change grid Delete mode, Delete/Backspace selected placed assets, Clear Selected Area, or Replace Matching Assets.
 - Left-panel source asset/category deletion scans all levels, matching the existing all-level asset-in-use scope, and removes only placed copies whose `assetId` belongs to the deleted source asset or deleted category.
