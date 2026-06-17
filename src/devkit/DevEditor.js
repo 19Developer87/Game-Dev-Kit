@@ -4904,6 +4904,7 @@ class DevEditor {
     this.root.querySelectorAll("[data-tool]").forEach((button) => {
       button.classList.toggle("is-active", button.dataset.tool === this.activeTool);
     });
+    this.ui.paintOnlyControls.hidden = this.activeTool !== "paint";
     this.ui.paintBrushSize.value = String(this.paintBrushSize);
     this.syncPaintVariantsButton();
   }

@@ -192,6 +192,16 @@ textarea {
   border-left: 1px solid #2d373f;
 }
 
+.paint-only-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.paint-only-controls[hidden] {
+  display: none;
+}
+
 .brush-size-control {
   display: inline-flex;
   align-items: center;

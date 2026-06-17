@@ -107,8 +107,9 @@ The editor currently supports:
 - Edit > Replace Matching Assets uses the active grid selection, an app-owned source-choice modal, and the currently selected palette asset to replace only matching placed-object `assetId` values.
 - Fill Selected Area, Clear Selected Area, Replace Matching Assets, and Delete/Backspace selected-area deletion can operate across multiple Ctrl-selected grid areas as one combined area selection.
 - Paint mode is selected from the top toolbar. Holding and dragging on the grid paints repeated separate `1x1` copies of the selected asset along the dragged path.
-- Paint mode has a top-toolbar Brush Size selector with `1x1`, `2x2`, `3x3`, and `5x5` options. The default is `1x1`.
-- Paint mode has a top-toolbar `Variants` button that opens an app-owned Paint Variants dialog for choosing multiple imported assets as random paint variants.
+- Paint mode has a Paint-only top-toolbar Brush Size selector with `1x1`, `2x2`, `3x3`, and `5x5` options. The default is `1x1`.
+- Paint mode has a Paint-only top-toolbar `Variants` button that opens an app-owned Paint Variants dialog for choosing multiple imported assets as random paint variants.
+- Brush Size and Variants controls are hidden while Select/Move or Delete is active. Their editor preference state remains remembered while hidden and returns unchanged when Paint is selected again.
 - Drag Painting is different from stretched placement: stretched placement creates one fitted object across a selected range, while Drag Painting creates individual `1x1` placed objects.
 - Drag Painting skips occupied cells on the target placement layer, including hidden-layer, locked-layer, or individually locked assets on that same layer. Placed assets on different layers may share the same grid cells and are not overwritten or deleted by Paint.
 - Drag Painting tracks unique cells in memory during the drag, shows lightweight preview boxes, commits once on mouse release, refreshes placed markers once, and autosaves once.
@@ -553,6 +554,7 @@ For one imported file while a grid range is already selected, the editor may off
 - Paint is a main top toolbar mode beside Select/Move and Delete. Drag Paint Mode was removed from the Edit menu.
 - Paint mode uses the currently selected palette asset. Holding the left mouse button on the grid and dragging records each unique grid cell under the pointer and shows lightweight paint preview boxes.
 - Paint mode Brush Size is editor UI preference only and is not saved to project JSON, level JSON, `assetRegistry.json`, backups, or placed asset data.
+- Brush Size and Paint Variants are visible only while Paint mode is active. Select/Move and Delete keep the toolbar simpler by hiding those Paint-only controls without clearing the remembered brush size or selected variants.
 - Brush Size options are `1x1`, `2x2`, `3x3`, and `5x5`. `1x1` paints the cursor cell; `3x3` and `5x5` are centered on the cursor cell; `2x2` uses the cursor cell as the top-left of the brush square.
 - Paint Variants are editor UI preference only and are stored as selected imported asset IDs in `game-dev-kit-paint-variant-asset-ids`. Variant IDs are validated against the current asset registry on load/use and are not saved to project JSON, level JSON, `assetRegistry.json`, backups, or placed asset data.
 - The Paint Variants dialog groups imported assets by existing asset category. Categories are collapsed by default and hide their asset rows, with a compact header showing the expand arrow, category-level select-all checkbox, category name, and selected count. Expanding a category shows individual asset checkboxes with thumbnails and names. Expanding or collapsing a category does not change selected variants.
