@@ -71,6 +71,18 @@ const MAX_GRID_SIZE = 500;
 const MIXED_VALUE = "__mixed";
 const HISTORY_LIMIT = 50;
 const PLAYER_SPAWN_TYPE = "playerSpawn";
+const PLAY_MODE_PLAYER_SPEED = 160;
+const PLAY_MODE_PLAYER_COLLISION_SCALE = 0.72;
+const PLAY_MODE_MOVEMENT_KEYS = new Map([
+  ["ArrowUp", "up"],
+  ["ArrowDown", "down"],
+  ["ArrowLeft", "left"],
+  ["ArrowRight", "right"],
+  ["w", "up"],
+  ["s", "down"],
+  ["a", "left"],
+  ["d", "right"],
+]);
 
 class DevEditor {
   constructor(root, loaded) {
@@ -102,7 +114,12 @@ class DevEditor {
     this.isPlayModeActive = false;
     this.playModePreviousTool = this.activeTool;
     this.playModePlayerCell = null;
+    this.playModePlayerPosition = null;
     this.playModeBlockedCells = new Set();
+    this.playModeBlockingRects = [];
+    this.playModePressedKeys = new Set();
+    this.playModeAnimationFrame = null;
+    this.playModeLastFrameTime = null;
     this.playModeLastBlockedAt = 0;
     this.layerVisibility = this.loadLayerVisibility();
     this.layerLocks = this.loadLayerLocks();
@@ -215,6 +232,9 @@ class DevEditor {
 
     window.addEventListener("keyup", (event) => {
       if (event.key !== "Control") {
+        if (this.isPlayModeActive && this.handlePlayModeKeyUp(event)) {
+          return;
+        }
         return;
       }
       this.setCtrlPressed(false);
@@ -222,6 +242,7 @@ class DevEditor {
 
     window.addEventListener("blur", () => {
       this.setCtrlPressed(false);
+      this.playModePressedKeys.clear();
     });
 
     this.ui.sidebarToggle.addEventListener("click", () => {
@@ -833,19 +854,27 @@ class DevEditor {
     this.clearSelection();
     this.clearPlacedObjectSelection();
     this.playModeBlockedCells = this.createPlayModeBlockedCellSet(level);
+    this.playModeBlockingRects = this.createPlayModeBlockingRects(level);
     this.playModePlayerCell = this.findPlayModeSpawnCell(level, this.playModeBlockedCells);
+    this.playModePlayerPosition = this.createPlayModePlayerPosition(
+      this.playModePlayerCell,
+      level.tileSize,
+    );
+    this.playModePressedKeys.clear();
+    this.playModeLastFrameTime = null;
     this.isPlayModeActive = true;
     this.gridEditor.setPlayModeActive(true);
     this.gridEditor.updateSelection(null);
     this.gridEditor.updateMultiSelections([]);
     this.gridEditor.updateDropPreview(null);
     this.gridEditor.updatePaintPreview([]);
-    this.gridEditor.updatePlayModePlayer(this.playModePlayerCell);
+    this.gridEditor.updatePlayModePlayer(this.createPlayModePlayerView(level));
     this.syncPlayModeControls();
     this.syncHistoryControls();
     this.syncAssetMenu();
     this.syncAreaToolMenu();
-    this.setStatus("Play Mode started. Use WASD or arrow keys to move. Press Esc to exit Play Mode.");
+    this.startPlayModeMovementLoop();
+    this.setStatus("Play Mode: use WASD or arrow keys to move freely. Press Esc to exit.");
     this.render();
   }
 
@@ -855,8 +884,13 @@ class DevEditor {
     }
 
     this.isPlayModeActive = false;
+    this.stopPlayModeMovementLoop();
     this.playModePlayerCell = null;
+    this.playModePlayerPosition = null;
     this.playModeBlockedCells = new Set();
+    this.playModeBlockingRects = [];
+    this.playModePressedKeys.clear();
+    this.playModeLastFrameTime = null;
     this.gridEditor.setPlayModeActive(false);
     this.activeTool = ["move", "paint", "delete"].includes(this.playModePreviousTool)
       ? this.playModePreviousTool
@@ -876,51 +910,211 @@ class DevEditor {
       return true;
     }
 
-    const direction = {
-      ArrowUp: { x: 0, y: -1 },
-      ArrowDown: { x: 0, y: 1 },
-      ArrowLeft: { x: -1, y: 0 },
-      ArrowRight: { x: 1, y: 0 },
-      w: { x: 0, y: -1 },
-      s: { x: 0, y: 1 },
-      a: { x: -1, y: 0 },
-      d: { x: 1, y: 0 },
-    }[event.key.length === 1 ? event.key.toLowerCase() : event.key];
-
-    if (!direction) {
+    const movementKey = this.getPlayModeMovementKey(event.key);
+    if (!movementKey) {
       return false;
     }
 
     event.preventDefault();
-    this.movePlayModePlayer(direction);
+    this.playModePressedKeys.add(movementKey);
     return true;
   }
 
-  movePlayModePlayer(direction) {
-    if (!this.playModePlayerCell) {
+  handlePlayModeKeyUp(event) {
+    const movementKey = this.getPlayModeMovementKey(event.key);
+    if (!movementKey) {
+      return false;
+    }
+
+    event.preventDefault();
+    this.playModePressedKeys.delete(movementKey);
+    return true;
+  }
+
+  getPlayModeMovementKey(key) {
+    return PLAY_MODE_MOVEMENT_KEYS.get(key.length === 1 ? key.toLowerCase() : key) || null;
+  }
+
+  startPlayModeMovementLoop() {
+    this.stopPlayModeMovementLoop();
+    this.playModeAnimationFrame = window.requestAnimationFrame((timestamp) => {
+      this.updatePlayModeMovement(timestamp);
+    });
+  }
+
+  stopPlayModeMovementLoop() {
+    if (this.playModeAnimationFrame !== null) {
+      window.cancelAnimationFrame(this.playModeAnimationFrame);
+      this.playModeAnimationFrame = null;
+    }
+  }
+
+  updatePlayModeMovement(timestamp) {
+    if (!this.isPlayModeActive) {
+      this.stopPlayModeMovementLoop();
+      return;
+    }
+
+    if (this.playModeLastFrameTime === null) {
+      this.playModeLastFrameTime = timestamp;
+    }
+    const deltaSeconds = Math.min(0.05, Math.max(0, (timestamp - this.playModeLastFrameTime) / 1000));
+    this.playModeLastFrameTime = timestamp;
+
+    if (
+      this.playModePressedKeys.size > 0 &&
+      !document.querySelector("dialog[open]") &&
+      !this.root.querySelector("[data-menu][open], [data-role='level-picker'].is-open") &&
+      !isEditableTarget(document.activeElement)
+    ) {
+      this.movePlayModePlayerFree(deltaSeconds);
+    }
+
+    this.playModeAnimationFrame = window.requestAnimationFrame((nextTimestamp) => {
+      this.updatePlayModeMovement(nextTimestamp);
+    });
+  }
+
+  movePlayModePlayerFree(deltaSeconds) {
+    if (!this.playModePlayerPosition || deltaSeconds <= 0) {
       return;
     }
 
     const level = getCurrentLevel(this.project);
-    const nextCell = {
-      x: this.playModePlayerCell.x + direction.x,
-      y: this.playModePlayerCell.y + direction.y,
-    };
+    const direction = this.getPlayModeMovementVector();
+    if (direction.x === 0 && direction.y === 0) {
+      return;
+    }
+
+    const distance = PLAY_MODE_PLAYER_SPEED * deltaSeconds;
+    let nextPosition = this.resolvePlayModeMovementAxis(
+      { ...this.playModePlayerPosition },
+      direction.x * distance,
+      0,
+      level,
+    );
+    nextPosition = this.resolvePlayModeMovementAxis(
+      nextPosition,
+      0,
+      direction.y * distance,
+      level,
+    );
 
     if (
-      nextCell.x < 1 ||
-      nextCell.y < 1 ||
-      nextCell.x > level.gridWidth ||
-      nextCell.y > level.gridHeight ||
-      this.playModeBlockedCells.has(this.createPlayModeCellKey(nextCell.x, nextCell.y))
+      nextPosition.x === this.playModePlayerPosition.x &&
+      nextPosition.y === this.playModePlayerPosition.y
     ) {
       this.reportPlayModeBlocked();
       return;
     }
 
-    this.playModePlayerCell = nextCell;
-    this.gridEditor.updatePlayModePlayer(nextCell);
-    this.ui.coordinateStatus.textContent = `Play: ${toGridRef(nextCell.x, nextCell.y)}`;
+    this.playModePlayerPosition = nextPosition;
+    this.playModePlayerCell = this.getPlayModeCellFromPosition(level, nextPosition);
+    this.gridEditor.updatePlayModePlayer(this.createPlayModePlayerView(level));
+    this.ui.coordinateStatus.textContent = `Play: ${toGridRef(
+      this.playModePlayerCell.x,
+      this.playModePlayerCell.y,
+    )}`;
+  }
+
+  getPlayModeMovementVector() {
+    let x = 0;
+    let y = 0;
+    if (this.playModePressedKeys.has("left")) {
+      x -= 1;
+    }
+    if (this.playModePressedKeys.has("right")) {
+      x += 1;
+    }
+    if (this.playModePressedKeys.has("up")) {
+      y -= 1;
+    }
+    if (this.playModePressedKeys.has("down")) {
+      y += 1;
+    }
+
+    if (x !== 0 && y !== 0) {
+      const diagonalScale = Math.SQRT1_2;
+      return { x: x * diagonalScale, y: y * diagonalScale };
+    }
+
+    return { x, y };
+  }
+
+  resolvePlayModeMovementAxis(position, deltaX, deltaY, level) {
+    if (deltaX === 0 && deltaY === 0) {
+      return position;
+    }
+
+    const proposed = this.clampPlayModePosition(
+      {
+        x: position.x + deltaX,
+        y: position.y + deltaY,
+      },
+      level,
+    );
+
+    if (this.isPlayModePositionBlocked(proposed, level)) {
+      return position;
+    }
+
+    return proposed;
+  }
+
+  clampPlayModePosition(position, level) {
+    const box = this.getPlayModeCollisionBoxSize(level.tileSize);
+    const halfWidth = Math.max(level.tileSize / 2, box.width / 2);
+    const halfHeight = Math.max(level.tileSize / 2, box.height / 2);
+    return {
+      x: clamp(position.x, halfWidth, level.gridWidth * level.tileSize - halfWidth),
+      y: clamp(position.y, halfHeight, level.gridHeight * level.tileSize - halfHeight),
+    };
+  }
+
+  isPlayModePositionBlocked(position, level) {
+    const playerRect = this.createPlayModePlayerCollisionRect(position, level.tileSize);
+    return this.playModeBlockingRects.some((blockingRect) => rectanglesOverlap(playerRect, blockingRect));
+  }
+
+  createPlayModePlayerPosition(cell, tileSize) {
+    return {
+      x: (cell.x - 0.5) * tileSize,
+      y: (cell.y - 0.5) * tileSize,
+    };
+  }
+
+  createPlayModePlayerView(level) {
+    if (!this.playModePlayerPosition) {
+      return null;
+    }
+    return {
+      pixelX: this.playModePlayerPosition.x,
+      pixelY: this.playModePlayerPosition.y,
+      width: level.tileSize,
+      height: level.tileSize,
+    };
+  }
+
+  createPlayModePlayerCollisionRect(position, tileSize) {
+    const box = this.getPlayModeCollisionBoxSize(tileSize);
+    return {
+      left: position.x - box.width / 2,
+      top: position.y - box.height / 2,
+      right: position.x + box.width / 2,
+      bottom: position.y + box.height / 2,
+    };
+  }
+
+  getPlayModeCollisionBoxSize(tileSize) {
+    const size = tileSize * PLAY_MODE_PLAYER_COLLISION_SCALE;
+    return { width: size, height: size };
+  }
+
+  getPlayModeCellFromPosition(level, position) {
+    return {
+      x: clamp(Math.floor(position.x / level.tileSize) + 1, 1, level.gridWidth),
+      y: clamp(Math.floor(position.y / level.tileSize) + 1, 1, level.gridHeight),
+    };
   }
 
   reportPlayModeBlocked() {
@@ -952,6 +1146,25 @@ class DevEditor {
       }
     });
     return blockedCells;
+  }
+
+  createPlayModeBlockingRects(level) {
+    const tileSize = level.tileSize;
+    return getPlacedObjects(level)
+      .filter((placedObject) => placedObject.blocksMovement === true)
+      .map((placedObject) => {
+        const startX = clamp(Number(placedObject.x) || 1, 1, level.gridWidth);
+        const startY = clamp(Number(placedObject.y) || 1, 1, level.gridHeight);
+        const width = Math.max(1, Number(placedObject.width) || 1);
+        const height = Math.max(1, Number(placedObject.height) || 1);
+        return {
+          left: (startX - 1) * tileSize,
+          top: (startY - 1) * tileSize,
+          right: Math.min(level.gridWidth * tileSize, (startX - 1 + width) * tileSize),
+          bottom: Math.min(level.gridHeight * tileSize, (startY - 1 + height) * tileSize),
+        };
+      })
+      .filter((rect) => rect.right > rect.left && rect.bottom > rect.top);
   }
 
   findPlayModeSpawnCell(level, blockedCells) {
@@ -5187,6 +5400,9 @@ class DevEditor {
     );
     this.gridEditor.setLayerVisibility(this.layerVisibility);
     this.gridEditor.setLayerLocks(this.layerLocks);
+    if (this.isPlayModeActive) {
+      this.gridEditor.updatePlayModePlayer(this.createPlayModePlayerView(level));
+    }
     this.gridEditor.syncPlacedObjectSelection(
       this.selectedPlacedObjectId,
       Array.from(this.selectedPlacedObjectIds),
@@ -6195,6 +6411,15 @@ function createDeletedPlacedAssetsMessage(count) {
 
 function clamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
+}
+
+function rectanglesOverlap(first, second) {
+  return (
+    first.left < second.right &&
+    first.right > second.left &&
+    first.top < second.bottom &&
+    first.bottom > second.top
+  );
 }
 
 function normalizePaintBrushSize(value) {

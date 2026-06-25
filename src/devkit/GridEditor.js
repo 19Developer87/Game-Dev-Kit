@@ -112,8 +112,8 @@ export class GridEditor {
     }
   }
 
-  updatePlayModePlayer(cell) {
-    this.playModePlayerCell = cell ? { ...cell } : null;
+  updatePlayModePlayer(player) {
+    this.playModePlayerCell = player ? { ...player } : null;
     if (!this.playModeLayer) {
       return;
     }
@@ -131,10 +131,18 @@ export class GridEditor {
       this.playModeLayer.append(this.playModePlayerMarker);
     }
 
-    this.playModePlayerMarker.style.left = `${(this.playModePlayerCell.x - 1) * this.level.tileSize}px`;
-    this.playModePlayerMarker.style.top = `${(this.playModePlayerCell.y - 1) * this.level.tileSize}px`;
-    this.playModePlayerMarker.style.width = `${this.level.tileSize}px`;
-    this.playModePlayerMarker.style.height = `${this.level.tileSize}px`;
+    const width = Number(this.playModePlayerCell.width) || this.level.tileSize;
+    const height = Number(this.playModePlayerCell.height) || this.level.tileSize;
+    const left = Number.isFinite(Number(this.playModePlayerCell.pixelX))
+      ? Number(this.playModePlayerCell.pixelX) - width / 2
+      : ((Number(this.playModePlayerCell.x) || 1) - 1) * this.level.tileSize;
+    const top = Number.isFinite(Number(this.playModePlayerCell.pixelY))
+      ? Number(this.playModePlayerCell.pixelY) - height / 2
+      : ((Number(this.playModePlayerCell.y) || 1) - 1) * this.level.tileSize;
+    this.playModePlayerMarker.style.left = `${left}px`;
+    this.playModePlayerMarker.style.top = `${top}px`;
+    this.playModePlayerMarker.style.width = `${width}px`;
+    this.playModePlayerMarker.style.height = `${height}px`;
   }
 
   setCopyModeActive(isActive, mode = "copy") {
