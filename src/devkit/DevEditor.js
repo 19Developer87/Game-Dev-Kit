@@ -1153,15 +1153,20 @@ class DevEditor {
     return getPlacedObjects(level)
       .filter((placedObject) => placedObject.blocksMovement === true)
       .map((placedObject) => {
-        const startX = clamp(Number(placedObject.x) || 1, 1, level.gridWidth);
-        const startY = clamp(Number(placedObject.y) || 1, 1, level.gridHeight);
-        const width = Math.max(1, Number(placedObject.width) || 1);
-        const height = Math.max(1, Number(placedObject.height) || 1);
+        const collisionBounds = getPlacedCollisionBounds(placedObject);
         return {
-          left: (startX - 1) * tileSize,
-          top: (startY - 1) * tileSize,
-          right: Math.min(level.gridWidth * tileSize, (startX - 1 + width) * tileSize),
-          bottom: Math.min(level.gridHeight * tileSize, (startY - 1 + height) * tileSize),
+          left: clamp((collisionBounds.x - 1) * tileSize, 0, level.gridWidth * tileSize),
+          top: clamp((collisionBounds.y - 1) * tileSize, 0, level.gridHeight * tileSize),
+          right: clamp(
+            (collisionBounds.x - 1 + collisionBounds.width) * tileSize,
+            0,
+            level.gridWidth * tileSize,
+          ),
+          bottom: clamp(
+            (collisionBounds.y - 1 + collisionBounds.height) * tileSize,
+            0,
+            level.gridHeight * tileSize,
+          ),
         };
       })
       .filter((rect) => rect.right > rect.left && rect.bottom > rect.top);
@@ -1478,6 +1483,8 @@ class DevEditor {
     const opacity = normalizeOpacity(placedObject.opacity);
     const layer = normalizePlacedLayer(placedObject.layer);
     const layerOptions = normalizeLayerOptions(placedObject.layerOptions);
+    const collisionBox = normalizeCollisionBoxForBounds(placedObject.collisionBox, width, height);
+    const collisionMode = collisionBox ? "custom" : "full";
     const titleName = sourceAsset?.name || placedObject.name || placedObject.assetId;
 
     dialog.className = "placed-properties-dialog";
@@ -1525,7 +1532,7 @@ class DevEditor {
                 </select>
               </label>
               <label>Blocks Movement
-                <select name="blocksMovement">
+                <select name="blocksMovement" data-role="blocks-movement-select">
                   <option value="false" ${!placedObject.blocksMovement ? "selected" : ""}>No</option>
                   <option value="true" ${placedObject.blocksMovement ? "selected" : ""}>Yes</option>
                 </select>
@@ -1540,6 +1547,22 @@ class DevEditor {
                 <textarea name="notes" rows="4">${escapeHtml(placedObject.notes || "")}</textarea>
               </label>
               <p class="properties-hint">Layer locks are controlled from View. Locked here protects only this placed copy; double-click it later to unlock it.</p>
+            </fieldset>
+            <fieldset class="properties-collision-box" data-role="collision-box-section">
+              <legend>Collision Box</legend>
+              <label>Collision Mode
+                <select name="collisionBoxMode" data-role="collision-box-mode">
+                  <option value="full" ${collisionMode === "full" ? "selected" : ""}>Full Asset Bounds</option>
+                  <option value="custom" ${collisionMode === "custom" ? "selected" : ""}>Custom Box</option>
+                </select>
+              </label>
+              <div class="collision-box-fields" data-role="collision-box-fields">
+                <label>Offset X <input name="collisionOffsetX" type="number" min="0" step="1" value="${collisionBox?.offsetX ?? 0}" /></label>
+                <label>Offset Y <input name="collisionOffsetY" type="number" min="0" step="1" value="${collisionBox?.offsetY ?? 0}" /></label>
+                <label>Width <input name="collisionWidth" type="number" min="1" step="1" value="${collisionBox?.width ?? width}" /></label>
+                <label>Height <input name="collisionHeight" type="number" min="1" step="1" value="${collisionBox?.height ?? height}" /></label>
+              </div>
+              <p class="properties-hint">Custom boxes use grid-cell units from this placed asset's top-left. Values are clamped inside the visual bounds when saved.</p>
             </fieldset>
             <fieldset class="properties-layer-options" data-role="layer-options-container">
               ${createLayerOptionsFields(layer, layerOptions)}
@@ -1559,11 +1582,24 @@ class DevEditor {
     const error = dialog.querySelector(".form-error");
     const layerSelect = dialog.querySelector('[data-role="placed-layer-select"]');
     const layerOptionsContainer = dialog.querySelector('[data-role="layer-options-container"]');
+    const blocksMovementSelect = dialog.querySelector('[data-role="blocks-movement-select"]');
+    const collisionBoxSection = dialog.querySelector('[data-role="collision-box-section"]');
+    const collisionBoxMode = dialog.querySelector('[data-role="collision-box-mode"]');
+    const collisionBoxFields = dialog.querySelector('[data-role="collision-box-fields"]');
     const releaseDialogBehavior = this.bindPlacedPropertiesDialogBehavior(dialog);
+
+    const syncCollisionBoxControls = () => {
+      const blocksMovement = blocksMovementSelect.value === "true";
+      collisionBoxSection.hidden = !blocksMovement;
+      collisionBoxFields.hidden = !blocksMovement || collisionBoxMode.value !== "custom";
+    };
 
     layerSelect.addEventListener("change", () => {
       layerOptionsContainer.innerHTML = createLayerOptionsFields(layerSelect.value, layerOptions);
     });
+    blocksMovementSelect.addEventListener("change", syncCollisionBoxControls);
+    collisionBoxMode.addEventListener("change", syncCollisionBoxControls);
+    syncCollisionBoxControls();
 
     dialog.querySelector('[data-action="cancel-properties"]').addEventListener("click", () => {
       dialog.close();
@@ -1778,6 +1814,7 @@ class DevEditor {
                   ${createMixedBooleanOptions(blocksMovementValue)}
                 </select>
               </label>
+              <p class="properties-hint">Custom collision box editing is available for single selected assets only.</p>
               <label>Locked
                 <select name="editorLocked" data-track-change>
                   ${createMixedBooleanOptions(lockValue)}
@@ -2021,6 +2058,11 @@ class DevEditor {
     }
     const previousLayerOptions = normalizeLayerOptions(placedObject.layerOptions);
     const layerSpecificOptions = readLayerSpecificOptions(data, layer);
+    const blocksMovement = data.get("blocksMovement") === "true";
+    const collisionBoxMode = String(data.get("collisionBoxMode") || "full");
+    const collisionBox = blocksMovement && collisionBoxMode === "custom"
+      ? readCollisionBoxFormValues(data, width, height)
+      : null;
 
     return {
       values: {
@@ -2031,8 +2073,13 @@ class DevEditor {
         layer,
         visible: data.get("visible") === "true",
         opacity,
-        blocksMovement: data.get("blocksMovement") === "true",
+        blocksMovement,
         editorLocked: data.get("editorLocked") === "true",
+        ...(blocksMovement && collisionBoxMode === "custom"
+          ? { collisionBox }
+          : blocksMovement
+            ? { collisionBox: null }
+            : {}),
         layerOptions: {
           ...previousLayerOptions,
           ...layerSpecificOptions,
@@ -6420,6 +6467,76 @@ function rectanglesOverlap(first, second) {
     first.top < second.bottom &&
     first.bottom > second.top
   );
+}
+
+function readCollisionBoxFormValues(data, assetWidth, assetHeight) {
+  return normalizeCollisionBoxForBounds(
+    {
+      mode: "custom",
+      enabled: true,
+      offsetX: Number(data.get("collisionOffsetX")),
+      offsetY: Number(data.get("collisionOffsetY")),
+      width: Number(data.get("collisionWidth")),
+      height: Number(data.get("collisionHeight")),
+    },
+    assetWidth,
+    assetHeight,
+  ) || {
+    mode: "custom",
+    enabled: true,
+    offsetX: 0,
+    offsetY: 0,
+    width: Math.max(1, Number(assetWidth) || 1),
+    height: Math.max(1, Number(assetHeight) || 1),
+  };
+}
+
+function normalizeCollisionBoxForBounds(collisionBox, assetWidth, assetHeight) {
+  if (!collisionBox || typeof collisionBox !== "object" || Array.isArray(collisionBox)) {
+    return null;
+  }
+
+  const boxMode = collisionBox.mode || (collisionBox.enabled === true ? "custom" : "full");
+  if (boxMode !== "custom" && collisionBox.enabled !== true) {
+    return null;
+  }
+
+  const boundsWidth = Math.max(1, Math.round(Number(assetWidth) || 1));
+  const boundsHeight = Math.max(1, Math.round(Number(assetHeight) || 1));
+  const offsetX = clamp(Math.round(Number(collisionBox.offsetX) || 0), 0, boundsWidth - 1);
+  const offsetY = clamp(Math.round(Number(collisionBox.offsetY) || 0), 0, boundsHeight - 1);
+  const maxWidth = Math.max(1, boundsWidth - offsetX);
+  const maxHeight = Math.max(1, boundsHeight - offsetY);
+  const width = clamp(Math.round(Number(collisionBox.width) || maxWidth), 1, maxWidth);
+  const height = clamp(Math.round(Number(collisionBox.height) || maxHeight), 1, maxHeight);
+
+  return {
+    mode: "custom",
+    enabled: true,
+    offsetX,
+    offsetY,
+    width,
+    height,
+  };
+}
+
+function getPlacedCollisionBounds(placedObject) {
+  const x = Number(placedObject.x) || 1;
+  const y = Number(placedObject.y) || 1;
+  const width = Math.max(1, Number(placedObject.width) || 1);
+  const height = Math.max(1, Number(placedObject.height) || 1);
+  const collisionBox = normalizeCollisionBoxForBounds(placedObject.collisionBox, width, height);
+
+  if (!collisionBox) {
+    return { x, y, width, height };
+  }
+
+  return {
+    x: x + collisionBox.offsetX,
+    y: y + collisionBox.offsetY,
+    width: collisionBox.width,
+    height: collisionBox.height,
+  };
 }
 
 function normalizePaintBrushSize(value) {

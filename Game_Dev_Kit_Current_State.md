@@ -122,7 +122,7 @@ The editor currently supports:
 - Delete and Backspace bulk delete placed assets intersecting selected grid areas immediately, including multiple Ctrl-selected areas, while skipping hidden and locked assets.
 - The old Place Selected Asset toolbar button has been removed. Asset placement remains available through asset drag/drop onto the grid or highlighted areas, Fill Selected Area, and Paint mode.
 - A compact Placed Asset Properties modal opened with `Asset > Properties`, `Edit > Properties`, or by double-clicking a placed asset in Select/Move mode.
-- Placed instance properties for Grid Ref, Width/Height, Visible, Opacity, Layer, Blocks Movement, Notes, and layer-specific metadata stored under `layerOptions`.
+- Placed instance properties for Grid Ref, Width/Height, Visible, Opacity, Layer, Blocks Movement, Collision Box, Notes, and layer-specific metadata stored under `layerOptions`.
 - Phase 4 basic placed asset property edits have been tested as working, including Chrome refresh persistence and File > Save level JSON output.
 - Identity / Info shows the source asset name and category only; internal placed/source IDs are kept in saved data but hidden from normal editing UI.
 - A movable and resizable Placed Asset Properties modal whose last panel bounds persist as a browser UI preference.
@@ -162,7 +162,7 @@ The editor currently supports:
 - Phase 8A Play Mode Preview adds a temporary `Play` button that switches the current editor level into a simple preview mode without leaving the editor.
 - Play Mode shows a temporary unsaved test player marker on the existing grid. Holding WASD or arrow keys moves the player smoothly while Play Mode is active.
 - Play Mode player position is runtime-only pixel/sub-cell state. It is initialized from the Player Spawn marker or fallback cell when Play Mode starts, discarded when Play Mode exits, and is not saved to project JSON, level JSON, `assetRegistry.json`, browser backups, or undo history.
-- Play Mode builds lightweight blocking caches when it starts. Any placed asset with `blocksMovement: true` contributes rectangular collision coverage based on its current `x`, `y`, `width`, and `height`; layer alone does not make an asset blocking.
+- Play Mode builds lightweight blocking caches when it starts. Any placed asset with `blocksMovement: true` contributes rectangular collision coverage based on either its custom placed-asset `collisionBox` or its full current `x`, `y`, `width`, and `height`; layer alone does not make an asset blocking.
 - Phase 8C movement uses a simple centered player collision box, horizontal-then-vertical movement resolution for basic sliding, and grid-bound clamping so the player cannot leave the current level.
 - Phase 8B adds an editor `Add Spawn` toolbar button that creates or moves one Player Spawn marker on the `spawns` layer for the current level.
 - The Player Spawn marker is stored as a normal placed object in `level.layers.spawns` with `type: "playerSpawn"`, `markerType: "playerSpawn"`, `name: "Player Spawn"`, `width: 1`, `height: 1`, and `blocksMovement: false`. It does not require an imported source asset and is not stored in `assetRegistry.json`.
@@ -172,14 +172,19 @@ The editor currently supports:
 - Starting, stopping, and moving in Play Mode are runtime/editor state only. They do not mutate placed assets, do not save temporary player position or Play Mode state into project/level JSON, and do not create undo history entries.
 - Smooth Play Mode movement uses a single `requestAnimationFrame` loop and updates only the temporary player marker each frame; it does not rebuild grid cells, rerender placed assets, or autosave while moving.
 - While Play Mode is active, normal editor editing interactions are disabled or ignored, including grid selection, placement, drag painting, deletion, Properties access, area tools, left-panel drag/drop, and Undo/Redo.
+- Phase 8D adds a per-placed-asset Collision Box editor for single selected assets in Placed Asset Properties. The fields appear only when Blocks Movement is set to Yes.
+- Collision Mode can use Full Asset Bounds or a Custom Box. Custom boxes save `collisionBox` on that placed object only, with grid-cell `offsetX`, `offsetY`, `width`, and `height` clamped inside the placed asset's visual bounds.
+- Selecting a blocking placed asset shows a lightweight blue collision-box overlay. Custom boxes can block only the configured sub-rectangle, so transparent/visual areas outside the custom box do not block the Play Mode player.
+- Resizing or editing a placed asset clamps any existing custom collision box to the asset's current bounds. Multi-asset Properties does not edit custom collision boxes.
+- Copy, paste, duplicate, File Save, browser refresh, and normal level JSON preservation keep custom placed-object `collisionBox` data through the existing placed-object data paths.
 
 Current limitations:
 
-- This is still primarily an editor. Phase 8A/8B/8C includes only a temporary Play Mode Preview with smooth free movement, simple `blocksMovement` rectangle blocking, and one editor Player Spawn marker; it does not implement full gameplay integration.
+- This is still primarily an editor. Phase 8A/8B/8C/8D includes only a temporary Play Mode Preview with smooth free movement, simple `blocksMovement` rectangle/custom-box blocking, and one editor Player Spawn marker; it does not implement full gameplay integration.
 - Full Phase 5 layer behaviour is not implemented yet. Solo layer, layer reordering, active placement layers, and runtime visibility are not implemented yet.
 - Later Phase 6 tools remain unimplemented: weighted random brushes, replace brushes, auto-tiling, terrain blending, replace-by-category/layer/all-levels, and `Ctrl+A`.
 - Phase 7A does not implement persistent history, cross-refresh undo stacks, undo/redo for File > Save output, undo/redo for UI-only preferences, or a visible history panel.
-- Full runtime collision/physics beyond the simple Phase 8C rectangle checks, camera follow, trigger execution, doors/exits, multi-spawn runtime rules, NPC/enemy/item gameplay systems, combat, inventory, chunked maps, animated character import, audio/music systems, export/build systems, and multilayer/parallax background tools are not implemented yet.
+- Full runtime collision/physics beyond the simple Phase 8D rectangle/custom-box checks, pixel-perfect collision, alpha-mask collision, polygon collision editing, camera follow, trigger execution, doors/exits, multi-spawn runtime rules, NPC/enemy/item gameplay systems, combat, inventory, chunked maps, animated character import, audio/music systems, export/build systems, and multilayer/parallax background tools are not implemented yet.
 - Left-panel source asset/category deletion can remove matching placed copies after app-owned confirmation. This applies only to source asset/category deletion from the left panel and does not change grid Delete mode, Delete/Backspace selected placed assets, Clear Selected Area, or Replace Matching Assets.
 - Left-panel source asset/category deletion scans all levels, matching the existing all-level asset-in-use scope, and removes only placed copies whose `assetId` belongs to the deleted source asset or deleted category.
 
@@ -610,9 +615,20 @@ Example placed asset JSON:
   "width": 4,
   "height": 3,
   "layer": "objects",
-  "visible": true
+  "visible": true,
+  "blocksMovement": true,
+  "collisionBox": {
+    "mode": "custom",
+    "enabled": true,
+    "offsetX": 1,
+    "offsetY": 1,
+    "width": 2,
+    "height": 1
+  }
 }
 ```
+
+The optional `collisionBox` field belongs to a placed copy only. It is used by Phase 8D Play Mode blocking when `blocksMovement` is true and is not stored on source palette assets or in `assetRegistry.json`.
 
 Current placed entries also include compatibility fields such as `transparent`, `solid`, `blocksMovement`, and `collisionEnabled`, although those fields are not edited in Phase 3 UI.
 

@@ -831,6 +831,7 @@ export function updatePlacedAssetBounds(level, placedObjectId, x, y, width, heig
   selectedObject.height = height;
   selectedObject.gridRef = toGridRef(x, y);
   selectedObject.rangeRef = toRangeRef(x, y, width, height);
+  clampPlacedCollisionBox(selectedObject);
   return selectedObject;
 }
 
@@ -917,11 +918,21 @@ export function updatePlacedAssetProperties(level, placedObjectId, properties) {
       [targetLayerName],
     );
   }
-  Object.assign(selectedObject, properties, {
+  const nextProperties = { ...properties };
+  const shouldRemoveCollisionBox = nextProperties.collisionBox === null;
+  if (shouldRemoveCollisionBox) {
+    delete nextProperties.collisionBox;
+  }
+  Object.assign(selectedObject, nextProperties, {
     gridRef: toGridRef(properties.x, properties.y),
     rangeRef: toRangeRef(properties.x, properties.y, properties.width, properties.height),
     layer: targetLayerName,
   });
+  if (shouldRemoveCollisionBox) {
+    delete selectedObject.collisionBox;
+  } else {
+    clampPlacedCollisionBox(selectedObject);
+  }
 
   const knownLayerMatches = LAYERS.reduce(
     (count, layerName) =>
@@ -1427,6 +1438,46 @@ function rangesOverlap(aX, aY, aWidth, aHeight, bX, bY, bWidth, bHeight) {
     aY < bY + bHeight &&
     aY + aHeight > bY
   );
+}
+
+function clampPlacedCollisionBox(placedObject) {
+  const collisionBox = placedObject?.collisionBox;
+  if (!collisionBox || typeof collisionBox !== "object" || Array.isArray(collisionBox)) {
+    return;
+  }
+
+  const mode = collisionBox.mode || (collisionBox.enabled === true ? "custom" : "full");
+  if (mode !== "custom" && collisionBox.enabled !== true) {
+    return;
+  }
+
+  const boundsWidth = Math.max(1, Math.round(Number(placedObject.width) || 1));
+  const boundsHeight = Math.max(1, Math.round(Number(placedObject.height) || 1));
+  const offsetX = clamp(Math.round(Number(collisionBox.offsetX) || 0), 0, boundsWidth - 1);
+  const offsetY = clamp(Math.round(Number(collisionBox.offsetY) || 0), 0, boundsHeight - 1);
+  const width = clamp(
+    Math.round(Number(collisionBox.width) || boundsWidth - offsetX),
+    1,
+    Math.max(1, boundsWidth - offsetX),
+  );
+  const height = clamp(
+    Math.round(Number(collisionBox.height) || boundsHeight - offsetY),
+    1,
+    Math.max(1, boundsHeight - offsetY),
+  );
+
+  placedObject.collisionBox = {
+    mode: "custom",
+    enabled: true,
+    offsetX,
+    offsetY,
+    width,
+    height,
+  };
+}
+
+function clamp(value, minimum, maximum) {
+  return Math.max(minimum, Math.min(maximum, value));
 }
 
 function cloneJsonValue(value) {

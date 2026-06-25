@@ -861,6 +861,10 @@ export class GridEditor {
         marker.style.background = asset?.color || "#69737a";
       }
 
+      if (isPrimarySelected && placedObject.blocksMovement === true) {
+        marker.append(createCollisionBoxOverlay(placedObject, level.tileSize));
+      }
+
       if (this.interactionMode === "move") {
         marker.addEventListener("pointerdown", (event) => {
           if (this.playModeActive) {
@@ -1362,6 +1366,67 @@ function rangesMatch(first, second) {
 function normalizeOpacity(opacity) {
   const number = Number(opacity);
   return Number.isFinite(number) ? clamp(Math.round(number), 0, 100) : 100;
+}
+
+function createCollisionBoxOverlay(placedObject, tileSize) {
+  const bounds = getPlacedCollisionOverlayBounds(placedObject);
+  const overlay = document.createElement("div");
+  overlay.className = "placed-collision-box";
+  overlay.setAttribute("aria-hidden", "true");
+  overlay.style.left = `${bounds.offsetX * tileSize}px`;
+  overlay.style.top = `${bounds.offsetY * tileSize}px`;
+  overlay.style.width = `${bounds.width * tileSize}px`;
+  overlay.style.height = `${bounds.height * tileSize}px`;
+  return overlay;
+}
+
+function getPlacedCollisionOverlayBounds(placedObject) {
+  const assetWidth = Math.max(1, Math.round(Number(placedObject.width) || 1));
+  const assetHeight = Math.max(1, Math.round(Number(placedObject.height) || 1));
+  const collisionBox = normalizeCollisionBoxForBounds(placedObject.collisionBox, assetWidth, assetHeight);
+
+  if (!collisionBox) {
+    return {
+      offsetX: 0,
+      offsetY: 0,
+      width: assetWidth,
+      height: assetHeight,
+    };
+  }
+
+  return {
+    offsetX: collisionBox.offsetX,
+    offsetY: collisionBox.offsetY,
+    width: collisionBox.width,
+    height: collisionBox.height,
+  };
+}
+
+function normalizeCollisionBoxForBounds(collisionBox, assetWidth, assetHeight) {
+  if (!collisionBox || typeof collisionBox !== "object" || Array.isArray(collisionBox)) {
+    return null;
+  }
+
+  const mode = collisionBox.mode || (collisionBox.enabled === true ? "custom" : "full");
+  if (mode !== "custom" && collisionBox.enabled !== true) {
+    return null;
+  }
+
+  const boundsWidth = Math.max(1, Math.round(Number(assetWidth) || 1));
+  const boundsHeight = Math.max(1, Math.round(Number(assetHeight) || 1));
+  const offsetX = clamp(Math.round(Number(collisionBox.offsetX) || 0), 0, boundsWidth - 1);
+  const offsetY = clamp(Math.round(Number(collisionBox.offsetY) || 0), 0, boundsHeight - 1);
+  const maxWidth = Math.max(1, boundsWidth - offsetX);
+  const maxHeight = Math.max(1, boundsHeight - offsetY);
+
+  return {
+    mode: "custom",
+    enabled: true,
+    offsetX,
+    offsetY,
+    width: clamp(Math.round(Number(collisionBox.width) || maxWidth), 1, maxWidth),
+    height: clamp(Math.round(Number(collisionBox.height) || maxHeight), 1, maxHeight),
+  };
 }
 
 function getPlacedAssetLayerOrder(layer) {
